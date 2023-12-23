@@ -7,8 +7,6 @@ from django.http import HttpResponse
 from dotenv import load_dotenv
 from io import BytesIO
 from huggingface_hub.inference_api import InferenceApi
-from PIL import Image, ImageOps
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from w_craft_back.generation.promt.builder import get_promt_age
@@ -73,7 +71,8 @@ class GenerateImageView(APIView):
 
         logger.info(f'Prompt person: ${prompt_global}')
 
-        response = process_image(prompt_global)
+        image = create_image_from_string(prompt_global)
+        response = img2response(image)
 
         return response
 
@@ -105,7 +104,8 @@ class GenerateImageUndefinedView(APIView):
 
         logger.info(f'Prompt undefined: ${prompt_global}')
 
-        response = process_image(prompt_global)
+        image = create_image_from_string(prompt_global)
+        response = img2response(image)
 
         return response
 
@@ -138,30 +138,23 @@ class GenerateImg2ImgView(APIView):
 def query_model_hub(data, prompt):
     logger.info('Begin generate...')
     # repo_id = "stabilityai/stable-diffusion-xl-refiner-1.0"
-    repo_id = "stabilityai/stable-diffusion-xl-refiner-0.9"
+    repo_id: str = "stabilityai/stable-diffusion-xl-refiner-0.9"
     inference = InferenceApi(repo_id=repo_id,
                              token=TOKEN_HUGGING)
     image = inference(data=data, inputs=prompt)
     if isinstance(image, dict):
-        print(image)
+        logger.error('Model dont running!')
     logger.info('Image was generated with shape: ', image.size)
 
-    # TODO:: refactor
-    buffer = BytesIO()
-    image.save(buffer, format='PNG')
-    f = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    response = HttpResponse(f, content_type='image/png')
-
+    response: HttpResponse = img2response(image)
     return response
 
-def process_image(promt: str):
-    image = create_image_from_string(promt)
 
-    buffer = BytesIO()
+def img2response(image):
+    buffer: BytesIO = BytesIO()
     image.save(buffer, format='PNG')
     f = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    response = HttpResponse(f, content_type='image/png')
-
+    response: HttpResponse = HttpResponse(f, content_type='image/png')
     return response
 
 
