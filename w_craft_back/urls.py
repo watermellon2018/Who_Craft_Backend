@@ -1,5 +1,7 @@
 from django.urls import path
-from .views import GenerateImageView, GenerateImageUndefinedView
+from .views import GenerateImageView, \
+    GenerateImageUndefinedView, \
+    GenerateImg2ImgView
 # from .views import RegistrationView, LoginView
 
 urlpatterns = [
@@ -10,5 +12,8 @@ urlpatterns = [
          name='generate_image'),
     path('generate_image_undefined/',
          GenerateImageUndefinedView.as_view(),
-         name='generate_image_undefined')
+         name='generate_image_undefined'),
+    path('generate_image_to_image/',
+         GenerateImg2ImgView.as_view(),
+         name='generate_image_to_image'),
 ]

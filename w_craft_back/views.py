@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import requests
 
 from django.http import HttpResponse
 from dotenv import load_dotenv
@@ -66,11 +67,12 @@ class GenerateImageView(APIView):
         if begin_len_prompt < end_len_promt:
             substring = ' with the following details. '
             prompt_global = prompt_global[:begin_len_prompt] + \
-                substring + prompt_global[begin_len_prompt:]
+                            substring + prompt_global[begin_len_prompt:]
 
         logger.info(f'Prompt person: ${prompt_global}')
 
-        response = process_image(prompt_global)
+        image = create_image_from_string(prompt_global)
+        response = img2response(image)
 
         return response
 
@@ -98,23 +100,61 @@ class GenerateImageUndefinedView(APIView):
         if begin_len_prompt < end_len_prompt:
             substring = ' with the following details. '
             prompt_global = prompt_global[:begin_len_prompt] + \
-                substring + prompt_global[begin_len_prompt:]
+                            substring + prompt_global[begin_len_prompt:]
 
         logger.info(f'Prompt undefined: ${prompt_global}')
 
-        response = process_image(prompt_global)
+        image = create_image_from_string(prompt_global)
+        response = img2response(image)
 
         return response
 
 
-def process_image(promt: str):
-    image = create_image_from_string(promt)
+class GenerateImg2ImgView(APIView):
+    def get(self, request):
+        logger.info('Request to image to image')
+        params = request.GET
 
-    buffer = BytesIO()
+        url = params.get('url')
+        prompt = params.get('prompt', '')
+        character = params.get('character', None)
+
+        prompt_global = 'Generate a movie poster one character by image. '
+        prompt_global += prompt
+
+        prompt_character = '' if character is None \
+            else 'The appearance should reflect the character. ' \
+                 'Personality: {}. '.format(character)
+        prompt_global += prompt_character
+
+        logger.info(f'Prompt img2img: ${prompt_global}')
+
+        img_bytes = requests.get(url, stream=True)
+        response = query_model_hub(img_bytes, prompt_global)
+
+        return response
+
+
+def query_model_hub(data, prompt):
+    logger.info('Begin generate...')
+    # repo_id = "stabilityai/stable-diffusion-xl-refiner-1.0"
+    repo_id: str = "stabilityai/stable-diffusion-xl-refiner-0.9"
+    inference = InferenceApi(repo_id=repo_id,
+                             token=TOKEN_HUGGING)
+    image = inference(data=data, inputs=prompt)
+    if isinstance(image, dict):
+        logger.error('Model dont running!')
+    logger.info('Image was generated with shape: ', image.size)
+
+    response: HttpResponse = img2response(image)
+    return response
+
+
+def img2response(image):
+    buffer: BytesIO = BytesIO()
     image.save(buffer, format='PNG')
     f = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    response = HttpResponse(f, content_type='image/png')
-
+    response: HttpResponse = HttpResponse(f, content_type='image/png')
     return response
 
 
