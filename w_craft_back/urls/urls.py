@@ -1,8 +1,9 @@
 from django.urls import path
-from .views import GenerateImageView, \
+
+from w_craft_back.views.views import GenerateImageView, \
     GenerateImageUndefinedView, \
     GenerateImg2ImgView
-from .auth.views import RegistrationView, LoginView
+from w_craft_back.auth.views import RegistrationView, LoginView
 
 urlpatterns = [
     path('register/', RegistrationView.as_view(), name='register'),
