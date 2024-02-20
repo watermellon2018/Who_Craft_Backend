@@ -61,6 +61,10 @@ CORS_ALLOWED_ORIGINS = [
     # Add other allowed origins as needed
 ]
 CORS_ALLOW_CREDENTIALS = True
+CORS_URLS_REGEX = r'^.*$'
+
+# SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTOCOL", "https")
+# CSRF_COOKIE_SECURE  = True
 
 
 MIDDLEWARE = [
