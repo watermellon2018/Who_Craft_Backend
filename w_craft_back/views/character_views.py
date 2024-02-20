@@ -1,4 +1,7 @@
-from w_craft_back.models import MenuFolder
+from django.views.decorators.http import require_POST
+from rest_framework.decorators import api_view
+
+from w_craft_back.models import MenuFolder, ItemFolder
 
 import logging
 
@@ -10,7 +13,74 @@ from rest_framework.views import APIView
 logger = logging.getLogger(__name__)
 
 
+# @require_POST
+# def delete_character(request):
+#     try:
+#         logger.info('Удаление персонажа из дерева')
+#         id_to_delete = request.POST.get('id')
+#         model_to_delete = MenuFolder.objects.get(id=id_to_delete)
+#         # model_to_delete.delete()
+#
+#         return JsonResponse({'message': 'Object deleted successfully'}, status=200)
+#
+#     except MenuFolder.DoesNotExist:
+#         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+#
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+def create_character(request):
+    logger.info('Создание персонажа')
+    name = request.data['name']
+    id = request.data['id']
+    parent_id = request.data['parent']
+
+    arguments = {'name': name, 'id': id}
+
+    if parent_id is None:
+        pass
+    else:
+        parent_obj = MenuFolder.objects.get(id=parent_id)
+        logger.info(parent_obj)
+        arguments['parent'] = parent_obj
+
+    if request.data['type'] == 'node':
+        arguments['is_folder'] = True
+        MenuFolder.objects.create(**arguments)
+        logger.info('Папка в дереве персонажей создана')
+    elif request.data['type'] == 'leaf':
+        arguments['is_folder'] = False
+        ItemFolder.objects.create(**arguments)
+        logger.info('Лист (персонаж) создан')
+    else:
+        logger.error('Неправильный тип элемента в дереве персонажей')
+        return JsonResponse({'message': 'Not correct element in tree of characters'}, status=500)
+
+
+
+    return JsonResponse({'message': 'Object created successfully'}, status=200)
+
+
 class CharacterTree(APIView):
+
+    def post(self, request):
+        try:
+            logger.info('Удаление персонажа из дерева')
+            id_to_delete = request.data.get('id')
+            model_to_delete = MenuFolder.objects.get(id=id_to_delete)
+            logger.info('Удален: ' + str(model_to_delete))
+            # model_to_delete.delete()
+
+            return JsonResponse({'message': 'Object deleted successfully'}, status=200)
+
+        except MenuFolder.DoesNotExist:
+            return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+
+
     def get(self, request):
         logger.info('Request to get to character list')
         # params = request.GET
@@ -18,10 +88,8 @@ class CharacterTree(APIView):
         # project = params.get('project') # TODO::
 
         items = MenuFolder.objects.all()
-        # logger.info(items)
 
         tree = cache_tree_children(items)
-        logger.info(tree)
 
         # Преобразуем дерево в формат JSON
         def build_tree(node):
