@@ -19,7 +19,6 @@ class MenuFolder(MPTTModel):
 
 class ItemFolder(MenuFolder):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    # parent = TreeForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='children')
 
     class MPTTMeta:
         order_insertion_by = ['name']
@@ -27,11 +26,3 @@ class ItemFolder(MenuFolder):
 
     def __str__(self):
         return self.name
-
-
-from rest_framework import serializers
-
-# class ItemFolderSerializer(serializers.ModelSerializer):
-#      class Meta:
-#          model = ItemFolder
-#          fields = "__all__"

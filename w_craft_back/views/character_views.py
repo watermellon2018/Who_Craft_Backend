@@ -1,11 +1,10 @@
-from rest_framework.decorators import api_view
-
 from w_craft_back.models import MenuFolder, ItemFolder
 
 import logging
 
 from django.http import JsonResponse
 from mptt.templatetags.mptt_tags import cache_tree_children
+from rest_framework.decorators import api_view
 from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,6 @@ class CharacterTree(APIView):
 
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
-
 
     def get(self, request):
         logger.info('Request to get to character list')
