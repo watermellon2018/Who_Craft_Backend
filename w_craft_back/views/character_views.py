@@ -30,6 +30,26 @@ logger = logging.getLogger(__name__)
 #         return JsonResponse({'error': str(e)}, status=500)
 
 @api_view(['POST'])
+def rename_character(request):
+    try:
+        logger.info('Изменение имени персонажа')
+        name = request.data['name']
+        id = request.data['id']
+        obj = MenuFolder.objects.get(id=id)
+        obj.name = name
+        obj.save()
+        # obj.update(name=name)
+        logger.info('Имя изменено')
+    except MenuFolder.DoesNotExist:
+        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+    return JsonResponse({'message': 'Object created successfully'}, status=200)
+
+
+
+@api_view(['POST'])
 def create_character(request):
     logger.info('Создание персонажа')
     name = request.data['name']
@@ -70,7 +90,7 @@ class CharacterTree(APIView):
             id_to_delete = request.data.get('id')
             model_to_delete = MenuFolder.objects.get(id=id_to_delete)
             logger.info('Удален: ' + str(model_to_delete))
-            # model_to_delete.delete()
+            model_to_delete.delete()
 
             return JsonResponse({'message': 'Object deleted successfully'}, status=200)
 
@@ -93,15 +113,20 @@ class CharacterTree(APIView):
 
         # Преобразуем дерево в формат JSON
         def build_tree(node):
-            return {
-                'id': node.id,
-                'key': node.name,
+            response = {
+                'id': str(node.id),
+                'key': node.name+'_'+str(node.id),
                 'name': node.name,
-                'children': [build_tree(child) for child in node.get_children()]
             }
+            children = [build_tree(child) for child in node.get_children()]
+
+
+            if len(children) == 0:
+                return response
+            response['children'] = children
+            return response
 
         tree_json = [build_tree(node) for node in tree]
-        logger.info(tree_json)
 
         return JsonResponse(tree_json, safe=False)
         # logger.info(dir(items))
