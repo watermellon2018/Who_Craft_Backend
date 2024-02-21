@@ -1,4 +1,3 @@
-from django.views.decorators.http import require_POST
 from rest_framework.decorators import api_view
 
 from w_craft_back.models import MenuFolder, ItemFolder
@@ -7,27 +6,9 @@ import logging
 
 from django.http import JsonResponse
 from mptt.templatetags.mptt_tags import cache_tree_children
-from django.http import HttpResponse
 from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
-
-
-# @require_POST
-# def delete_character(request):
-#     try:
-#         logger.info('Удаление персонажа из дерева')
-#         id_to_delete = request.POST.get('id')
-#         model_to_delete = MenuFolder.objects.get(id=id_to_delete)
-#         # model_to_delete.delete()
-#
-#         return JsonResponse({'message': 'Object deleted successfully'}, status=200)
-#
-#     except MenuFolder.DoesNotExist:
-#         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
-#
-#     except Exception as e:
-#         return JsonResponse({'error': str(e)}, status=500)
 
 @api_view(['POST'])
 def rename_character(request):
@@ -38,7 +19,6 @@ def rename_character(request):
         obj = MenuFolder.objects.get(id=id)
         obj.name = name
         obj.save()
-        # obj.update(name=name)
         logger.info('Имя изменено')
     except MenuFolder.DoesNotExist:
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
@@ -54,6 +34,7 @@ def create_character(request):
     logger.info('Создание персонажа')
     name = request.data['name']
     id = request.data['id']
+    id = str(id)
     parent_id = request.data['parent']
 
     arguments = {'name': name, 'id': id}
@@ -103,8 +84,6 @@ class CharacterTree(APIView):
 
     def get(self, request):
         logger.info('Request to get to character list')
-        # params = request.GET
-
         # project = params.get('project') # TODO::
 
         items = MenuFolder.objects.all()
@@ -129,9 +108,3 @@ class CharacterTree(APIView):
         tree_json = [build_tree(node) for node in tree]
 
         return JsonResponse(tree_json, safe=False)
-        # logger.info(dir(items))
-
-        # items_dict = model_to_dict(items, fields=[field.name for field in items._meta.fields])
-        # response = HttpResponse(items)
-
-        # return response
