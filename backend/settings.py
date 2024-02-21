@@ -40,8 +40,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'w_craft_back.apps.WCraftBackConfig',
-    # 'w_craft_back',
+    'mptt',
+    # 'w_craft_back.apps.WCraftBackConfig',
+    'w_craft_back',
     'corsheaders',
     'rest_framework',
     # 'rest_framework_simplejwt',
@@ -60,6 +61,10 @@ CORS_ALLOWED_ORIGINS = [
     # Add other allowed origins as needed
 ]
 CORS_ALLOW_CREDENTIALS = True
+# CORS_URLS_REGEX = r'^.*$'
+
+# SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTOCOL", "https")
+# CSRF_COOKIE_SECURE  = True
 
 
 MIDDLEWARE = [
@@ -145,8 +150,7 @@ STATIC_URL = 'static/'
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
