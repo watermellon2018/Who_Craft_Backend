@@ -19,7 +19,7 @@ from django.urls import path, include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/character/', include('w_craft_back.characters.display_tree.urls')),
-    path('api/generate/', include('w_craft_back.urls.__init__')),
-    path('api/auth/', include('w_craft_back.urls.__init__')),
+    path('api/generate/', include('w_craft_back.urls.urls')),
+    path('api/auth/', include('w_craft_back.urls.urls')),
 
 ]
