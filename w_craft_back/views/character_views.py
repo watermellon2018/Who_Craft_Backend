@@ -68,6 +68,7 @@ class CharacterTree(APIView):
         try:
             logger.info('Удаление персонажа из дерева')
             id_to_delete = request.data.get('id')
+            # TODO:: удалять не MenuFolder, а Itme ????? или нет?
             model_to_delete = MenuFolder.objects.get(id=id_to_delete)
             logger.info('Удален: ' + str(model_to_delete))
             model_to_delete.delete()
