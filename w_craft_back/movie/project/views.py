@@ -1,3 +1,5 @@
+from rest_framework.decorators import api_view
+
 from w_craft_back.movie.properties.utils import translit
 import base64
 from django.core.files.base import ContentFile
@@ -12,11 +14,41 @@ from rest_framework import status
 logger = logging.getLogger(__name__)
 
 
+@api_view(['GET'])
+def get_list_projects(request):
+    try:
+        # todo:: add user id
+        logger.info('Изменение имени персонажа')
+        projects_list = Project.objects.all()
+        logger.info('Объекты получены')
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+    def build_project_list(proj):
+        try:
+            with open(proj.image.path, "rb") as img_file:
+                img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+        except ValueError:
+            img_obj = None
+
+        response = {
+            'title': proj.title,
+            'src': img_obj,
+        }
+        return response
+
+    data = [build_project_list(proj) for proj in projects_list]
+    logger.info('Количество проектов: {}'.format(len(data)))
+    return JsonResponse(data, safe=False, status=200)
+
 class ProjectView(APIView):
 
     def __init__(self):
         super().__init__()
         self.format_choices = ['full-movie', 'short-movie', 'series', 'marketing']
+
+
     def post(self, request):
         logger.info('Создаем проект')
         data = request.data['data']
