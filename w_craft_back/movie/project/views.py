@@ -33,6 +33,7 @@ def get_list_projects(request):
             img_obj = None
 
         response = {
+            'id': proj.id,
             'title': proj.title,
             'src': img_obj,
         }
@@ -41,6 +42,24 @@ def get_list_projects(request):
     data = [build_project_list(proj) for proj in projects_list]
     logger.info('Количество проектов: {}'.format(len(data)))
     return JsonResponse(data, safe=False, status=200)
+
+@api_view(['GET'])
+def delete_project(request):
+    try:
+        logger.info('Удаление проекта')
+        id = request.GET.get('id')
+        # todo:: add user id
+        project = Project.objects.get(id=id)
+        project.delete()
+        logger.info('Проект удален!')
+
+    except Project.DoesNotExist:
+        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+    return HttpResponse(status=status.HTTP_200_OK)
 
 class ProjectView(APIView):
 
