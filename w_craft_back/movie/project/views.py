@@ -1,15 +1,14 @@
-from rest_framework.decorators import api_view
+from w_craft_back.movie.project.models import Project, Genre, Audience
 
-from w_craft_back.movie.properties.utils import translit
 import base64
-from django.core.files.base import ContentFile
 import logging
 
+from django.http import JsonResponse, HttpResponse
+from django.core.files.base import ContentFile
+from rest_framework import status
+from rest_framework.decorators import api_view
 from rest_framework.views import APIView
 
-from w_craft_back.movie.project.models import Project, Genre, Audience
-from django.http import JsonResponse, HttpResponse
-from rest_framework import status
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ def get_list_projects(request):
     logger.info('Количество проектов: {}'.format(len(data)))
     return JsonResponse(data, safe=False, status=200)
 
+
 @api_view(['GET'])
 def delete_project(request):
     try:
@@ -61,12 +61,12 @@ def delete_project(request):
 
     return HttpResponse(status=status.HTTP_200_OK)
 
+
 class ProjectView(APIView):
 
     def __init__(self):
         super().__init__()
         self.format_choices = ['full-movie', 'short-movie', 'series', 'marketing']
-
 
     def post(self, request):
         logger.info('Создаем проект')
@@ -95,9 +95,8 @@ class ProjectView(APIView):
             format, imgstr = image_data.split(';base64,')
             ext = format.split('/')[-1]
             image_data = ContentFile(base64.b64decode(imgstr),
-                                     name='{}.{}'.format(title, ext)) # TODO:: add user id!
+                                     name='{}.{}'.format(title, ext))  # TODO:: add user id!
             arguments['image'] = image_data
-
 
         obj = Project.objects.create(**arguments)
 
