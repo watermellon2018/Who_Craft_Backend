@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
 
+
 @api_view(['POST'])
 def rename_character(request):
     try:
@@ -20,12 +21,13 @@ def rename_character(request):
         obj.save()
         logger.info('Имя изменено')
     except MenuFolder.DoesNotExist:
-        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+        return JsonResponse({'error': 'Object with specified ID does not exist'},
+                            status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-    return JsonResponse({'message': 'Object created successfully'}, status=200)
-
+    return JsonResponse({'message': 'Object created successfully'},
+                        status=200)
 
 
 @api_view(['POST'])
