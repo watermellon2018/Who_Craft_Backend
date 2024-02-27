@@ -16,7 +16,7 @@ def rename_character(request):
         logger.info('Изменение имени персонажа')
         name = request.data['name']
         id = request.data['id']
-        obj = MenuFolder.objects.get(id=id)
+        obj = MenuFolder.objects.get(key=id)
         obj.name = name
         obj.save()
         logger.info('Имя изменено')
@@ -32,18 +32,19 @@ def rename_character(request):
 
 @api_view(['POST'])
 def create_character(request):
+    logger.info(request.data)
     logger.info('Создание персонажа')
     name = request.data['name']
     id = request.data['id']
     id = str(id)
     parent_id = request.data['parent']
 
-    arguments = {'name': name, 'id': id}
+    arguments = {'name': name, 'key': id}
 
     if parent_id is None:
         pass
     else:
-        parent_obj = MenuFolder.objects.get(id=parent_id)
+        parent_obj = MenuFolder.objects.get(key=parent_id)
         logger.info(parent_obj)
         arguments['parent'] = parent_obj
 
@@ -70,10 +71,9 @@ class CharacterTree(APIView):
         try:
             logger.info('Удаление персонажа из дерева')
             id_to_delete = request.data.get('id')
-            # TODO:: удалять не MenuFolder, а Itme ????? или нет?
-            model_to_delete = MenuFolder.objects.get(id=id_to_delete)
-            logger.info('Удален: ' + str(model_to_delete))
+            model_to_delete = MenuFolder.objects.get(key=id_to_delete)
             model_to_delete.delete()
+            logger.info('Удален: ' + str(model_to_delete))
 
             return JsonResponse({'message': 'Object deleted successfully'}, status=200)
 
@@ -94,14 +94,14 @@ class CharacterTree(APIView):
         # Преобразуем дерево в формат JSON
         def build_tree(node):
             response = {
-                'id': str(node.id),
+                'id': str(node.key),
                 'key': node.name+'_'+str(node.id),
                 'name': node.name,
             }
             children = [build_tree(child) for child in node.get_children()]
 
 
-            if len(children) == 0:
+            if len(children) == 0 and not node.is_folder:
                 return response
             response['children'] = children
             return response
