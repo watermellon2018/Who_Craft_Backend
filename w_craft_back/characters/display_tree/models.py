@@ -5,6 +5,7 @@ from mptt.models import MPTTModel, TreeForeignKey
 
 
 class MenuFolder(MPTTModel):
+    key = models.UUIDField(default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     parent = TreeForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='children')
     is_folder = models.BooleanField(default=False)
