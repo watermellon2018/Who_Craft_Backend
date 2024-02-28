@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from django.contrib.auth import authenticate
 from django.http import HttpResponse
@@ -8,7 +9,8 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 
-from w_craft_back.auth.serializers import UserSerializer
+from w_craft_back.auth.models import UserKey
+from w_craft_back.auth.serializers import UserSerializer, UserKeySerializer
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +18,15 @@ class RegistrationView(APIView):
     def post(self, request):
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
-            return HttpResponse(status=status.HTTP_201_CREATED)
+            user = serializer.save()
+            key = uuid.uuid4()
+            UserKey.objects.create(user=user, key=key)
+
+            return HttpResponse({'token': key},
+                                    status=status.HTTP_201_CREATED)
 
         logger.error('Error registration!')
-        return HttpResponse('Ошибка чет хз', status=status.HTTP_400_BAD_REQUEST)
+        return HttpResponse('Ошибка регистрации!', status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginView(APIView):

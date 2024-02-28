@@ -1,5 +1,8 @@
+import uuid
 from rest_framework import serializers
 from django.contrib.auth.models import User
+
+from w_craft_back.auth.models import UserKey
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -7,7 +10,6 @@ class UserSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = User.objects.create_user(
-            email=validated_data.get('email', None),
             password=validated_data.get('password', None),
             username=validated_data.get('username', ''),
         )
@@ -16,4 +18,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['email', 'username', 'password']
+        fields = ['username', 'password']
+
+
+class UserKeySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserKey
+        fields = ['user', 'key']
