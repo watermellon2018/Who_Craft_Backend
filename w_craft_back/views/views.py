@@ -14,6 +14,8 @@ from w_craft_back.generation.promt.builder import get_promt_age
 # Load environment variables from .env file
 load_dotenv()
 TOKEN_HUGGING = os.getenv('TOKEN_HUGGING_FACE')
+NVIDIA_KEY = os.getenv('NVIDIA_KEY')
+STABLE_KEY = os.getenv('STABLE_KEY')
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class GenerateImageView(APIView):
             prompt_global = prompt_global[:begin_len_prompt] + \
                             substring + prompt_global[begin_len_prompt:]
 
+        prompt_global += 'Style realistic.'
         logger.info(f'Prompt person: ${prompt_global}')
 
         image = create_image_from_string(prompt_global)
@@ -151,6 +154,7 @@ def query_model_hub(data, prompt):
 
 
 def img2response(image):
+    # f = image['b64_json']  # nvidia
     buffer: BytesIO = BytesIO()
     image.save(buffer, format='PNG')
     f = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -165,11 +169,47 @@ def create_image_from_string(user_string):
     # imarray = np.random.rand(100, 100, 3) * 255
     # image = Image.fromarray(imarray.astype('uint8')).convert('RGB')
     # return image
-
     logger.info('Begin generating...')
-    inference = InferenceApi(repo_id="stablediffusionapi/nightvision-xl-0791",
-                             token=TOKEN_HUGGING)  # stabilityai/stable-diffusion-2
-    # inference = InferenceApi(repo_id="stabilityai/stable-diffusion-2")
-    output = inference(user_string)
-    logger.info(f'Image generated with shape: ${output.size}')
-    return output
+
+    invoke_url = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/89848fb8-549f-41bb-88cb-95d6597044a4"
+    fetch_url_format = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/"
+
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_KEY}",
+        "Accept": "application/json",
+    }
+
+
+    payload = {
+        "prompt": user_string,
+        "negative_prompt": "anime",
+        "sampler": "DPM",
+        "seed": 0,
+        "guidance_scale": 5,
+        "inference_steps": 25
+    }
+
+    session = requests.Session()
+
+    response = session.post(invoke_url, headers=headers, json=payload)
+
+    while response.status_code == 202:
+        request_id = response.headers.get("NVCF-REQID")
+        fetch_url = fetch_url_format + request_id
+        response = session.get(fetch_url, headers=headers)
+
+    response.raise_for_status()
+    response_body = response.json()
+    return response_body
+
+
+    # logger.info('Begin generating...')
+    # inference = InferenceApi(repo_id="stablediffusionapi/nightvision-xl-0791",
+    #                          token=TOKEN_HUGGING)  # stabilityai/stable-diffusion-2
+    # # inference = InferenceApi(repo_id="stabilityai/stable-diffusion-2")
+    # output = inference(user_string)
+    # logger.info(f'Image generated with shape: ${output.size}')
+    # return output
+
+
+
