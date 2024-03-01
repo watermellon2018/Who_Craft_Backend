@@ -2,7 +2,7 @@ import logging
 import uuid
 
 from django.contrib.auth import authenticate
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -21,9 +21,8 @@ class RegistrationView(APIView):
             user = serializer.save()
             key = uuid.uuid4()
             UserKey.objects.create(user=user, key=key)
-
-            return HttpResponse({'token': key},
-                                    status=status.HTTP_201_CREATED)
+            return JsonResponse({'token': key}, safe=False,
+                                status=status.HTTP_201_CREATED)
 
         logger.error('Error registration!')
         return HttpResponse('Ошибка регистрации!', status=status.HTTP_400_BAD_REQUEST)
