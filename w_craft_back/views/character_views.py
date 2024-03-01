@@ -1,3 +1,4 @@
+from w_craft_back.auth.models import UserKey
 from w_craft_back.models import MenuFolder, ItemFolder
 
 import logging
@@ -6,6 +7,8 @@ from django.http import JsonResponse
 from mptt.templatetags.mptt_tags import cache_tree_children
 from rest_framework.decorators import api_view
 from rest_framework.views import APIView
+
+from w_craft_back.movie.project.models import Project
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +37,26 @@ def rename_character(request):
 def create_character(request):
     logger.info(request.data)
     logger.info('Создание персонажа')
+
+    user_token = request.data['token_user']
+    cur_user = UserKey.objects.get(key=user_token)
+    logger.info('Пользователь ', cur_user.key)
+
+    project_name = request.data['projectTitle']
+    logger.info(project_name)
+    cur_project = Project.objects.get(title=project_name)
+    logger.info('Персонаж из проекта', cur_project.title)
+
+
     name = request.data['name']
     id = request.data['id']
     id = str(id)
     parent_id = request.data['parent']
 
-    arguments = {'name': name, 'key': id}
+    arguments = {'name': name,
+                 'key': id,
+                 'user': cur_user,
+                 'cur_project': cur_project}
 
     if parent_id is None:
         pass
