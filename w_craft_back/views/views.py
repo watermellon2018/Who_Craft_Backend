@@ -154,10 +154,10 @@ def query_model_hub(data, prompt):
 
 
 def img2response(image):
-    # f = image['b64_json']  # nvidia
-    buffer: BytesIO = BytesIO()
-    image.save(buffer, format='PNG')
-    f = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    f = image['b64_json']  # nvidia
+    # buffer: BytesIO = BytesIO()
+    # image.save(buffer, format='PNG')
+    # f = base64.b64encode(buffer.getvalue()).decode('utf-8')
     response: HttpResponse = HttpResponse(f, content_type='image/png')
     return response
 

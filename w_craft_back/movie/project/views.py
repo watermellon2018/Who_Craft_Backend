@@ -117,6 +117,7 @@ class ProjectView(APIView):
 
         obj = Project.objects.create(**arguments)
 
+
         genre_objs = Genre.objects.filter(translit__in=genre_list)
         obj.genre.set(genre_objs)
 
@@ -124,5 +125,5 @@ class ProjectView(APIView):
         obj.audience.set(audience_objs)
 
         logger.info('Проект создан!')
-
-        return HttpResponse(status=status.HTTP_200_OK)
+        return JsonResponse({'project_id': obj.id}, status=200)
+        # return HttpResponse(status=status.HTTP_200_OK)
