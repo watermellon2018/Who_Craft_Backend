@@ -96,11 +96,13 @@ def select_by_id(request):
 def create_hero(request):
     try:
         logger.info('Задаем настройки нового персонажа, которого хотим создать')
-        params = request.data
+        params = request.data['data']
+        logger.info(params)
 
         try:
-            project_id = params.get('projectId')
+            project_id = params['projectId']
             cur_project = Project.objects.get(id=project_id)
+            logger.info(f'Проект найден {project_id}')
         except Project.DoesNotExist:
             logger.error('Проект для которого создается персонаж, не найден')
             return JsonResponse(
@@ -112,74 +114,95 @@ def create_hero(request):
 
         argument = {'project': cur_project}
 
-        name_hero = params.get('name')
+        name_hero = params['name']
 
         if name_hero is None or name_hero == '':
             logger.error('Не указано имя героя')
             raise JsonResponse({'error': 'Не указано имя героя'}, status=500)
 
         argument['first_name'] = name_hero
-        argument['last_name'] = params.get('lastName')
-        argument['middle_name'] = params.get('middleName')
-        argument['birth_date'] = params.get('dob')
-        argument['birth_place'] = params.get('town')
+        argument['last_name'] = params['lastName']
+        argument['middle_name'] = params['middleName']
+        argument['birth_date'] = params['dob']
+        argument['birth_place'] = params['town']
 
         logger.info('Личные настройки указаны')
 
-        image_data = params.get('image')
-        format, imgstr = image_data.split(';base64,')
-        ext = format.split('/')[-1]
-        argument['photo'] = ContentFile(base64.b64decode(imgstr),
-                                        name='{}/{}/{}/{}'.format(user_id,
-                                                                  name_project,
-                                                                  name_hero,
-                                                                  ext))
-        logger.info('Изображение загружено')
 
         obj = Character.objects.create(**argument)
 
         argument = {'character': obj,
-                    'purpose_in_story': params.get('forWhat'),
-                    'goal': params.get('goal'),
-                    'life_philosophy': params.get('philosophy'),
-                    'character_development': params.get('develop')}
+                    'purpose_in_story': params['forWhat'],
+                    'goal': params['goal'],
+                    'life_philosophy': params['philosophy'],
+                    'character_development': params['develop']}
 
         GoalsMotivation.objects.create(**argument)
+        logger.info('Объект мотивации создан')
 
         argument = {'character': obj,
-                    'personal_traits': params.get('personalTraits'),
-                    'strengths_weaknesses': params.get('strengthsWeaknesses'),
-                    'character_type': params.get('character'),
-                    'complexes': params.get('complexes'),
-                    'inner_conflicts': params.get('insideConflict'),
-                    'individual_style': params.get('style')}
+                    'personal_traits': params['personalTraits'],
+                    'strengths_weaknesses': params['strengthsWeaknesses'],
+                    'character_type': params['character'],
+                    'complexes': params['complexes'],
+                    'inner_conflicts': params['insideConflict'],
+                    'individual_style': params['style']}
 
         # личностные особенности
         PersonalityTraits.objects.create(**argument)
+        logger.info('Объект личностные особенности создан')
 
         argument = {'character': obj,
-                    'biography': params.get('biography'),
-                    'relationships_with_others': params.get('relationship')}
+                    'biography': params['biography'],
+                    'relationships_with_others': params['relationship']}
         BiographyRelationships.objects.create(**argument)
+        logger.info('Объект биографии создан')
 
         argument = {'character': obj,
-                    'profession': params.get('profession'),
-                    'hobby': params.get('hobby')}
+                    'profession': params['profession'],
+                    'hobbies': params['hobby']}
         ProfessionHobbies.objects.create(**argument)
+        logger.info('Объект увлечений создан')
 
         argument = {'character': obj,
-                    'talents': params.get('talents'),
-                    'intellectual_abilities': params.get('mindInfo'),
-                    'physical_characteristics': params.get('sportInfo'),
-                    'external_characteristics': params.get('appearance'),
-                    'speech_patterns': params.get('speech')}
+                    'talents': params['talents'],
+                    'intellectual_abilities': params['mindInfo'],
+                    'physical_characteristics': params['sportInfo'],
+                    'external_characteristics': params['appearance'],
+                    'speech_patterns': params['speech']}
         TalentsAbilities.objects.create(**argument)
+        logger.info('Объект физических характеристик создан')
 
         logger.info('Второстепенные настройки персонажа зарегестрированы')
 
-        argument['addit_info'] = params.get('additInfo')
+        argument['addit_info'] = params['additInfo']
 
         logger.info('Дополнительная информация зарегистрировалась')
+        logger.info(argument)
+
+        argument = {'project': cur_project,
+                    'photo': '',
+                    'first_name': name_hero,
+                    'last_name': params['lastName'],
+                    'middle_name': params['middleName'],
+                    'birth_date': params['dob'],
+                    'birth_place': params['town']
+                    }
+
+        image_data = params['image']
+        if image_data is None or image_data == '':
+            logger.error('Нет постера для проекта')
+        if ';base64,' not in image_data:
+            logger.error('Это не изображение')
+        else:
+            format, imgstr = image_data.split(';base64,')
+            ext = format.split('/')[-1]
+            argument['photo'] = ContentFile(base64.b64decode(imgstr),
+                                            name='{}/{}/{}/{}'.format(user_id,
+                                                                      name_project,
+                                                                      name_hero,
+                                                                      ext))
+            logger.info('Изображение загружено')
 
         Character.objects.create(**argument)
         logger.info('Персонаж создан')
