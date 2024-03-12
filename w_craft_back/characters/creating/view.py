@@ -6,6 +6,7 @@ import base64
 import logging
 
 from django.core.files.base import ContentFile
+from django.forms.models import model_to_dict
 from django.http import JsonResponse, HttpResponse
 from rest_framework.decorators import api_view
 from w_craft_back.movie.project.models import Project
@@ -55,27 +56,57 @@ def delete_by_id(request):
         return JsonResponse({'error': str(e)}, status=500)
     return HttpResponse(status=status.HTTP_200_OK)
 
+
 @api_view(['GET'])
 def select_all(request):
     try:
         logger.info('Возвращаем всех персонаей проекта')
         try:
             project_id = request.GET.get('projectId')
+            logger.info(project_id)
             cur_project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
-            logger.error('Проект для которого создается персонаж, не найден')
+            logger.error('Проект не найден')
             return JsonResponse(
                 {'error': 'Object with specified ID does not exist'},
                 status=404)
 
-        obj = Character.objects.filter(project=cur_project)
-        logger.info('Персонажи найдены')
+        objs = Character.objects.filter(project=cur_project)
+
+
+        def build_tree(hero):
+            hero_serls = model_to_dict(hero)
+            logger.info(hero_serls)
+            title = hero_serls['first_name'] + ' ' + hero_serls['last_name']
+
+            try:
+                with open(hero_serls['photo'].path, "rb") as img_file:
+                    img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+            except ValueError:
+                img_obj = None
+
+            response = {
+                'id': str(hero_serls['id']),
+                'key': hero_serls['first_name']+'_'+str(hero_serls['id']),
+                'name': title,
+                'src': img_obj
+            }
+            logger.info(response)
+            return response
+
+        heros = [build_tree(hero) for hero in objs]
+        logger.info(heros)
+        if len(heros) == 0:
+            logger.info('В данном проекте отсутствуют персонажи')
+        else:
+            logger.info('Персонажи найдены')
+
+        return JsonResponse(heros, safe=False, status=200)
 
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-    return JsonResponse(obj, safe=False, status=200)
 
 
 @api_view(['GET'])
