@@ -20,37 +20,47 @@ logger = logging.getLogger(__name__)
 # изменить параметры
 
 
+# @api_view(['GET'])
+# def delete_by_project(request):
+#     try:
+#         logger.info('Удаление персонажа по id')
+#
+#         project_id = request.GET.get('projectId')
+#         cur_project = Project.objects.get(id=project_id)
+#         heroes_to_delete = Character.objects.filter(project=cur_project)
+#         heroes_to_delete.delete()
+#
+#         logger.info('Персонаж удален')
+#
+#
+#     except Project.DoesNotExist:
+#         logger.error('Проект для которого создается персонаж, не найден')
+#         return JsonResponse(
+#             {'error': 'Object with specified ID does not exist'},
+#             status=404)
+#
+#     except Exception as e:
+#         return JsonResponse({'error': str(e)}, status=500)
+#
+#     return HttpResponse(status=status.HTTP_200_OK)
+
+
 @api_view(['GET'])
-def delete_by_project(request):
+def delete_hero_by_id(request):
     try:
         logger.info('Удаление персонажа по id')
 
-        project_id = request.GET.get('projectId')
-        cur_project = Project.objects.get(id=project_id)
-        heroes_to_delete = Character.objects.filter(project=cur_project)
-        heroes_to_delete.delete()
+        try:
+            project_id = request.GET.get('projectId')
+            cur_project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            logger.error('Проект не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
 
-        logger.info('Персонаж удален')
-
-
-    except Project.DoesNotExist:
-        logger.error('Проект для которого создается персонаж, не найден')
-        return JsonResponse(
-            {'error': 'Object with specified ID does not exist'},
-            status=404)
-
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
-
-    return HttpResponse(status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-def delete_by_id(request):
-    try:
-        logger.info('Удаление персонажа по id')
-        hero_id = request.GET.get('heroId')
-        hero = Character.objects.get(id=hero_id)
+        character_id = request.GET.get('characterId')
+        hero = Character.objects.get(project=cur_project, id=character_id)
         hero.delete()
         logger.info('Персонаж удален')
 
