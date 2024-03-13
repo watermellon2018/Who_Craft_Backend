@@ -44,6 +44,7 @@ class BiographyRelationships(models.Model):
     character = models.ForeignKey(Character, on_delete=models.CASCADE)
     biography = models.TextField(default='')
     relationships_with_others = models.TextField(default='')
+    addit_info = models.TextField(default='')
 
 
 class ProfessionHobbies(models.Model):

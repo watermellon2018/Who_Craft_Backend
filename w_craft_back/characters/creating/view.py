@@ -16,6 +16,7 @@ from w_craft_back.characters.creating.models import Character, \
 
 logger = logging.getLogger(__name__)
 
+
 # изменить параметры
 
 
@@ -43,6 +44,7 @@ def delete_by_project(request):
 
     return HttpResponse(status=status.HTTP_200_OK)
 
+
 @api_view(['GET'])
 def delete_by_id(request):
     try:
@@ -58,12 +60,89 @@ def delete_by_id(request):
 
 
 @api_view(['GET'])
+def select_hero_by_id(request):
+    try:
+        logger.info('Возвращаем персонажа по id')
+        try:
+            project_id = request.GET.get('projectId')
+            cur_project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            logger.error('Проект не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        character_id = request.GET.get('characterId')
+        hero = Character.objects.get(project=cur_project, id=character_id)
+
+        resp = {
+            'name': hero.first_name,
+            'lastName': hero.last_name,
+            'middleName': hero.middle_name,
+            'dob': hero.birth_date,
+            'town': hero.birth_place
+        }
+        logger.info('Достаем изображение')
+
+        try:
+            with open(hero.photo.path, "rb") as img_file:
+                img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+        except ValueError:
+            img_obj = None
+        resp['image'] = img_obj
+
+        logger.info('Изображение вытащено')
+
+        data = GoalsMotivation.objects.get(character=hero)
+        resp['forWhat'] = data.purpose_in_story
+        resp['goal'] = data.goal
+        resp['philosophy'] = data.life_philosophy
+        resp['development'] = data.character_development
+        logger.info('Цели и мотивация вытащены')
+
+        data = BiographyRelationships.objects.get(character=hero)
+        resp['biography'] = data.biography
+        resp['relationship'] = data.relationships_with_others
+        resp['additInfo'] = data.addit_info
+        logger.info('Биография и доп информация вытащены')
+
+        data = PersonalityTraits.objects.get(character=hero)
+        resp['character'] = data.character_type
+        resp['personalTraits'] = data.personal_traits
+        resp['strengthsWeaknesses'] = data.strengths_weaknesses
+        resp['complexs'] = data.complexes
+        resp['insideConflict'] = data.inner_conflicts
+        resp['style'] = data.individual_style
+        logger.info('Личные качества вытащены')
+
+        data = ProfessionHobbies.objects.get(character=hero)
+        resp['profession'] = data.profession
+        resp['hobby'] = data.hobbies
+        logger.info('Увлечения вытащены')
+
+        data = TalentsAbilities.objects.get(character=hero)
+        resp['talents'] = data.talents
+        resp['mindInfo'] = data.intellectual_abilities
+        resp['sportInfo'] = data.physical_characteristics
+        resp['appearance'] = data.external_characteristics
+        resp['speech'] = data.speech_patterns
+        logger.info('Внутренние характерисики вытащены')
+
+        logger.info('Персонаж найден')
+
+        return JsonResponse(resp, safe=False, status=200)
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
 def select_all(request):
     try:
         logger.info('Возвращаем всех персонаей проекта')
+
         try:
             project_id = request.GET.get('projectId')
-            logger.info(project_id)
             cur_project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
             logger.error('Проект не найден')
@@ -73,8 +152,7 @@ def select_all(request):
 
         objs = Character.objects.filter(project=cur_project)
 
-
-        def build_tree(hero):
+        def build_response(hero):
             hero_serls = model_to_dict(hero)
             logger.info(hero_serls)
             title = hero_serls['first_name'] + ' ' + hero_serls['last_name']
@@ -87,15 +165,14 @@ def select_all(request):
 
             response = {
                 'id': str(hero_serls['id']),
-                'key': hero_serls['first_name']+'_'+str(hero_serls['id']),
+                'key': hero_serls['first_name'] + '_' + str(hero_serls['id']),
                 'name': title,
                 'src': img_obj
             }
             logger.info(response)
             return response
 
-        heros = [build_tree(hero) for hero in objs]
-        logger.info(heros)
+        heros = [build_response(hero) for hero in objs]
         if len(heros) == 0:
             logger.info('В данном проекте отсутствуют персонажи')
         else:
@@ -106,7 +183,6 @@ def select_all(request):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
 
 
 @api_view(['GET'])
@@ -159,7 +235,6 @@ def create_hero(request):
 
         logger.info('Личные настройки указаны')
 
-
         obj = Character.objects.create(**argument)
 
         argument = {'character': obj,
@@ -185,7 +260,9 @@ def create_hero(request):
 
         argument = {'character': obj,
                     'biography': params['biography'],
-                    'relationships_with_others': params['relationship']}
+                    'relationships_with_others': params['relationship'],
+                    'addit_info': params['additInfo'],
+                    }
         BiographyRelationships.objects.create(**argument)
         logger.info('Объект биографии создан')
 
@@ -202,14 +279,9 @@ def create_hero(request):
                     'external_characteristics': params['appearance'],
                     'speech_patterns': params['speech']}
         TalentsAbilities.objects.create(**argument)
+
         logger.info('Объект физических характеристик создан')
-
         logger.info('Второстепенные настройки персонажа зарегестрированы')
-
-        argument['addit_info'] = params['additInfo']
-
-        logger.info('Дополнительная информация зарегистрировалась')
-        logger.info(argument)
 
         argument = {'project': cur_project,
                     'photo': '',
