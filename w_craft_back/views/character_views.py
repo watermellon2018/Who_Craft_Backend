@@ -101,10 +101,17 @@ class CharacterTree(APIView):
             return JsonResponse({'error': str(e)}, status=500)
 
     def get(self, request):
-        logger.info('Request to get to character list')
-        # project = params.get('project') # TODO::
+        logger.info('Получаем список персонажей для отображение на дереве')
+        try:
+            project_id = request.GET.get('projectId')
+            cur_project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            logger.error('Проект не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
 
-        items = MenuFolder.objects.all()
+        items = MenuFolder.objects.filter(cur_project=cur_project)
 
         tree = cache_tree_children(items)
 
