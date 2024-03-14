@@ -1,5 +1,7 @@
+import base64
 import logging
 
+from django.core.files.base import ContentFile
 from django.http import JsonResponse, HttpResponse
 from rest_framework.decorators import api_view
 
@@ -180,10 +182,10 @@ def update_identity_data_hero(request):
         data = PersonalityTraits.objects.get(character=hero)
         data.individual_style = params['style']
         data.complexes = params['complexs']
-        data.external_characteristics = params['appearance']
         data.save()
 
         data = TalentsAbilities.objects.get(character=hero)
+        data.external_characteristics = params['appearance']
         data.speech_patterns = params['speech']
         data.save()
 
@@ -345,6 +347,54 @@ def update_relationship_data_hero(request):
         logger.info('Поле обновлено')
         return HttpResponse(status=200)
 
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+def update_image_hero(request):
+    try:
+        logger.info('Обновляем поле фото героя')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = Character.objects.get(character=hero)
+        image_data = params['image']
+
+        if image_data is None or image_data == '':
+            logger.error('Нет изображения для героя')
+            return HttpResponse(status=500)
+        if ';base64,' not in image_data:
+            logger.error('Это не изображение')
+            return HttpResponse(status=500)
+
+        name_hero = Character.first_name
+        name_project = cur_project.title
+        user_id = cur_project.user_id
+        format, imgstr = image_data.split(';base64,')
+        ext = format.split('/')[-1]
+        new_img = ContentFile(base64.b64decode(imgstr),
+                                            name='{}/{}/{}/{}'.format(user_id,
+                                                                      name_project,
+                                                                      name_hero,
+                                                                      ext))
+        data.photo = new_img
+        logger.info('Фото обновлено')
+
+        return HttpResponse(status=200)
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

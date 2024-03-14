@@ -3,7 +3,8 @@ from w_craft_back.characters.creating.view import create_hero, select_all,\
 from w_craft_back.characters.creating.view_for_update import update_personal_info,\
     update_motivate_info, update_inside_data_hero, update_competition_data_hero,\
     update_identity_data_hero, update_psyho_data_hero, update_development_data_hero,\
-    update_addit_data_hero, update_bio_data_hero, update_relationship_data_hero
+    update_addit_data_hero, update_bio_data_hero, update_relationship_data_hero, \
+    update_image_hero
 from django.urls import path
 
 
@@ -22,4 +23,5 @@ urlpatterns = [
     path('update_additional_info/', update_addit_data_hero, name='update_addit_data_hero'),
     path('update_bio_info/', update_bio_data_hero, name='update_bio_data_hero'),
     path('update_relationship_info/', update_relationship_data_hero, name='update_relationship_data_hero'),
+    path('update_image_hero/', update_image_hero, name='update_image_hero'),
 ]
