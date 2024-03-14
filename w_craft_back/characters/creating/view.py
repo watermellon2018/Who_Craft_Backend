@@ -1,5 +1,6 @@
 from rest_framework import status
 
+from w_craft_back.characters.creating.utils import check_exist_project
 from w_craft_back.models import MenuFolder
 
 import base64
@@ -210,11 +211,50 @@ def select_by_id(request):
 
 
 @api_view(['POST'])
+def update_personal_info(request):
+    try:
+        logger.info('Обновляем личную информацию о пользователе')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        name_hero = params['name']
+        if name_hero is None or name_hero == '':
+            logger.error('Не указано имя героя')
+            raise JsonResponse({'error': 'Не указано имя героя'}, status=500)
+        logger.info('Имя героя корректно')
+
+        hero.first_name = name_hero
+        hero.last_name = params['lastName']
+        hero.middle_name = params['middleName']
+        hero.birth_date = params['dob']
+        hero.birth_place = params['town']
+        hero.save()
+
+        logger.info('Личные настройки обновлены')
+
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
 def create_hero(request):
     try:
         logger.info('Задаем настройки нового персонажа, которого хотим создать')
         params = request.data['data']
-        logger.info(params)
 
         try:
             project_id = params['projectId']
