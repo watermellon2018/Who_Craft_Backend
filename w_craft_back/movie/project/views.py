@@ -1,3 +1,6 @@
+from django.core.exceptions import ObjectDoesNotExist
+
+from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project.models import Project, Genre, Audience
 
 import base64
@@ -15,14 +18,19 @@ logger = logging.getLogger(__name__)
 
 @api_view(['GET'])
 def get_list_projects(request):
-    try:
-        # todo:: add user id
-        logger.info('Изменение имени персонажа')
-        projects_list = Project.objects.all()
-        logger.info('Объекты получены')
+    user_token = request.GET.get('token_user')
+    cur_user = UserKey.objects.get(key=user_token)
+    logger.info('Пользователь ', cur_user.key)
 
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    try:
+        logger.info('Запрос на получение объектов')
+        projects_list = Project.objects.filter(user=cur_user)
+
+        logger.info('Объекты получены')
+    except ObjectDoesNotExist:
+        # Обработка случая, когда объект не найден
+        logger.info('Проекты для пользователя не найдены')
+        return JsonResponse([], safe=False, status=200)
 
     def build_project_list(proj):
         try:
@@ -45,11 +53,15 @@ def get_list_projects(request):
 
 @api_view(['GET'])
 def delete_project(request):
+    user_token = request.GET.get('token_user')
+    cur_user = UserKey.objects.get(key=user_token)
+
+
     try:
         logger.info('Удаление проекта')
         id = request.GET.get('id')
         # todo:: add user id
-        project = Project.objects.get(id=id)
+        project = Project.objects.get(id=id, user=cur_user)
         project.delete()
         logger.info('Проект удален!')
 
@@ -72,6 +84,10 @@ class ProjectView(APIView):
         logger.info('Создаем проект')
         data = request.data['data']
 
+        user_token = data['token_user']
+        cur_user = UserKey.objects.get(key=user_token)
+        logger.info(cur_user.user)
+
         title: str = data['title']
         genre_list: list = data['genre']
         audience_list: list = data['audience']
@@ -88,6 +104,7 @@ class ProjectView(APIView):
                      'format': format,
                      'annot': annot,
                      'desc': desc,
+                     'user': cur_user,
                      }
         if 'image' in data.keys():
             logger.info('Пользователь загрузил постер для своего проекта')
@@ -100,6 +117,7 @@ class ProjectView(APIView):
 
         obj = Project.objects.create(**arguments)
 
+
         genre_objs = Genre.objects.filter(translit__in=genre_list)
         obj.genre.set(genre_objs)
 
@@ -107,5 +125,5 @@ class ProjectView(APIView):
         obj.audience.set(audience_objs)
 
         logger.info('Проект создан!')
-
-        return HttpResponse(status=status.HTTP_200_OK)
+        return JsonResponse({'project_id': obj.id}, status=200)
+        # return HttpResponse(status=status.HTTP_200_OK)
