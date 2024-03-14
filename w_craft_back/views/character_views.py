@@ -3,7 +3,7 @@ from w_craft_back.models import MenuFolder, ItemFolder
 
 import logging
 
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from mptt.templatetags.mptt_tags import cache_tree_children
 from rest_framework.decorators import api_view
 from rest_framework.views import APIView
@@ -29,8 +29,7 @@ def rename_character(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-    return JsonResponse({'message': 'Object created successfully'},
-                        status=200)
+    return HttpResponse(status=200)
 
 
 @api_view(['POST'])
@@ -40,12 +39,12 @@ def create_character(request):
 
     user_token = request.data['token_user']
     cur_user = UserKey.objects.get(key=user_token)
-    logger.info('Пользователь ', cur_user.key)
+    logger.info(f'Пользователь {cur_user.key}')
 
     project_name = request.data['projectTitle']
     logger.info(project_name)
     cur_project = Project.objects.get(title=project_name)
-    logger.info('Персонаж из проекта', cur_project.title)
+    logger.info(f'Персонаж из проекта {cur_project.title}')
 
 
     name = request.data['name']
@@ -77,9 +76,7 @@ def create_character(request):
         logger.error('Неправильный тип элемента в дереве персонажей')
         return JsonResponse({'message': 'Not correct element in tree of characters'}, status=500)
 
-
-
-    return JsonResponse({'message': 'Object created successfully'}, status=200)
+    return HttpResponse(status=200)
 
 
 class CharacterTree(APIView):
@@ -90,7 +87,6 @@ class CharacterTree(APIView):
             id_to_delete = request.data.get('id')
             model_to_delete = MenuFolder.objects.get(key=id_to_delete)
             model_to_delete.delete()
-            logger.info('Удален: ' + str(model_to_delete))
 
             return JsonResponse({'message': 'Object deleted successfully'}, status=200)
 
@@ -132,4 +128,4 @@ class CharacterTree(APIView):
 
         tree_json = [build_tree(node) for node in tree]
 
-        return JsonResponse(tree_json, safe=False)
+        return JsonResponse(tree_json, safe=False, status=200)

@@ -1,8 +1,5 @@
 from rest_framework import status
 
-from w_craft_back.characters.creating.utils import check_exist_project
-from w_craft_back.models import MenuFolder
-
 import base64
 import logging
 
@@ -16,34 +13,6 @@ from w_craft_back.characters.creating.models import Character, \
     ProfessionHobbies, TalentsAbilities
 
 logger = logging.getLogger(__name__)
-
-
-# изменить параметры
-
-
-# @api_view(['GET'])
-# def delete_by_project(request):
-#     try:
-#         logger.info('Удаление персонажа по id')
-#
-#         project_id = request.GET.get('projectId')
-#         cur_project = Project.objects.get(id=project_id)
-#         heroes_to_delete = Character.objects.filter(project=cur_project)
-#         heroes_to_delete.delete()
-#
-#         logger.info('Персонаж удален')
-#
-#
-#     except Project.DoesNotExist:
-#         logger.error('Проект для которого создается персонаж, не найден')
-#         return JsonResponse(
-#             {'error': 'Object with specified ID does not exist'},
-#             status=404)
-#
-#     except Exception as e:
-#         return JsonResponse({'error': str(e)}, status=500)
-#
-#     return HttpResponse(status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -101,7 +70,6 @@ def select_hero_by_id(request):
         except ValueError:
             img_obj = None
         resp['image'] = img_obj
-
         logger.info('Изображение вытащено')
 
         data = GoalsMotivation.objects.get(character=hero)
@@ -210,8 +178,6 @@ def select_by_id(request):
     return JsonResponse(obj, safe=False, status=200)
 
 
-
-
 @api_view(['POST'])
 def create_hero(request):
     try:
@@ -245,8 +211,22 @@ def create_hero(request):
         argument['birth_date'] = params['dob']
         argument['birth_place'] = params['town']
 
-        logger.info('Личные настройки указаны')
+        image_data = params['image']
+        if image_data is None or image_data == '':
+            logger.error('Нет постера для проекта')
+        if ';base64,' not in image_data:
+            logger.error('Это не изображение')
+        else:
+            format, imgstr = image_data.split(';base64,')
+            ext = format.split('/')[-1]
+            argument['photo'] = ContentFile(base64.b64decode(imgstr),
+                                            name='{}/{}/{}/{}'.format(user_id,
+                                                                      name_project,
+                                                                      name_hero,
+                                                                      ext))
+            logger.info('Изображение загружено')
 
+        logger.info('Личные настройки указаны')
         obj = Character.objects.create(**argument)
 
         argument = {'character': obj,
@@ -295,34 +275,9 @@ def create_hero(request):
         logger.info('Объект физических характеристик создан')
         logger.info('Второстепенные настройки персонажа зарегестрированы')
 
-        argument = {'project': cur_project,
-                    'photo': '',
-                    'first_name': name_hero,
-                    'last_name': params['lastName'],
-                    'middle_name': params['middleName'],
-                    'birth_date': params['dob'],
-                    'birth_place': params['town']
-                    }
 
-        image_data = params['image']
-        if image_data is None or image_data == '':
-            logger.error('Нет постера для проекта')
-        if ';base64,' not in image_data:
-            logger.error('Это не изображение')
-        else:
-            format, imgstr = image_data.split(';base64,')
-            ext = format.split('/')[-1]
-            argument['photo'] = ContentFile(base64.b64decode(imgstr),
-                                            name='{}/{}/{}/{}'.format(user_id,
-                                                                      name_project,
-                                                                      name_hero,
-                                                                      ext))
-            logger.info('Изображение загружено')
-
-        Character.objects.create(**argument)
         logger.info('Персонаж создан')
+        return HttpResponse(status=200)
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-    return JsonResponse({'message': 'Object created successfully'},
-                        status=200)
