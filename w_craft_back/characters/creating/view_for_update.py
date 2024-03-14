@@ -249,7 +249,7 @@ def update_development_data_hero(request):
         logger.info('Герой для которого нужно обновить информацию найден')
 
         data = GoalsMotivation.objects.get(character=hero)
-        data.character_development = params['development']
+        data.character_development = params['data']
         data.save()
 
         logger.info('Поле развитие персонажа обновлено')
@@ -280,7 +280,7 @@ def update_addit_data_hero(request):
         logger.info('Герой для которого нужно обновить информацию найден')
 
         data = BiographyRelationships.objects.get(character=hero)
-        data.addit_info = params['additInfo']
+        data.addit_info = params['data']
         data.save()
 
         logger.info('Поле дополнительная информация о персонаже обновлено')
@@ -311,7 +311,7 @@ def update_bio_data_hero(request):
         logger.info('Герой для которого нужно обновить информацию найден')
 
         data = BiographyRelationships.objects.get(character=hero)
-        data.biography = params['bio']
+        data.biography = params['data']
         data.save()
 
         logger.info('Поле биография персонажа обновлено')
@@ -341,7 +341,7 @@ def update_relationship_data_hero(request):
         logger.info('Герой для которого нужно обновить информацию найден')
 
         data = BiographyRelationships.objects.get(character=hero)
-        data.relationships_with_others = params['relationship']
+        data.relationships_with_others = params['data']
         data.save()
 
         logger.info('Поле обновлено')
