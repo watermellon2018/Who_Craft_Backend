@@ -194,3 +194,157 @@ def update_identity_data_hero(request):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+def update_psyho_data_hero(request):
+    try:
+        logger.info('Обновляем поле внутренние конфликты персонажа')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = PersonalityTraits.objects.get(character=hero)
+        data.inner_conflicts = params['insideConflict']
+        data.save()
+
+        logger.info('Внутренние конфилкты героя обновлены')
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+def update_development_data_hero(request):
+    try:
+        logger.info('Обновляем поле развитие персонажа')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = GoalsMotivation.objects.get(character=hero)
+        data.character_development = params['development']
+        data.save()
+
+        logger.info('Поле развитие персонажа обновлено')
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+def update_addit_data_hero(request):
+    try:
+        logger.info('Обновляем поле дополнительная информация о персонаже')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = BiographyRelationships.objects.get(character=hero)
+        data.addit_info = params['additInfo']
+        data.save()
+
+        logger.info('Поле дополнительная информация о персонаже обновлено')
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+def update_bio_data_hero(request):
+    try:
+        logger.info('Обновляем поле биография персонажа')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = BiographyRelationships.objects.get(character=hero)
+        data.biography = params['bio']
+        data.save()
+
+        logger.info('Поле биография персонажа обновлено')
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['POST'])
+def update_relationship_data_hero(request):
+    try:
+        logger.info('Обновляем поле отношения персонажа с другими героями')
+        params = request.data['data']
+        logger.info(params)
+
+        try:
+            cur_project = check_exist_project(params['projectId'])
+        except Project.DoesNotExist:
+            logger.error('Проект для которого создается персонаж, не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        hero_id = params['characterId']
+        hero = Character.objects.get(id=hero_id, project=cur_project)
+        logger.info('Герой для которого нужно обновить информацию найден')
+
+        data = BiographyRelationships.objects.get(character=hero)
+        data.relationships_with_others = params['relationship']
+        data.save()
+
+        logger.info('Поле обновлено')
+        return HttpResponse(status=200)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
