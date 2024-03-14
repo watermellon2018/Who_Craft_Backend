@@ -59,3 +59,4 @@ local_settings.py
 
 # Windows
 Thumbs.db
+/w_craft_back/migrations/__init__.py
