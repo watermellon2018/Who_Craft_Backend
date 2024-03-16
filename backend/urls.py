@@ -22,8 +22,8 @@ from django.conf.urls.static import static
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/character/', include('w_craft_back.characters.display_tree.urls')),
-    path('api/generate/', include('w_craft_back.urls.urls')),
-    path('api/auth/', include('w_craft_back.urls.urls')),
+    path('api/generate/', include('w_craft_back.auth.urls')),
+    path('api/auth/', include('w_craft_back.auth.urls')),
     path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
     path('api/projects/', include('w_craft_back.movie.project.urls')),
     path('api/projects/hero/', include('w_craft_back.characters.creating.urls')),

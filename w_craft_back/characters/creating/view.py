@@ -29,8 +29,11 @@ def delete_hero_by_id(request):
                 {'error': 'Object with specified ID does not exist'},
                 status=404)
 
+        logger.info("Ищем персонажа")
         character_id = request.GET.get('characterId')
+        logger.info(character_id)
         hero = Character.objects.get(project=cur_project, id=character_id)
+        logger.info(hero)
         hero.delete()
         logger.info('Персонаж удален')
 
@@ -277,7 +280,7 @@ def create_hero(request):
 
 
         logger.info('Персонаж создан')
-        return HttpResponse(status=200)
+        return JsonResponse({'heroId': obj.id}, status=200)
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

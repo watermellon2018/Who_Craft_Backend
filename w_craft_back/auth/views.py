@@ -4,6 +4,7 @@ import uuid
 from django.contrib.auth import authenticate
 from django.http import HttpResponse, JsonResponse
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -17,8 +18,11 @@ logger = logging.getLogger(__name__)
 class RegistrationView(APIView):
     def post(self, request):
         serializer = UserSerializer(data=request.data)
+        logger.info(serializer)
         if serializer.is_valid():
-            user = serializer.save()
+            logger.info('valid')
+            user = serializer.save(last_login=timezone.now())
+            logger.info('save')
             key = uuid.uuid4()
             UserKey.objects.create(user=user, key=key)
             return JsonResponse({'token': key}, safe=False,
