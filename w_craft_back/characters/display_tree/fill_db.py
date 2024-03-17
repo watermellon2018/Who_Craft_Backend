@@ -1,38 +1,58 @@
-# import django
-# django.setup()
-# from w_craft_back.characters.display_tree.models import MenuFolder, ItemFolder
-#
-# main_characters_folder = MenuFolder.objects.create(name="Main characters", is_folder=True)
-# secondary_characters_folder = MenuFolder.objects.create(name="Secondary characters", is_folder=True)
-#
-# # Создание вложенных папок
-# small_characters_folder = MenuFolder.objects.create(name="Little", is_folder=True, parent=main_characters_folder)
-# teen_characters_folder = MenuFolder.objects.create(name="Teenagers", is_folder=True, parent=main_characters_folder)
-# young_characters_folder = MenuFolder.objects.create(name="Young", is_folder=True, parent=main_characters_folder)
-# mature_characters_folder = MenuFolder.objects.create(name="Adult", is_folder=True, parent=main_characters_folder)
-#
-# # Создание персонажей
-# zhena_character = ItemFolder.objects.create(name="Zhenya", is_folder=False)
-# kolya_character = ItemFolder.objects.create(name="Koly", is_folder=False)
-#
-# # Связывание персонажей с соответствующими папками
-# zhena_character.parent = small_characters_folder
-# zhena_character.save()
-#
-# kolya_character.parent = small_characters_folder
-# kolya_character.save()
-#
-# # Второстепенные персонажи
-# secondary_character1 = ItemFolder.objects.create(name="Secondary characters 1", is_folder=False)
-# secondary_character2 = ItemFolder.objects.create(name="Secondary characters 2", is_folder=False)
-# secondary_character3 = ItemFolder.objects.create(name="Secondary characters 3", is_folder=False)
-#
-# # Связывание второстепенных персонажей с главной папкой
-# secondary_character1.parent = secondary_characters_folder
-# secondary_character1.save()
-#
-# secondary_character2.parent = secondary_characters_folder
-# secondary_character2.save()
-#
-# secondary_character3.parent = secondary_characters_folder
-# secondary_character3.save()
+# INSERT INTO yourapp_genre (name, translit) VALUES
+# ('Драма', 'drama'),
+# ('Комедия', 'comedy'),
+# ('Боевик', 'boevik'),
+# ('Триллер', 'triller'),
+# ('Ужасы', 'horror'),
+# ('Фантастика', 'fantastika'),
+# ('Приключения', 'priklyucheniya'),
+# ('Мелодрама', 'melodrama'),
+# ('Криминал', 'kriminal'),
+# ('Вестерн', 'vestern'),
+# ('Мультфильм', 'multfilm'),
+# ('Документальный', 'dokumentalnyy'),
+# ('Исторический', 'istoricheskiy'),
+# ('Фэнтези', 'fantaziya'),
+# ('Романтика', 'romantika'),
+# ('Военный', 'voennyy'),
+# ('Детектив', 'detektiv'),
+# ('Музыкальный', 'muzykalnyy'),
+# ('Спорт', 'sport'),
+# ('Нуар', 'nuar'),
+# ('Короткометражный', 'korotkometrazhnyy'),
+# ('Экспериментальный', 'eksperimentalnyy'),
+# ('Художественный', 'hudozhestvennyy'),
+# ('Научно-популярный', 'nauchnopopulyarnyy'),
+# ('Биография', 'biografiya'),
+# ('Детский', 'detskiy'),
+# ('Семейный', 'semeynyy'),
+# ('Аниме', 'anime'),
+# ('Игровой', 'igrovoy'),
+# ('Авангардный', 'avangardnyy'),
+# ('Экшн', 'ekshn'),
+# ('Психологический', 'psikhologicheskiy'),
+# ('Мистика', 'mistika'),
+# ('Фильм-нуар', 'film-nuar'),
+# ('Политический', 'politicheskiy'),
+# ('Сатира', 'satira'),
+# ('Трагедия', 'tragediya'),
+# ('Фильм о проблемах подростков', 'film-o-problemax-podrostkov'),
+# ('Черная комедия', 'chernaya-komediya'),
+# ('Эпический', 'epicheskiy'),
+# ('Фильм о взрослении', 'film-o-vzroslenii'),
+# ('Супергеройский', 'supergeroyskiy'),
+# ('Фильм о шпионаже', 'film-o-shpionazhe'),
+# ('Драмеди', 'dramedi'),
+# ('Фильм о путешествиях', 'film-o-puteshestviyakh'),
+# ('Фильм о рекламе', 'film-o-reklame'),
+# ('Фильм о религии', 'film-o-religii');
+
+
+
+# INSERT INTO yourappname_audience (name, translit) VALUES
+# ('Дети', 'children'),
+# ('Подростки', 'teenagers'),
+# ('Молодежь', 'youth'),
+# ('Взрослые', 'adults'),
+# ('Пожилые люди', 'elderly');
+
