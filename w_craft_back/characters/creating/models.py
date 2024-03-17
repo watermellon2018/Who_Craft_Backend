@@ -12,8 +12,15 @@ def validate_birth_date(value):
 
 
 class Character(models.Model):
+    VALUE_CHOICES = [
+        ('main', 'Главный'),
+        ('seconder', 'Второстепенный'),
+        ('episode', 'Эпизодический'),
+    ]
+
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     photo = models.ImageField(upload_to='project/hero/promo/')
+    type = models.CharField(max_length=50, choices=VALUE_CHOICES, default='seconder')
     first_name = models.CharField(max_length=100, default='')
     last_name = models.CharField(max_length=100, default='')
     middle_name = models.CharField(max_length=100, default='')
