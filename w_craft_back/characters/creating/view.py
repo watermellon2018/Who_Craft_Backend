@@ -59,6 +59,7 @@ def select_hero_by_id(request):
         hero = Character.objects.get(project=cur_project, id=character_id)
 
         resp = {
+            'type': hero.type,
             'name': hero.first_name,
             'lastName': hero.last_name,
             'middleName': hero.middle_name,
@@ -209,6 +210,7 @@ def create_hero(request):
             raise JsonResponse({'error': 'Не указано имя героя'}, status=500)
 
         argument['first_name'] = name_hero
+        argument['type'] = params['type']
         argument['last_name'] = params['lastName']
         argument['middle_name'] = params['middleName']
         argument['birth_date'] = params['dob']

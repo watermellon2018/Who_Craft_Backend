@@ -40,6 +40,7 @@ def update_personal_info(request):
         logger.info('Имя героя корректно')
 
         hero.first_name = name_hero
+        hero.type = params['type']
         hero.last_name = params['lastName']
         hero.middle_name = params['middleName']
         hero.birth_date = params['dob']
