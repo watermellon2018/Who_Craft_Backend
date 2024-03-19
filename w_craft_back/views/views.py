@@ -1,11 +1,13 @@
 import base64
+import io
 import logging
 import os
 import requests
 
+
 from django.http import HttpResponse
 from dotenv import load_dotenv
-from io import BytesIO
+from PIL import Image
 from huggingface_hub.inference_api import InferenceApi
 from rest_framework.views import APIView
 
@@ -162,6 +164,16 @@ def query_model_hub(data, prompt):
 
 def img2response(image):
     f = image['b64_json']  # nvidia
+
+    image_data = base64.b64decode(f)
+
+    image = Image.open(io.BytesIO(image_data))
+    resized_image = image.resize((500, 500))
+    logger.info(resized_image.size)
+    buffered = io.BytesIO()
+    resized_image.save(buffered, format="PNG")
+    f = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
     # buffer: BytesIO = BytesIO()
     # image.save(buffer, format='PNG')
     # f = base64.b64encode(buffer.getvalue()).decode('utf-8')
