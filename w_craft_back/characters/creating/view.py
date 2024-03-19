@@ -7,6 +7,8 @@ from django.core.files.base import ContentFile
 from django.forms.models import model_to_dict
 from django.http import JsonResponse, HttpResponse
 from rest_framework.decorators import api_view
+
+from w_craft_back.characters.display_tree.models import ItemFolder
 from w_craft_back.movie.project.models import Project
 from w_craft_back.characters.creating.models import Character, \
     GoalsMotivation, BiographyRelationships, PersonalityTraits, \
@@ -169,6 +171,34 @@ def select_all(request):
 
 
 @api_view(['GET'])
+def select_img_by_id(request):
+    try:
+        logger.info('Получение изображения персонажа')
+
+        hero_id = request.GET.get('characterId')
+        obj = ItemFolder.objects.filter(key=hero_id)
+        if len(obj) == 0:
+            logger.info('Такого персонажа нет')
+            return JsonResponse({'status': False}, safe=False, status=200)
+
+        hero = obj[0].hero
+        hero = model_to_dict(hero)
+
+        try:
+            with open(hero['photo'].path, "rb") as img_file:
+                img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+            logger.info('Изображение получено.')
+            return JsonResponse({'status': True, 'image': img_obj}, safe=False, status=200)
+        except ValueError:
+            logger.info('Изображение нет.')
+            return HttpResponse(status=500)
+
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
 def select_by_id(request):
     try:
         logger.info('Вывод информации о персонаже')
@@ -180,7 +210,6 @@ def select_by_id(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse(obj, safe=False, status=200)
-
 
 @api_view(['POST'])
 def create_hero(request):
@@ -225,7 +254,7 @@ def create_hero(request):
             format, imgstr = image_data.split(';base64,')
             ext = format.split('/')[-1]
             argument['photo'] = ContentFile(base64.b64decode(imgstr),
-                                            name='{}/{}/{}/{}'.format(user_id,
+                                            name='{}/{}/{}/poster.png'.format(user_id,
                                                                       name_project,
                                                                       name_hero,
                                                                       ext))
