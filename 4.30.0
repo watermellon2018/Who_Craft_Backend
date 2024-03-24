@@ -1,0 +1,27 @@
+Collecting transformers
+  Downloading transformers-4.38.1-py3-none-any.whl.metadata (131 kB)
+     ------------------------------------ 131.1/131.1 kB 551.7 kB/s eta 0:00:00
+Requirement already satisfied: filelock in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (3.13.1)
+Requirement already satisfied: huggingface-hub<1.0,>=0.19.3 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (0.21.1)
+Requirement already satisfied: numpy>=1.17 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (1.26.2)
+Requirement already satisfied: packaging>=20.0 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (23.2)
+Requirement already satisfied: pyyaml>=5.1 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (6.0.1)
+Requirement already satisfied: regex!=2019.12.17 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (2023.12.25)
+Requirement already satisfied: requests in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (2.31.0)
+Collecting tokenizers<0.19,>=0.14 (from transformers)
+  Downloading tokenizers-0.15.2-cp310-none-win_amd64.whl.metadata (6.8 kB)
+Requirement already satisfied: safetensors>=0.4.1 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (0.4.2)
+Requirement already satisfied: tqdm>=4.27 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from transformers) (4.66.1)
+Requirement already satisfied: fsspec>=2023.5.0 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from huggingface-hub<1.0,>=0.19.3->transformers) (2023.12.1)
+Requirement already satisfied: typing-extensions>=3.7.4.3 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from huggingface-hub<1.0,>=0.19.3->transformers) (4.9.0)
+Requirement already satisfied: colorama in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from tqdm>=4.27->transformers) (0.4.6)
+Requirement already satisfied: charset-normalizer<4,>=2 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from requests->transformers) (3.3.2)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from requests->transformers) (3.6)
+Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from requests->transformers) (2.1.0)
+Requirement already satisfied: certifi>=2017.4.17 in c:\users\stepa\miniconda3\envs\basic\lib\site-packages (from requests->transformers) (2023.11.17)
+Downloading transformers-4.38.1-py3-none-any.whl (8.5 MB)
+   ---------------------------------------- 8.5/8.5 MB 2.6 MB/s eta 0:00:00
+Downloading tokenizers-0.15.2-cp310-none-win_amd64.whl (2.2 MB)
+   ---------------------------------------- 2.2/2.2 MB 2.1 MB/s eta 0:00:00
+Installing collected packages: tokenizers, transformers
+Successfully installed tokenizers-0.15.2 transformers-4.38.1

@@ -1,11 +1,13 @@
 import base64
+import io
 import logging
 import os
 import requests
 
+
 from django.http import HttpResponse
 from dotenv import load_dotenv
-from io import BytesIO
+from PIL import Image
 from huggingface_hub.inference_api import InferenceApi
 from rest_framework.views import APIView
 
@@ -36,6 +38,7 @@ class GenerateImageView(APIView):
         body = params.get('body', None)
         appearance = params.get('appearance', None)
         character = params.get('character', None)
+        style_gen = params.get('styleGen')
 
         prompt_global = 'Generate a movie poster one character'
         begin_len_prompt = len(prompt_global)
@@ -71,7 +74,8 @@ class GenerateImageView(APIView):
             prompt_global = prompt_global[:begin_len_prompt] + \
                             substring + prompt_global[begin_len_prompt:]
 
-        prompt_global += 'Style realistic.'
+
+        prompt_global += f'. Style: {style_gen}.'
         logger.info(f'Prompt person: ${prompt_global}')
 
         image = create_image_from_string(prompt_global)
@@ -86,6 +90,7 @@ class GenerateImageUndefinedView(APIView):
 
         desc = params.get('description', None)
         character = params.get('character', None)
+        style_gen = params.get('styleGen')
 
         prompt_global = 'Generate a movie poster one character'
         begin_len_prompt = len(prompt_global)
@@ -105,6 +110,8 @@ class GenerateImageUndefinedView(APIView):
             prompt_global = prompt_global[:begin_len_prompt] + \
                             substring + prompt_global[begin_len_prompt:]
 
+        prompt_global += f'. Style: {style_gen}.'
+
         logger.info(f'Prompt undefined: ${prompt_global}')
 
         image = create_image_from_string(prompt_global)
@@ -121,6 +128,7 @@ class GenerateImg2ImgView(APIView):
         url = params.get('url')
         prompt = params.get('prompt', '')
         character = params.get('character', None)
+        style_gen = params.get('styleGen')
 
         prompt_global = 'Generate a movie poster one character by image. '
         prompt_global += prompt
@@ -129,6 +137,7 @@ class GenerateImg2ImgView(APIView):
             else 'The appearance should reflect the character. ' \
                  'Personality: {}. '.format(character)
         prompt_global += prompt_character
+        prompt_global += f'. Style: {style_gen}.'
 
         logger.info(f'Prompt img2img: ${prompt_global}')
 
@@ -155,6 +164,16 @@ def query_model_hub(data, prompt):
 
 def img2response(image):
     f = image['b64_json']  # nvidia
+
+    image_data = base64.b64decode(f)
+
+    image = Image.open(io.BytesIO(image_data))
+    resized_image = image.resize((500, 500))
+    logger.info(resized_image.size)
+    buffered = io.BytesIO()
+    resized_image.save(buffered, format="PNG")
+    f = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
     # buffer: BytesIO = BytesIO()
     # image.save(buffer, format='PNG')
     # f = base64.b64encode(buffer.getvalue()).decode('utf-8')
