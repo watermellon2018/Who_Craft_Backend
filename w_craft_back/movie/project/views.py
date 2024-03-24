@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def get_list_projects(request):
     user_token = request.GET.get('token_user')
     cur_user = UserKey.objects.get(key=user_token)
-    logger.info('Пользователь ', cur_user.key)
+    logger.info(f'Пользователь {cur_user.key}')
 
     try:
         logger.info('Запрос на получение объектов')
