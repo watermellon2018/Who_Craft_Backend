@@ -148,28 +148,39 @@ class GenerateImg2ImgView(APIView):
 
 
 def query_model_hub(data, prompt):
+
     logger.info('Begin generate...')
     # repo_id = "stabilityai/stable-diffusion-xl-refiner-1.0"
-    repo_id: str = "stabilityai/stable-diffusion-xl-refiner-0.9"
+    # repo_id: str = "stabilityai/stable-diffusion-xl-refiner-0.9"
+    repo_id: str = 'instruction-tuning-sd/cartoonizer' # прикольная / делаем мультик
     inference = InferenceApi(repo_id=repo_id,
                              token=TOKEN_HUGGING)
+
+
     image = inference(data=data, inputs=prompt)
-    if isinstance(image, dict):
+    if isinstance(image, dict) and 'error' in image.keys():
         logger.error('Model dont running!')
-    logger.info('Image was generated with shape: ', image.size)
+        logger.error(image['error'])
+        return HttpResponse(status=500)
+
+    logger.info(f'Image was generated with shape: {image.size}')
 
     response: HttpResponse = img2response(image)
     return response
 
 
 def img2response(image):
-    f = image['b64_json']  # nvidia
+    if isinstance(image, Image.Image):
+        resized_image = image
+    elif isinstance(image, dict):
+        print(image.keys())
+        f = image['b64_json']  # nvidia
+        image_data = base64.b64decode(f)
 
-    image_data = base64.b64decode(f)
+        image = Image.open(io.BytesIO(image_data))
+        resized_image = image.resize((500, 500))
+        logger.info(resized_image.size)
 
-    image = Image.open(io.BytesIO(image_data))
-    resized_image = image.resize((500, 500))
-    logger.info(resized_image.size)
     buffered = io.BytesIO()
     resized_image.save(buffered, format="PNG")
     f = base64.b64encode(buffered.getvalue()).decode('utf-8')
