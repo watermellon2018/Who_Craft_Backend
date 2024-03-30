@@ -358,7 +358,6 @@ def update_image_hero(request):
     try:
         logger.info('Обновляем поле фото героя')
         params = request.data['data']
-        logger.info(params)
 
         try:
             cur_project = check_exist_project(params['projectId'])
@@ -371,9 +370,8 @@ def update_image_hero(request):
         hero_id = params['characterId']
         hero = Character.objects.get(id=hero_id, project=cur_project)
         logger.info('Герой для которого нужно обновить информацию найден')
-
-        data = Character.objects.get(character=hero)
-        image_data = params['image']
+        data = Character.objects.get(id=hero.id)
+        image_data = params['data']
 
         if image_data is None or image_data == '':
             logger.error('Нет изображения для героя')
