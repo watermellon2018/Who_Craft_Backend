@@ -121,6 +121,7 @@ def update_info_project(request):
         project = Project.objects.get(id=id, user=cur_user)
         logger.info(f'Проект найден id: {id}')
 
+
         if not data['image'] == '':
             title = data['title']
             logger.info('Пользователь загрузил постер для своего проекта')
@@ -129,7 +130,7 @@ def update_info_project(request):
             ext = format.split('/')[-1]
             image_data = ContentFile(base64.b64decode(imgstr),
                                      name='{}.{}'.format(title, ext))  # TODO:: add user id!
-            project.src = image_data
+            project.image = image_data
 
         project.title = data['title']
         project.format = data['format']
@@ -141,7 +142,6 @@ def update_info_project(request):
         project.audience.set(audience_objs)
 
         genre_list: list = data['genre']
-        print(genre_list)
         genre_objs = Genre.objects.filter(translit__in=genre_list)
         project.genre.set(genre_objs)
 
