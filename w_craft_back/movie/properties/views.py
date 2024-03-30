@@ -15,10 +15,9 @@ class GenreView(APIView):
         items = Genre.objects.all()
 
         def build_json(node):
-            value = translit(node.name)
             response = {
                 'key': 'genre_movie_' + node.name,
-                'value': value,
+                'value': node.translit,
                 'name': node.name,
             }
 
