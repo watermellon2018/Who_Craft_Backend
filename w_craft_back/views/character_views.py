@@ -52,8 +52,6 @@ def create_character(request):
             {'error': 'Project with specified ID does not exist'},
             status=404)
 
-
-
     name = request.data['name']
     id = request.data['id']
     id = str(id)
@@ -129,15 +127,14 @@ class CharacterTree(APIView):
                 {'error': 'Object with specified ID does not exist'},
                 status=404)
 
-        items = MenuFolder.objects.filter(cur_project=cur_project)
-
+        items = ItemFolder.objects.filter(cur_project=cur_project)
         tree = cache_tree_children(items)
 
         # Преобразуем дерево в формат JSON
         def build_tree(node):
             response = {
                 'id': str(node.key),
-                'key': node.name+'_'+str(node.id),
+                'key': node.hero.id, #node.name+'_'+str(node.id),
                 'name': node.name,
             }
             children = [build_tree(child) for child in node.get_children()]
