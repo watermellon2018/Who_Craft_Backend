@@ -78,17 +78,17 @@ def select_project_info(request):
     user_token = request.GET.get('token_user')
     cur_user = UserKey.objects.get(key=user_token)
 
-
     try:
         logger.info('Select запрос проекта')
         id = request.GET.get('id')
-        project = Project.objects.get(id=id, user=cur_user)
+        project = Project.objects.prefetch_related('genre', 'audience').get(id=id, user=cur_user)
         logger.info(f'Проект найден id: {id}')
         img_obj = None
         if not project.image == '':
             with open(project.image.path, "rb") as img_file:
                 img_obj = base64.b64encode(img_file.read()).decode('utf-8')
                 logger.info('Постер найден')
+        logger.info(project.image.url)
 
         response = {
             'id': project.id,
@@ -98,14 +98,16 @@ def select_project_info(request):
             'audience': [aud.name for aud in project.audience.all()],
             'annot': project.annot,
             'desc': project.desc,
-            'src': img_obj,
+            'src': img_obj
         }
         return JsonResponse(response, safe=False, status=200)
 
     except Project.DoesNotExist:
+        logger.error('Object with specified ID does not exist')
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
 
     except Exception as e:
+        logger.error(str(e))
         return JsonResponse({'error': str(e)}, status=500)
 
 

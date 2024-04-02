@@ -4,6 +4,7 @@ import base64
 import logging
 
 from django.core.files.base import ContentFile
+from django.core.exceptions import ObjectDoesNotExist
 from django.forms.models import model_to_dict
 from django.http import JsonResponse, HttpResponse
 from rest_framework.decorators import api_view
@@ -135,29 +136,28 @@ def select_all(request):
                 {'error': 'Object with specified ID does not exist'},
                 status=404)
 
-        objs = Character.objects.filter(project=cur_project)
+        objs = Character.objects.filter(project=cur_project).select_related('project')
+        heros = []
 
-        def build_response(hero):
-            hero_serls = model_to_dict(hero)
-            logger.info(hero_serls)
-            title = hero_serls['first_name'] + ' ' + hero_serls['last_name']
-
+        for hero in objs:
+            title = f"{hero.first_name} {hero.last_name}"
+            img_obj = None
             try:
-                with open(hero_serls['photo'].path, "rb") as img_file:
+                with open(hero.photo.path, "rb") as img_file:
                     img_obj = base64.b64encode(img_file.read()).decode('utf-8')
-            except ValueError:
-                img_obj = None
+            except FileNotFoundError:
+                pass
 
-            response = {
-                'id': str(hero_serls['id']),
-                'key': hero_serls['first_name'] + '_' + str(hero_serls['id']),
+            hero_response = {
+                'id': str(hero.id),
+                'key': f"{hero.first_name}_{hero.id}",
                 'name': title,
                 'src': img_obj
             }
-            logger.info(response)
-            return response
+            heros.append(hero_response)
+            logger.info(f'Герой {hero.id} обработан')
 
-        heros = [build_response(hero) for hero in objs]
+
         if len(heros) == 0:
             logger.info('В данном проекте отсутствуют персонажи')
         else:
@@ -165,7 +165,8 @@ def select_all(request):
 
         return JsonResponse(heros, safe=False, status=200)
 
-
+    except ObjectDoesNotExist:
+        return JsonResponse({'error': 'Object does not exist'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
