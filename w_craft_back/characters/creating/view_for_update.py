@@ -1,5 +1,6 @@
 import base64
 import logging
+import uuid
 
 from django.core.files.base import ContentFile
 from django.http import JsonResponse, HttpResponse
@@ -190,7 +191,6 @@ def update_identity_data_hero(request):
         data.speech_patterns = params['speech']
         data.save()
 
-
         logger.info('Характеристики идентифицирующие персонажа обновлены')
         return HttpResponse(status=200)
 
@@ -322,6 +322,7 @@ def update_bio_data_hero(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+
 @api_view(['POST'])
 def update_relationship_data_hero(request):
     try:
@@ -380,17 +381,20 @@ def update_image_hero(request):
             logger.error('Это не изображение')
             return HttpResponse(status=500)
 
-        name_hero = Character.first_name
+        name_hero = hero.first_name
         name_project = cur_project.title
         user_id = cur_project.user_id
         format, imgstr = image_data.split(';base64,')
         ext = format.split('/')[-1]
-        new_img = ContentFile(base64.b64decode(imgstr),
-                                            name='{}/{}/{}/{}'.format(user_id,
-                                                                      name_project,
-                                                                      name_hero,
-                                                                      ext))
+        unique_id = uuid.uuid4()
+        path = '{}/{}/{}/{}.{}'.format(user_id,
+                                           name_project,
+                                           name_hero,
+                                           unique_id,
+                                           ext)
+        new_img = ContentFile(base64.b64decode(imgstr), name=path)
         data.photo = new_img
+        data.save()
         logger.info('Фото обновлено')
 
         return HttpResponse(status=200)
