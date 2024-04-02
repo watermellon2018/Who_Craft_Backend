@@ -39,16 +39,16 @@ class LoginView(APIView):
         logger.info(f'User {username} tried to log')
 
         user = authenticate(username=username, password=password)
-        if user is not None:
-            # Создаем токен
-            refresh = RefreshToken.for_user(user)
+        user = UserKey.objects.get(user=user)
+        from django.forms.models import model_to_dict
 
-            # Возвращаем токен в ответе
-            return Response({
-                'status': 'success',
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-            })
+        key = user.key
 
-        else:
+        if user is None:
             return Response({'status': 'fail'})
+        else:
+            return Response({
+                'status': 200,
+                'refresh': str(key),
+                'access': str(key),
+            })
