@@ -119,7 +119,7 @@ class CharacterTree(APIView):
         logger.info('Получаем список персонажей для отображение на дереве')
         try:
             project_id = request.GET.get('projectId')
-            logger.info(project_id)
+            logger.info(f'Проект номер {project_id}')
             cur_project = Project.objects.get(id=project_id)
         except Project.DoesNotExist:
             logger.error('Проект не найден')
