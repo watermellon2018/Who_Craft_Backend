@@ -371,6 +371,7 @@ def update_image_hero(request):
         hero_id = params['characterId']
         hero = Character.objects.get(id=hero_id, project=cur_project)
         logger.info('Герой для которого нужно обновить информацию найден')
+
         data = Character.objects.get(id=hero.id)
         image_data = params['data']
 
@@ -381,21 +382,27 @@ def update_image_hero(request):
             logger.error('Это не изображение')
             return HttpResponse(status=500)
 
-        name_hero = hero.first_name
+        old_photo = hero.photo
         name_project = cur_project.title
         user_id = cur_project.user_id
         format, imgstr = image_data.split(';base64,')
         ext = format.split('/')[-1]
         unique_id = uuid.uuid4()
         path = '{}/{}/{}/{}.{}'.format(user_id,
-                                           name_project,
-                                           name_hero,
-                                           unique_id,
-                                           ext)
+                                       name_project,
+                                       hero.first_name,
+                                       unique_id,
+                                       ext)
         new_img = ContentFile(base64.b64decode(imgstr), name=path)
+
+        if old_photo:
+            old_photo.delete()
         data.photo = new_img
         data.save()
         logger.info('Фото обновлено')
+
+
+
 
         return HttpResponse(status=200)
 

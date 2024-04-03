@@ -1,3 +1,5 @@
+import uuid
+
 from rest_framework import status
 
 import base64
@@ -142,6 +144,8 @@ def select_all(request):
         for hero in objs:
             title = f"{hero.first_name} {hero.last_name}"
             img_obj = None
+            print(hero.photo)
+            # print(hero.photo.path)
             try:
                 with open(hero.photo.path, "rb") as img_file:
                     img_obj = base64.b64encode(img_file.read()).decode('utf-8')
@@ -156,7 +160,6 @@ def select_all(request):
             }
             heros.append(hero_response)
             logger.info(f'Герой {hero.id} обработан')
-
 
         if len(heros) == 0:
             logger.info('В данном проекте отсутствуют персонажи')
@@ -212,6 +215,7 @@ def select_by_id(request):
         return JsonResponse({'error': str(e)}, status=500)
     return JsonResponse(obj, safe=False, status=200)
 
+
 @api_view(['POST'])
 def create_hero(request):
     try:
@@ -254,11 +258,13 @@ def create_hero(request):
         else:
             format, imgstr = image_data.split(';base64,')
             ext = format.split('/')[-1]
+            unique_id = uuid.uuid4()
             argument['photo'] = ContentFile(base64.b64decode(imgstr),
-                                            name='{}/{}/{}/poster.png'.format(user_id,
-                                                                      name_project,
-                                                                      name_hero,
-                                                                      ext))
+                                            name='{}/{}/{}/{}.{}'.format(user_id,
+                                                                         name_project,
+                                                                         name_hero,
+                                                                         unique_id,
+                                                                         ext))
             logger.info('Изображение загружено')
 
         logger.info('Личные настройки указаны')
@@ -309,7 +315,6 @@ def create_hero(request):
 
         logger.info('Объект физических характеристик создан')
         logger.info('Второстепенные настройки персонажа зарегестрированы')
-
 
         logger.info('Персонаж создан')
         return JsonResponse({'heroId': obj.id}, status=200)
