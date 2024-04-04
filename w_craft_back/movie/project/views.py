@@ -1,11 +1,16 @@
-from django.core.exceptions import ObjectDoesNotExist
+import uuid
+
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project.models import Project, Genre, Audience
 
 import base64
 import logging
+import os
 
+from django.core.exceptions import ObjectDoesNotExist
+from django.db.models.signals import pre_delete
+from django.dispatch import receiver
 from django.http import JsonResponse, HttpResponse
 from django.core.files.base import ContentFile
 from rest_framework import status
@@ -28,7 +33,6 @@ def get_list_projects(request):
 
         logger.info('Объекты получены')
     except ObjectDoesNotExist:
-        # Обработка случая, когда объект не найден
         logger.info('Проекты для пользователя не найдены')
         return JsonResponse([], safe=False, status=200)
 
@@ -110,7 +114,13 @@ def select_project_info(request):
         logger.error(str(e))
         return JsonResponse({'error': str(e)}, status=500)
 
-
+@receiver(pre_delete, sender=Project)
+def delete_related_file(sender, instance, **kwargs):
+    directory_path = os.path.dirname(instance.image.path)
+    if instance.image:
+        instance.image.delete(False)
+    if os.path.exists(directory_path) and len(os.listdir(directory_path)) == 0:
+        os.rmdir(directory_path)
 @api_view(['POST'])
 def update_info_project(request):
     logger.info('Обновить информацию о проекте')
@@ -125,13 +135,25 @@ def update_info_project(request):
 
 
         if not data['image'] == '':
+            old_photo = project.image
+            if old_photo:
+                old_photo.delete()
+
             title = data['title']
             logger.info('Пользователь загрузил постер для своего проекта')
             image_data = data['image']
+
             format, imgstr = image_data.split(';base64,')
             ext = format.split('/')[-1]
-            image_data = ContentFile(base64.b64decode(imgstr),
-                                     name='{}.{}'.format(title, ext))  # TODO:: add user id!
+
+            user_id = project.user_id
+            unique_id = uuid.uuid4()
+            path = '{}/{}/{}.{}'.format(user_id,
+                                        title,
+                                        unique_id,
+                                        ext)
+
+            image_data = ContentFile(base64.b64decode(imgstr),  name=path)
             project.image = image_data
 
         project.title = data['title']
@@ -195,8 +217,13 @@ class ProjectView(APIView):
             image_data = data['image']
             format, imgstr = image_data.split(';base64,')
             ext = format.split('/')[-1]
-            image_data = ContentFile(base64.b64decode(imgstr),
-                                     name='{}.{}'.format(title, ext))  # TODO:: add user id!
+            unique_id = uuid.uuid4()
+            path = '{}/{}/{}.{}'.format(cur_user.id,
+                                        title,
+                                        unique_id,
+                                        ext)
+
+            image_data = ContentFile(base64.b64decode(imgstr), name=path)
             arguments['image'] = image_data
 
         obj = Project.objects.create(**arguments)

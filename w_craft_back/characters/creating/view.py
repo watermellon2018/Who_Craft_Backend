@@ -1,14 +1,15 @@
-import uuid
-
-from rest_framework import status
-
 import base64
 import logging
+import os
+import uuid
 
 from django.core.files.base import ContentFile
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models.signals import pre_delete
+from django.dispatch import receiver
 from django.forms.models import model_to_dict
 from django.http import JsonResponse, HttpResponse
+from rest_framework import status
 from rest_framework.decorators import api_view
 
 from w_craft_back.characters.display_tree.models import ItemFolder
@@ -19,6 +20,13 @@ from w_craft_back.characters.creating.models import Character, \
 
 logger = logging.getLogger(__name__)
 
+@receiver(pre_delete, sender=Character)
+def delete_related_file(sender, instance, **kwargs):
+    directory_path = os.path.dirname(instance.photo.path)
+    if instance.photo:
+        instance.photo.delete(False)
+    if os.path.exists(directory_path) and len(os.listdir(directory_path)) == 0:
+        os.rmdir(directory_path)
 
 @api_view(['GET'])
 def delete_hero_by_id(request):
@@ -144,8 +152,6 @@ def select_all(request):
         for hero in objs:
             title = f"{hero.first_name} {hero.last_name}"
             img_obj = None
-            print(hero.photo)
-            # print(hero.photo.path)
             try:
                 with open(hero.photo.path, "rb") as img_file:
                     img_obj = base64.b64encode(img_file.read()).decode('utf-8')
