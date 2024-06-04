@@ -1,5 +1,5 @@
 from w_craft_back.characters.creating.view import create_hero, select_all,\
-    select_hero_by_id, delete_hero_by_id, select_img_by_id
+    select_hero_by_id, delete_hero_by_id, select_img_by_id, select_N
 from w_craft_back.characters.creating.view_for_update import update_personal_info,\
     update_motivate_info, update_inside_data_hero, update_competition_data_hero,\
     update_identity_data_hero, update_psyho_data_hero, update_development_data_hero,\
@@ -13,6 +13,7 @@ urlpatterns = [
     path('delete_by_id/', delete_hero_by_id, name='delete_hero_by_id'),
     path('create/', create_hero, name='create_hero'),
     path('select/', select_all, name='select_all'),
+    path('select_N/', select_N, name='select_N'),
     path('select_img_by_id/', select_img_by_id, name='select_img_by_id'),
     path('update_personal_info/', update_personal_info, name='update_personal_info'),
     path('update_motivate_info/', update_motivate_info, name='update_motivate_info'),

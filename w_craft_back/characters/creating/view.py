@@ -162,7 +162,8 @@ def select_all(request):
                 'id': str(hero.id),
                 'key': f"{hero.first_name}_{hero.id}",
                 'name': title,
-                'src': img_obj
+                'src': img_obj,
+                'role': hero.type,
             }
             heros.append(hero_response)
             logger.info(f'Герой {hero.id} обработан')
@@ -325,5 +326,53 @@ def create_hero(request):
         logger.info('Персонаж создан')
         return JsonResponse({'heroId': obj.id}, status=200)
 
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@api_view(['GET'])
+def select_N(request):
+    try:
+        logger.info('Возвращаем N персонаей проекта')
+
+        try:
+            project_id = request.GET.get('projectId')
+            cur_project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            logger.error('Проект не найден')
+            return JsonResponse(
+                {'error': 'Object with specified ID does not exist'},
+                status=404)
+
+        count = request.GET.get('N')
+        objs = Character.objects.filter(project=cur_project).order_by('-created_at')[:count].select_related('project')
+        heros = []
+
+        for hero in objs:
+            title = f"{hero.first_name} {hero.last_name}"
+            img_obj = None
+            try:
+                with open(hero.photo.path, "rb") as img_file:
+                    img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+            except FileNotFoundError:
+                pass
+
+            hero_response = {
+                'id': str(hero.id),
+                'key': f"{hero.first_name}_{hero.id}",
+                'name': title,
+                'src': img_obj
+            }
+            heros.append(hero_response)
+            logger.info(f'Герой {hero.id} обработан')
+
+        if len(heros) == 0:
+            logger.info('В данном проекте отсутствуют персонажи')
+        else:
+            logger.info('Персонажи найдены')
+
+        return JsonResponse(heros, safe=False, status=200)
+
+    except ObjectDoesNotExist:
+        return JsonResponse({'error': 'Object does not exist'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)

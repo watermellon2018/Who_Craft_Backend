@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
     path('api/projects/', include('w_craft_back.movie.project.urls')),
     path('api/projects/hero/', include('w_craft_back.characters.creating.urls')),
+    path('api/projects/hero/graph/', include('w_craft_back.characters.pages.graph.urls')),
 
 ]
 urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
