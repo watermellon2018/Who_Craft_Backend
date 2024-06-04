@@ -1,23 +1,11 @@
-import base64
 import logging
-import os
-import uuid
 from w_craft_back.auth.models import UserKey
-from django.core.files.base import ContentFile
-from django.core.exceptions import ObjectDoesNotExist
-from django.db.models.signals import pre_delete
-from django.dispatch import receiver
-from django.forms.models import model_to_dict
 from django.http import JsonResponse, HttpResponse
 from rest_framework import status
 from rest_framework.decorators import api_view
 
-from w_craft_back.characters.display_tree.models import ItemFolder
 from w_craft_back.characters.pages.graph.model import RelationshipType, GraphEdge
 from w_craft_back.movie.project.models import Project
-from w_craft_back.characters.creating.models import Character, \
-    GoalsMotivation, BiographyRelationships, PersonalityTraits, \
-    ProfessionHobbies, TalentsAbilities
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +124,18 @@ def delete_edge(request):
         to_node = request.GET.get('to')
 
 
-        obj = GraphEdge.objects.get(user=cur_user,
+        obj = GraphEdge.objects.filter(user=cur_user,
                                     project=project,
                                     from_node=from_node,
                                     to_node=to_node,
                                     )
+        if len(obj) == 0:
+            obj = GraphEdge.objects.filter(user=cur_user,
+                                           project=project,
+                                           from_node=to_node,
+                                           to_node=from_node,
+                                           )
+        obj = obj[0]
         logger.info(obj)
         obj.delete()
         logger.info('Ребро в графе взаимоотношений персонажей удалено')
