@@ -128,22 +128,20 @@ def delete_edge(request):
 
     try:
         logger.info('Select запрос проекта')
-        id = request.GET.get('id')
+        id = request.GET.get('projectId')
         project = Project.objects.get(id=id, user=cur_user)
         logger.info(f'Проект найден id: {id}')
 
-        from_node = request.GET.get('from_node')
-        to_node = request.GET.get('to_node')
+        from_node = request.GET.get('from')
+        to_node = request.GET.get('to')
 
-        label = request.GET.get('label')
-        relationship = RelationshipType.objects.filter(name=label)[0]
-        logger.info('Тип отношений {}'.format(relationship.name))
 
         obj = GraphEdge.objects.get(user=cur_user,
                                     project=project,
                                     from_node=from_node,
                                     to_node=to_node,
-                                    label=relationship)
+                                    )
+        logger.info(obj)
         obj.delete()
         logger.info('Ребро в графе взаимоотношений персонажей удалено')
 
@@ -163,23 +161,29 @@ def update_info_edge(request):
     cur_user = UserKey.objects.get(key=user_token)
 
     try:
-        id = data['id']
+        id = data['projectId']
         project = Project.objects.get(id=id, user=cur_user)
         logger.info(f'Проект найден id: {id}')
-        from_node = request.GET.get('from_node')
-        to_node = request.GET.get('to_node')
+        from_node = data['from']
+        to_node = data['to']
 
-        obj = GraphEdge.objects.get(user=cur_user,
+        obj = GraphEdge.objects.filter(user=cur_user,
                               project=project,
                               from_node=from_node,
                               to_node=to_node)
+        if len(obj) == 0:
+            obj = GraphEdge.objects.filter(user=cur_user,
+                                           project=project,
+                                           from_node=to_node,
+                                           to_node=from_node)
+        obj = obj[0]
         logger.info('Объект найден {}'.format(obj.label))
 
-        label = request.GET.get('label')
-        relationship = RelationshipType.objects.filter(name=label)[0]
+        label = data['label']
+        relationship = RelationshipType.objects.filter(translit=label)[0]
         logger.info('Тип отношений {}'.format(relationship.name))
 
-        obj.label.set(relationship)
+        obj.label = relationship
         obj.save()
 
         return HttpResponse(status=status.HTTP_200_OK)
