@@ -6,7 +6,7 @@ charset-normalizer==3.3.2
 colorama==0.4.6
 diffusers @ git+https://github.com/kashif/diffusers.git@9785210afe81e387a65dd6594818077ddb8e86dc
 distlib==0.3.8
-Django @ file:///C:/Users/BUILDE~1/AppData/Local/Temp/abs_eeor5o9jj8/croots/recipe/django_1661292534510/work
+Django>=3.0,<4.0
 django-cors-headers==4.3.1
 django-js-asset==2.2.0
 django-mptt==0.16.0
@@ -40,14 +40,14 @@ PyYAML==6.0.1
 regex==2023.12.25
 requests==2.31.0
 safetensors==0.4.2
-sqlparse @ file:///C:/b/abs_88361ub_qu/croot/sqlparse_1690904577514/work
+sqlparse
 sympy==1.12
 tokenizers==0.15.2
-torch==2.2.1+cu121
+torch==1.10.0
 tqdm==4.66.1
 transformers==4.38.1
 typing_extensions==4.9.0
-tzdata @ file:///croot/python-tzdata_1690578112552/work
+tzdata
 urllib3==2.1.0
 virtualenv==20.25.0
 zipp==3.17.0
