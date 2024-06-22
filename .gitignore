@@ -21,6 +21,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+static/
 eggs/
 .eggs/
 lib/
@@ -39,7 +40,7 @@ wheels/
 *.pyc
 db.sqlite3
 db.sqlite3-journal
-media/
+static/media/
 *.pyc
 local_settings.py
 
@@ -58,3 +59,4 @@ local_settings.py
 
 # Windows
 Thumbs.db
+/w_craft_back/migrations/__init__.py
