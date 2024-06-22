@@ -16,8 +16,19 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+from django.conf import settings
+from django.conf.urls.static import static
+
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('w_craft_back.urls')),
+    path('api/character/', include('w_craft_back.characters.display_tree.urls')),
+    path('api/generate/', include('w_craft_back.auth.urls')),
+    path('api/auth/', include('w_craft_back.auth.urls')),
+    path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
+    path('api/projects/', include('w_craft_back.movie.project.urls')),
+    path('api/projects/hero/', include('w_craft_back.characters.creating.urls')),
+    path('api/projects/hero/graph/', include('w_craft_back.characters.pages.graph.urls')),
 
 ]
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
