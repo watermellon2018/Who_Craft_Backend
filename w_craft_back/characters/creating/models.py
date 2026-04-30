@@ -2,6 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from w_craft_back.movie.project.models import Project
 
+
 def validate_birth_date(value):
     try:
         day, month, year = map(int, value.split('.'))
@@ -19,7 +20,7 @@ class Character(models.Model):
     ]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
-    photo = models.ImageField(upload_to='project/hero/promo/')
+    photo = models.ImageField(upload_to='project/hero/promo/', blank=True, default='')
     type = models.CharField(max_length=50, choices=VALUE_CHOICES, default='seconder')
     first_name = models.CharField(max_length=100, default='')
     last_name = models.CharField(max_length=100, default='')
@@ -27,6 +28,8 @@ class Character(models.Model):
     birth_date = models.CharField(max_length=25, default='',
                                   validators=[validate_birth_date])
     birth_place = models.CharField(max_length=100, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class GoalsMotivation(models.Model):

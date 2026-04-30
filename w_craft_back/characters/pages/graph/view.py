@@ -1,9 +1,10 @@
 import logging
-from w_craft_back.auth.models import UserKey
+
 from django.http import JsonResponse, HttpResponse
 from rest_framework import status
 from rest_framework.decorators import api_view
 
+from w_craft_back.auth.models import UserKey
 from w_craft_back.characters.pages.graph.model import RelationshipType, GraphEdge
 from w_craft_back.movie.project.models import Project
 
@@ -83,18 +84,17 @@ def add_edges(request):
         logger.info(f'Проект найден id: {id}')
 
         label = data['label']
-        relationship = RelationshipType.objects.filter(translit=label)[0]
+        relationship = RelationshipType.objects.get(translit=label)
 
         logger.info('Тип отношений {}'.format(relationship.name))
 
-        arguments = {
-            'user': cur_user,
-            'project': project,
-            'to_node': data['to'],
-            'from_node': data['from'],
-            'label': relationship,
-        }
-        GraphEdge.objects.create(**arguments)
+        GraphEdge.objects.update_or_create(
+            user=cur_user,
+            project=project,
+            from_node=data['from'],
+            to_node=data['to'],
+            defaults={'label': relationship},
+        )
         logger.info('Ребро в графе персонажей создано')
 
         return HttpResponse(status=status.HTTP_200_OK)
@@ -102,6 +102,10 @@ def add_edges(request):
     except Project.DoesNotExist:
         logger.error('Object with specified ID does not exist')
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=500)
+
+    except RelationshipType.DoesNotExist:
+        logger.error('Relationship type does not exist')
+        return JsonResponse({'error': 'Relationship type does not exist'}, status=400)
 
     except Exception as e:
         logger.error(str(e))
@@ -123,19 +127,21 @@ def delete_edge(request):
         from_node = request.GET.get('from')
         to_node = request.GET.get('to')
 
-
-        obj = GraphEdge.objects.filter(user=cur_user,
-                                    project=project,
-                                    from_node=from_node,
-                                    to_node=to_node,
-                                    )
-        if len(obj) == 0:
-            obj = GraphEdge.objects.filter(user=cur_user,
-                                           project=project,
-                                           from_node=to_node,
-                                           to_node=from_node,
-                                           )
-        obj = obj[0]
+        obj = GraphEdge.objects.filter(
+            user=cur_user,
+            project=project,
+            from_node=from_node,
+            to_node=to_node,
+        ).first()
+        if obj is None:
+            obj = GraphEdge.objects.filter(
+                user=cur_user,
+                project=project,
+                from_node=to_node,
+                to_node=from_node,
+            ).first()
+        if obj is None:
+            return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
         logger.info(obj)
         obj.delete()
         logger.info('Ребро в графе взаимоотношений персонажей удалено')
@@ -147,6 +153,7 @@ def delete_edge(request):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
 
 @api_view(['POST'])
 def update_info_edge(request):
@@ -162,20 +169,25 @@ def update_info_edge(request):
         from_node = data['from']
         to_node = data['to']
 
-        obj = GraphEdge.objects.filter(user=cur_user,
-                              project=project,
-                              from_node=from_node,
-                              to_node=to_node)
-        if len(obj) == 0:
-            obj = GraphEdge.objects.filter(user=cur_user,
-                                           project=project,
-                                           from_node=to_node,
-                                           to_node=from_node)
-        obj = obj[0]
+        obj = GraphEdge.objects.filter(
+            user=cur_user,
+            project=project,
+            from_node=from_node,
+            to_node=to_node,
+        ).first()
+        if obj is None:
+            obj = GraphEdge.objects.filter(
+                user=cur_user,
+                project=project,
+                from_node=to_node,
+                to_node=from_node,
+            ).first()
+        if obj is None:
+            return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
         logger.info('Объект найден {}'.format(obj.label))
 
         label = data['label']
-        relationship = RelationshipType.objects.filter(translit=label)[0]
+        relationship = RelationshipType.objects.get(translit=label)
         logger.info('Тип отношений {}'.format(relationship.name))
 
         obj.label = relationship
@@ -185,6 +197,9 @@ def update_info_edge(request):
 
     except Project.DoesNotExist:
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+
+    except RelationshipType.DoesNotExist:
+        return JsonResponse({'error': 'Relationship type does not exist'}, status=400)
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
