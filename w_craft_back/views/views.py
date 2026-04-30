@@ -22,10 +22,6 @@ STABLE_KEY = os.getenv('STABLE_KEY')
 logger = logging.getLogger(__name__)
 
 
-def insert_substring(main_string, substring, index):
-    return main_string[:index] + substring + main_string[index:]
-
-
 class GenerateImageView(APIView):
     def get(self, request):
         params = request.GET
