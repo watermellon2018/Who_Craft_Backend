@@ -6,6 +6,7 @@ from w_craft_back.character_studio.models import (
     CharacterAsset,
     CharacterExpression,
     CharacterGenerationJob,
+    CharacterImage,
     CharacterOutfit,
     CharacterRelationship,
     CharacterRevision,
@@ -28,10 +29,6 @@ class CharacterRepository(BaseRepository):
     def list_project(self, user, project_id, filters=None):
         filters = filters or {}
         queryset = self.for_project_user(user, project_id)
-        if not filters.get("include_archived"):
-            queryset = queryset.exclude(status="archived")
-        if filters.get("status"):
-            queryset = queryset.filter(status=filters["status"])
         if filters.get("role"):
             queryset = queryset.filter(role=filters["role"])
         if filters.get("search"):
@@ -68,6 +65,24 @@ class AssetRepository(BaseRepository):
         asset.is_primary = True
         asset.save(update_fields=["is_primary"])
         return asset
+
+
+class CharacterImageRepository(BaseRepository):
+    model = CharacterImage
+
+    @transaction.atomic
+    def set_active(self, character, image_type, **payload):
+        self.model.objects.filter(
+            character=character,
+            image_type=image_type,
+            is_active=True,
+        ).update(is_active=False)
+        return self.model.objects.create(
+            character=character,
+            image_type=image_type,
+            is_active=True,
+            **payload,
+        )
 
 
 class GenerationJobRepository(BaseRepository):

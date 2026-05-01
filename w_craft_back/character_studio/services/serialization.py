@@ -1,4 +1,5 @@
 from django.forms.models import model_to_dict
+from django.conf import settings
 
 
 def value_to_json(value):
@@ -18,6 +19,20 @@ def model_dict(instance, fields=None):
     return data
 
 
+def public_url(value):
+    if not value or not isinstance(value, str):
+        return value
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    if not value.startswith("/"):
+        return value
+
+    base_url = getattr(settings, "PUBLIC_BASE_URL", "").rstrip("/")
+    if not base_url:
+        return value
+    return f"{base_url}{value}"
+
+
 def appearance_dict(appearance):
     return model_dict(appearance)
 
@@ -27,7 +42,22 @@ def outfit_dict(outfit):
 
 
 def asset_dict(asset):
-    return model_dict(asset)
+    data = model_dict(asset)
+    if data:
+        data["image_url"] = public_url(data.get("image_url"))
+    return data
+
+
+def character_image_dict(image):
+    data = model_dict(image)
+    if data:
+        data["image_id"] = str(image.image_id)
+        data["character_id"] = str(image.character_id)
+        data["asset_id"] = str(image.asset_id) if image.asset_id else None
+        data["image_url"] = public_url(data.get("image_url"))
+        data["created_at"] = value_to_json(image.created_at)
+        data["updated_at"] = value_to_json(image.updated_at)
+    return data
 
 
 def variant_dict(variant):
@@ -37,6 +67,7 @@ def variant_dict(variant):
         data["job_id"] = str(variant.job_id)
         data["character_id"] = str(variant.character_id)
         data["asset_id"] = str(variant.asset_id) if variant.asset_id else None
+        data["image_url"] = public_url(data.get("image_url"))
         data["created_at"] = value_to_json(variant.created_at)
         data["applied_at"] = value_to_json(variant.applied_at)
     return data
@@ -71,8 +102,12 @@ def character_dict(character, include_related=False):
     )
     data["created_at"] = value_to_json(character.created_at)
     data["updated_at"] = value_to_json(character.updated_at)
-    data["archived_at"] = value_to_json(character.archived_at)
     data["locked_at"] = value_to_json(character.locked_at)
+    active_images = character.images.filter(is_active=True).select_related("asset")
+    data["images"] = {
+        image.image_type: character_image_dict(image)
+        for image in active_images
+    }
     if include_related:
         data["appearance"] = appearance_dict(character.active_appearance)
         data["outfits"] = [outfit_dict(outfit) for outfit in character.outfits.filter(archived_at__isnull=True)]
@@ -95,4 +130,3 @@ def job_dict(job, include_variants=True):
     if include_variants:
         data["variants"] = [variant_dict(variant) for variant in job.variants.order_by("variant_index")]
     return data
-

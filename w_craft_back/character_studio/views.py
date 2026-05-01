@@ -53,17 +53,15 @@ def characters_collection(request, project_id):
     service = CharacterService()
     if request.method == "GET":
         filters = {
-            "status": request.GET.get("status"),
             "role": request.GET.get("role"),
             "search": request.GET.get("search"),
-            "include_archived": request.GET.get("include_archived") in ("1", "true", "True"),
         }
         return ok(service.list_project_characters(user, project.id, filters), status=200)
     character = service.create_character(user, project, payload(request))
     return ok(character_dict(character, include_related=True), status=201)
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "PATCH", "DELETE"])
 @handle_errors
 def character_detail(request, project_id, character_id):
     user = get_user_from_request(request)
@@ -71,24 +69,35 @@ def character_detail(request, project_id, character_id):
     if request.method == "GET":
         character = service.get_character(user, project_id, character_id)
         return ok(character_dict(character, include_related=True))
+    if request.method == "DELETE":
+        service.delete_character(user, project_id, character_id)
+        return ok(status=204)
     character = service.update_character(user, project_id, character_id, payload(request))
     return ok(character_dict(character, include_related=True))
 
 
 @api_view(["POST"])
 @handle_errors
-def archive_character(request, project_id, character_id):
-    user = get_user_from_request(request)
-    character = CharacterService().archive_character(user, project_id, character_id)
-    return ok(character_dict(character))
-
-
-@api_view(["POST"])
-@handle_errors
 def generate_initial_variants(request, project_id, character_id):
     user = get_user_from_request(request)
-    job = CharacterGenerationService().create_initial_variants(user, project_id, character_id, payload(request))
-    return ok({"job_id": str(job.job_id), "status": job.status})
+    data = payload(request)
+    service = CharacterGenerationService()
+    if data.get("image_types"):
+        jobs = service.create_initial_image_set(user, project_id, character_id, data)
+        failed = next((job for job in jobs if job.status == "failed"), None)
+        primary_job = failed or (jobs[0] if jobs else None)
+        status = "failed" if failed else "completed"
+        return ok(
+            {
+                "job_id": str(primary_job.job_id) if primary_job else None,
+                "status": status,
+                "error_code": failed.error_code if failed else "",
+                "error_message": failed.error_message if failed else "",
+                "jobs": [generation_job_summary(job) for job in jobs],
+            }
+        )
+    job = service.create_initial_variants(user, project_id, character_id, data)
+    return ok({"job_id": str(job.job_id), "status": job.status, "error_code": job.error_code, "error_message": job.error_message})
 
 
 @api_view(["POST"])
@@ -96,7 +105,17 @@ def generate_initial_variants(request, project_id, character_id):
 def generate_edit_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     job = CharacterGenerationService().generate_edit_variants(user, project_id, character_id, payload(request))
-    return ok({"job_id": str(job.job_id), "status": job.status})
+    return ok({"job_id": str(job.job_id), "status": job.status, "error_code": job.error_code, "error_message": job.error_message})
+
+
+def generation_job_summary(job):
+    return {
+        "job_id": str(job.job_id),
+        "status": job.status,
+        "image_type": job.request_payload.get("image_type"),
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+    }
 
 
 @api_view(["GET"])

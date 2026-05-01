@@ -13,8 +13,17 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 import os
 from pathlib import Path
 
+# Load environment variables from backend/.env (dev convenience).
+# This makes CHARACTER_STUDIO_IMAGE_PROVIDER / GEMINI_API_KEY available to Character Studio services.
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+if load_dotenv:
+    load_dotenv(BASE_DIR / ".env")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
@@ -174,6 +183,7 @@ LOGGING = {
 #     "http://localhost:3000"
 # ]
 
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 STATIC_ROOT = BASE_DIR
 MEDIA_ROOT = BASE_DIR / "static" / "media"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")

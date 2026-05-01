@@ -5,9 +5,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
-from w_craft_back.character_studio.models import CharacterStatus, CharacterType, RevisionChangeType
+from w_craft_back.character_studio.models import CharacterImageType, CharacterType, RevisionChangeType
 from w_craft_back.character_studio.repositories.repositories import (
     AppearanceRepository,
+    CharacterImageRepository,
     CharacterRepository,
     OutfitRepository,
     VariantRepository,
@@ -37,6 +38,7 @@ class CharacterService:
 
     def __init__(self):
         self.characters = CharacterRepository()
+        self.images = CharacterImageRepository()
         self.appearances = AppearanceRepository()
         self.outfits = OutfitRepository()
         self.variants = VariantRepository()
@@ -75,7 +77,7 @@ class CharacterService:
             character_type=payload.get("character_type") or CharacterType.HUMAN,
             role=payload.get("role", ""),
             short_description=payload.get("short_description", ""),
-            age=payload.get("age") or None,
+            age=self._normalized_age(payload.get("age")),
             lifecycle_stage=payload.get("lifecycle_stage", ""),
             gender=payload.get("gender", ""),
             species=payload.get("species") or payload.get("character_type") or "human",
@@ -94,7 +96,7 @@ class CharacterService:
             character,
             RevisionChangeType.INITIAL_CREATE,
             changed_region="full_character",
-            change_summary="Character draft created",
+            change_summary="Character created",
         )
         return character
 
@@ -115,7 +117,6 @@ class CharacterService:
     @transaction.atomic
     def update_character(self, user, project_id, character_id, payload):
         character = self.get_character(user, project_id, character_id)
-        self._ensure_editable(character)
         self._validate_character_type(payload.get("character_type"))
         self._validate_age(payload.get("age"))
         self._validate_style(payload.get("visual_style"))
@@ -131,6 +132,8 @@ class CharacterService:
         updates = {key: payload[key] for key in self.METADATA_FIELDS if key in payload}
         before = character_dict(character, include_related=True)
         for key, value in updates.items():
+            if key == "age":
+                value = self._normalized_age(value)
             setattr(character, key, value)
         character.save()
         appearance_updates = self._appearance_fields_from_payload(payload)
@@ -154,12 +157,9 @@ class CharacterService:
         return character
 
     @transaction.atomic
-    def archive_character(self, user, project_id, character_id):
+    def delete_character(self, user, project_id, character_id):
         character = self.get_character(user, project_id, character_id)
-        character.status = CharacterStatus.ARCHIVED
-        character.archived_at = timezone.now()
-        character.save(update_fields=["status", "archived_at", "updated_at"])
-        return character
+        character.delete()
 
     @transaction.atomic
     def duplicate_character(self, user, project_id, character_id):
@@ -175,7 +175,6 @@ class CharacterService:
     @transaction.atomic
     def lock_identity(self, user, project_id, character_id, payload):
         character = self.get_character(user, project_id, character_id)
-        self._ensure_editable(character)
         if not payload.get("confirm"):
             raise ValidationError("confirm=true is required to lock identity.")
         before = character_dict(character, include_related=True)
@@ -189,7 +188,6 @@ class CharacterService:
         except ObjectDoesNotExist as exc:
             raise NotFoundError("Reference image or appearance not found.") from exc
         character.identity_locked = True
-        character.status = CharacterStatus.IDENTITY_LOCKED
         character.locked_at = timezone.now()
         character.locked_by = user
         character.save()
@@ -205,7 +203,6 @@ class CharacterService:
     @transaction.atomic
     def apply_variant(self, user, project_id, character_id, variant_id, payload):
         character = self.get_character(user, project_id, character_id)
-        self._ensure_editable(character)
         try:
             variant = self.variants.get_for_character(character, variant_id)
         except Exception as exc:
@@ -213,6 +210,7 @@ class CharacterService:
         before = character_dict(character, include_related=True)
         asset = variant.asset
         if asset:
+            image_type = self._image_type_from_payload(payload, variant)
             apply_as = payload.get("apply_as")
             if apply_as == "current_reference":
                 asset.__class__.objects.filter(character=character).update(is_primary=False, is_canonical=False)
@@ -227,7 +225,20 @@ class CharacterService:
             else:
                 asset.is_primary = False
             asset.save(update_fields=["is_primary", "is_canonical"])
-        character.status = CharacterStatus.GENERATED if character.status == CharacterStatus.DRAFT else character.status
+            self.images.set_active(
+                character,
+                image_type,
+                asset=asset,
+                image_url=asset.image_url,
+                storage_path=asset.storage_path,
+                prompt=asset.generation_prompt,
+                seed=asset.seed,
+                generation_params={
+                    "applied_variant_id": str(variant.variant_id),
+                    "source_job_id": str(variant.job_id),
+                    "image_type": image_type,
+                },
+            )
         character.save()
         variant.applied = True
         variant.status = "applied"
@@ -246,10 +257,6 @@ class CharacterService:
         )
         return revision
 
-    def _ensure_editable(self, character):
-        if character.status == CharacterStatus.ARCHIVED:
-            raise ValidationError("Archived characters cannot be edited.")
-
     def _validate_age(self, age):
         if age in (None, ""):
             return
@@ -259,6 +266,11 @@ class CharacterService:
             raise ValidationError("age must be a number.") from exc
         if age_value < 0 or age_value > 130:
             raise ValidationError("age must be between 0 and 130.")
+
+    def _normalized_age(self, age):
+        if age in (None, ""):
+            return None
+        return int(age)
 
     def _validate_style(self, style):
         if not style:
@@ -275,9 +287,24 @@ class CharacterService:
     def _appearance_fields_from_payload(self, payload):
         mapping = {
             "appearance_description": "appearance_prompt",
+            "face_shape": "face_shape",
+            "skin_tone": "skin_tone",
+            "eye_shape": "eye_shape",
+            "eye_color": "eye_color",
+            "eyebrow_shape": "eyebrow_shape",
+            "nose_shape": "nose_shape",
+            "lips_shape": "lips_shape",
+            "jawline": "jawline",
+            "hair_length": "hair_length",
+            "hair_style": "hair_style",
+            "hair_color": "hair_color",
+            "height": "height",
+            "body_type": "body_type",
             "body_structure": "body_structure",
             "surface_material": "surface_material",
             "special_features": "special_features",
+            "posture": "posture",
+            "distinctive_features": "distinctive_features",
         }
         result = {}
         for source, target in mapping.items():
@@ -295,3 +322,18 @@ class CharacterService:
             payload.get("confirm_identity_change") or payload.get("create_version")
         ):
             raise IdentityLockedError()
+
+    def _image_type_from_payload(self, payload, variant):
+        value = payload.get("image_type")
+        if not value and variant.asset and variant.asset.metadata:
+            value = variant.asset.metadata.get("image_type")
+        if not value and variant.job and variant.job.request_payload:
+            value = variant.job.request_payload.get("image_type")
+        normalized = {
+            "fullBody": CharacterImageType.FULL_BODY,
+            "sheet": CharacterImageType.REFERENCE_SHEET,
+            "character_sheet": CharacterImageType.REFERENCE_SHEET,
+        }.get(value, value or CharacterImageType.PORTRAIT)
+        if normalized not in CharacterImageType.values:
+            raise ValidationError("image_type is invalid.")
+        return normalized

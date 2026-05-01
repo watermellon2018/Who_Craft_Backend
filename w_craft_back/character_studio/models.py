@@ -7,14 +7,6 @@ from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project.models import Project
 
 
-class CharacterStatus(models.TextChoices):
-    DRAFT = "draft", "Draft"
-    GENERATED = "generated", "Generated"
-    APPROVED = "approved", "Approved"
-    IDENTITY_LOCKED = "identity_locked", "Identity locked"
-    ARCHIVED = "archived", "Archived"
-
-
 class CharacterType(models.TextChoices):
     HUMAN = "human", "Human"
     ANIMAL = "animal", "Animal"
@@ -31,6 +23,8 @@ class CharacterAssetType(models.TextChoices):
     CANONICAL_REFERENCE = "canonical_reference", "Canonical reference"
     PORTRAIT = "portrait", "Portrait"
     FULL_BODY = "full_body", "Full body"
+    SCENE = "scene", "Scene"
+    REFERENCE_SHEET = "reference_sheet", "Reference sheet"
     FACE_CLOSEUP = "face_closeup", "Face closeup"
     FRONT_VIEW = "front_view", "Front view"
     SIDE_VIEW = "side_view", "Side view"
@@ -63,6 +57,13 @@ class CharacterRegion(models.TextChoices):
     OUTFIT = "outfit", "Outfit"
     STYLE = "style", "Style"
     FULL_CHARACTER = "full_character", "Full character"
+
+
+class CharacterImageType(models.TextChoices):
+    PORTRAIT = "portrait", "Portrait"
+    FULL_BODY = "full_body", "Full body"
+    SCENE = "scene", "Scene"
+    REFERENCE_SHEET = "reference_sheet", "Reference sheet"
 
 
 class VariantStatus(models.TextChoices):
@@ -108,7 +109,6 @@ class StudioCharacter(models.Model):
     gender = models.CharField(max_length=100, blank=True, default="")
     species = models.CharField(max_length=100, default="human")
     visual_style = models.CharField(max_length=100, blank=True, default="")
-    status = models.CharField(max_length=32, choices=CharacterStatus.choices, default=CharacterStatus.DRAFT)
     identity_locked = models.BooleanField(default=False)
     locked_at = models.DateTimeField(null=True, blank=True)
     locked_by = models.ForeignKey(
@@ -158,15 +158,12 @@ class StudioCharacter(models.Model):
     backstory = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    archived_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "characters"
         indexes = [
             models.Index(fields=["project"], name="characters_project_95fdda_idx"),
             models.Index(fields=["user"], name="characters_user_id_6db2fe_idx"),
-            models.Index(fields=["status"], name="characters_status_49cf2d_idx"),
-            models.Index(fields=["project", "status"], name="characters_project_cac846_idx"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -325,6 +322,46 @@ class CharacterAsset(models.Model):
         ]
 
 
+class CharacterImage(models.Model):
+    image_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    character = models.ForeignKey(StudioCharacter, on_delete=models.CASCADE, related_name="images")
+    asset = models.ForeignKey(
+        CharacterAsset,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="character_images",
+    )
+    image_type = models.CharField(max_length=32, choices=CharacterImageType.choices)
+    image_url = models.TextField(blank=True, default="")
+    storage_path = models.TextField(blank=True, default="")
+    prompt = models.TextField(blank=True, default="")
+    seed = models.BigIntegerField(null=True, blank=True)
+    generation_params = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "character_images"
+        indexes = [
+            models.Index(fields=["character"], name="character_i_charact_72dd68_idx"),
+            models.Index(fields=["image_type"], name="character_i_type_055e38_idx"),
+            models.Index(fields=["character", "image_type"], name="character_i_char_ty_6ce70d_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["character", "image_type"],
+                condition=Q(is_active=True),
+                name="uniq_active_character_image_type",
+            ),
+            models.CheckConstraint(
+                check=Q(image_type__in=CharacterImageType.values),
+                name="chk_character_image_type",
+            ),
+        ]
+
+
 class CharacterGenerationJob(models.Model):
     job_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     character = models.ForeignKey(StudioCharacter, on_delete=models.CASCADE, related_name="generation_jobs")
@@ -363,7 +400,7 @@ class CharacterGenerationJob(models.Model):
                 name="chk_generation_progress_range",
             ),
             models.CheckConstraint(
-                check=Q(variant_count__gte=3) & Q(variant_count__lte=4),
+                check=Q(variant_count__in=[1, 2, 4]),
                 name="chk_generation_variant_count",
             ),
         ]
