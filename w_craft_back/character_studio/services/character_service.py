@@ -1,11 +1,14 @@
+import logging
 from copy import deepcopy
 
 from django.core.exceptions import ObjectDoesNotExist
+
+logger = logging.getLogger(__name__)
 from django.db import transaction
 from django.utils import timezone
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
-from w_craft_back.character_studio.models import CharacterImageType, CharacterType, RevisionChangeType
+from w_craft_back.character_studio.models import CharacterImageType, CharacterRole, CharacterStatus, CharacterType, RevisionChangeType
 from w_craft_back.character_studio.repositories.repositories import (
     AppearanceRepository,
     CharacterImageRepository,
@@ -51,7 +54,13 @@ class CharacterService:
         name = (payload.get("name") or "").strip()
         if not name:
             raise ValidationError("name is required.")
+        desc = payload.get("appearance_description") or ""
+        logger.info(
+            "create_character: user=%s project_id=%s name_len=%d desc_len=%d",
+            getattr(user, "id", None), getattr(project, "id", None), len(name), len(desc),
+        )
         self._validate_character_type(payload.get("character_type"))
+        self._validate_role(payload.get("role"))
         self._validate_age(payload.get("age"))
         self._validate_style(payload.get("visual_style"))
         self.safety.validate_user_text(
@@ -86,6 +95,7 @@ class CharacterService:
             speech_style=payload.get("speech_style", ""),
             backstory=payload.get("backstory", ""),
         )
+        logger.info("create_character: created character_id=%s", character.character_id)
         appearance_payload = parsed.get("appearance", {})
         appearance_payload.update(self._appearance_fields_from_payload(payload))
         appearance_payload.update(payload.get("appearance") or {})
@@ -118,6 +128,7 @@ class CharacterService:
     def update_character(self, user, project_id, character_id, payload):
         character = self.get_character(user, project_id, character_id)
         self._validate_character_type(payload.get("character_type"))
+        self._validate_role(payload.get("role"))
         self._validate_age(payload.get("age"))
         self._validate_style(payload.get("visual_style"))
         self.safety.validate_user_text(
@@ -239,6 +250,8 @@ class CharacterService:
                     "image_type": image_type,
                 },
             )
+        if image_type == CharacterImageType.PORTRAIT:
+            character.status = CharacterStatus.ACTIVE
         character.save()
         variant.applied = True
         variant.status = "applied"
@@ -283,6 +296,12 @@ class CharacterService:
             return
         if character_type not in CharacterType.values:
             raise ValidationError("character_type is invalid.")
+
+    def _validate_role(self, role):
+        if not role:
+            return
+        if role not in CharacterRole.values:
+            raise ValidationError(f"role is invalid. Allowed values: {', '.join(CharacterRole.values)}.")
 
     def _appearance_fields_from_payload(self, payload):
         mapping = {

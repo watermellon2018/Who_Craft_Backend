@@ -1,6 +1,10 @@
+import logging
+
 from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view
+
+logger = logging.getLogger(__name__)
 
 from w_craft_back.character_studio.models import CharacterOutfit, CharacterRevision
 from w_craft_back.character_studio.repositories.repositories import OutfitRepository
@@ -37,6 +41,7 @@ def handle_errors(func):
                 status=exc.status_code,
             )
         except Exception as exc:
+            logger.exception("Unhandled error in %s", func.__name__)
             return JsonResponse(
                 {"error_code": "INTERNAL_ERROR", "message": str(exc)},
                 status=500,
@@ -57,7 +62,9 @@ def characters_collection(request, project_id):
             "search": request.GET.get("search"),
         }
         return ok(service.list_project_characters(user, project.id, filters), status=200)
+    logger.info("create_character start: user=%s project_id=%s", user.id, project_id)
     character = service.create_character(user, project, payload(request))
+    logger.info("create_character done: character_id=%s project_id=%s", character.character_id, project_id)
     return ok(character_dict(character, include_related=True), status=201)
 
 
@@ -82,11 +89,13 @@ def generate_initial_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     data = payload(request)
     service = CharacterGenerationService()
+    logger.info("generate_initial_variants start: user=%s project_id=%s character_id=%s", user.id, project_id, character_id)
     if data.get("image_types"):
         jobs = service.create_initial_image_set(user, project_id, character_id, data)
         failed = next((job for job in jobs if job.status == "failed"), None)
         primary_job = failed or (jobs[0] if jobs else None)
         status = "failed" if failed else "completed"
+        logger.info("generate_initial_variants done: job_id=%s status=%s character_id=%s", str(primary_job.job_id) if primary_job else None, status, character_id)
         return ok(
             {
                 "job_id": str(primary_job.job_id) if primary_job else None,
@@ -97,6 +106,7 @@ def generate_initial_variants(request, project_id, character_id):
             }
         )
     job = service.create_initial_variants(user, project_id, character_id, data)
+    logger.info("generate_initial_variants done: job_id=%s status=%s character_id=%s", job.job_id, job.status, character_id)
     return ok({"job_id": str(job.job_id), "status": job.status, "error_code": job.error_code, "error_message": job.error_message})
 
 

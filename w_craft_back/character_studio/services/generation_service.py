@@ -60,19 +60,33 @@ class CharacterGenerationService:
         variant_count = self._validate_variant_count(params.get("variant_count", 4))
         image_type = self._validate_image_type(params.get("image_type") or params.get("preview_type") or CharacterImageType.PORTRAIT)
         region = self.IMAGE_TYPE_TO_REGION[image_type]
-        compiled = self.compiler.compile(
-            project_style=params.get("project_style"),
-            character=character,
-            appearance=character.active_appearance,
-            outfit=character.active_outfit,
-            region=region,
-            controls=params,
-            text_refinement=params.get("text_refinement", ""),
-            preserve=params.get("preserve", {}),
-            identity_locked=character.identity_locked,
-            reference_images=self._reference_ids(character),
-            image_type=image_type,
+        self.logger.info(
+            "create_initial_variants: character_id=%s visual_style=%s variant_count=%d image_type=%s",
+            character.character_id, params.get("visual_style"), variant_count, image_type,
         )
+        if image_type == CharacterImageType.PORTRAIT:
+            # Use strict portrait-only prompt for initial selection variants.
+            # Prevents full-body / scene leakage and locks all user-specified attributes.
+            compiled = self.compiler.compile_initial_portrait_selection(
+                character=character,
+                appearance=character.active_appearance,
+                outfit=character.active_outfit,
+                params=params,
+            )
+        else:
+            compiled = self.compiler.compile(
+                project_style=params.get("project_style"),
+                character=character,
+                appearance=character.active_appearance,
+                outfit=character.active_outfit,
+                region=region,
+                controls=params,
+                text_refinement=params.get("text_refinement", ""),
+                preserve=params.get("preserve", {}),
+                identity_locked=character.identity_locked,
+                reference_images=self._reference_ids(character),
+                image_type=image_type,
+            )
         params = {**params, "image_type": image_type, "activate_image": params.get("activate_image", True)}
         return self._run_job(character, GenerationJobType.INITIAL_VARIANTS, region, variant_count, params, compiled)
 
@@ -167,6 +181,10 @@ class CharacterGenerationService:
         job.progress = 40
         job.started_at = timezone.now()
         job.save()
+        self.logger.info(
+            "_run_job: job_id=%s job_type=%s character_id=%s provider=%s",
+            job.job_id, job_type, character.character_id, provider_name,
+        )
         provider = get_image_provider(provider_name)
         try:
             image_type = request_payload.get("image_type") or CharacterImageType.PORTRAIT
@@ -227,6 +245,7 @@ class CharacterGenerationService:
             job.model_version = provider.model_version
             job.completed_at = timezone.now()
             job.save()
+            self.logger.info("_run_job completed: job_id=%s character_id=%s", job.job_id, character.character_id)
         except Exception as exc:
             self.logger.exception("Character generation failed (provider=%s job_id=%s)", provider_name, job.job_id)
             job.status = GenerationJobStatus.FAILED

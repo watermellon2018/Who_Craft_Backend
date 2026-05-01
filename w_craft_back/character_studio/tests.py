@@ -13,7 +13,7 @@ from requests import HTTPError
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterImage, CharacterOutfit
+from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterGenerationJob, CharacterImage, CharacterOutfit, CharacterStatus
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, SafetyRejectedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
@@ -55,7 +55,7 @@ class CharacterStudioTestCase(TestCase):
                 "name": "Mira",
                 "age": 17,
                 "gender": "girl",
-                "role": "lead",
+                "role": "main",
                 "short_description": "an anxious observant girl",
                 "appearance_description": "green eyes copper hair slim sarcastic",
                 "visual_style": "cinematic_realism",
@@ -86,9 +86,9 @@ class CharacterServiceTests(CharacterStudioTestCase):
             self.user_key,
             self.project.id,
             character.character_id,
-            {"role": "protagonist", "speech_style": "dry"},
+            {"role": "antagonist", "speech_style": "dry"},
         )
-        self.assertEqual(updated.role, "protagonist")
+        self.assertEqual(updated.role, "antagonist")
         self.assertEqual(updated.revisions.count(), 2)
 
     def test_delete_character_removes_record(self):
@@ -610,3 +610,497 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["error_code"], "NOT_FOUND")
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1: Portrait selection preserves character_id and creates CharacterImage
+# ---------------------------------------------------------------------------
+
+
+class PortraitSelectionTests(CharacterStudioTestCase):
+    """After a user selects a portrait variant the editor must find a canonical
+    CharacterImage for the portrait type and the character_id must remain stable."""
+
+    def test_apply_variant_portrait_creates_portrait_image(self):
+        character = self.create_character()
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1, "image_type": "portrait"},
+        )
+        variant = job.variants.first()
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+        self.assertTrue(
+            CharacterImage.objects.filter(
+                character=character, image_type="portrait", is_active=True
+            ).exists(),
+            "No active portrait CharacterImage found after apply_variant with image_type='portrait'",
+        )
+
+    def test_character_id_preserved_after_apply_variant(self):
+        character = self.create_character()
+        original_id = character.character_id
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 1}
+        )
+        variant = job.variants.first()
+        revision = CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            variant.variant_id,
+            {"apply_as": "current_reference"},
+        )
+        character.refresh_from_db()
+        self.assertEqual(character.character_id, original_id)
+        self.assertEqual(str(revision.character_id), str(original_id))
+
+    def test_apply_variant_does_not_create_extra_generation_jobs(self):
+        """apply_variant must NOT trigger any new generation jobs by itself."""
+        character = self.create_character()
+        gen_job = CharacterGenerationService().create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1, "image_type": "portrait"},
+        )
+        variant = gen_job.variants.first()
+        jobs_before = CharacterGenerationJob.objects.filter(character=character).count()
+
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        self.assertEqual(
+            CharacterGenerationJob.objects.filter(character=character).count(),
+            jobs_before,
+            "apply_variant must not create new generation jobs",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2: Secondary asset generation via generate_edit_variants
+# ---------------------------------------------------------------------------
+
+
+class EditorSecondaryAssetTests(CharacterStudioTestCase):
+    """The editor auto-launches generate_edit_variants for full_body / scene /
+    reference_sheet.  Each call must produce exactly one active CharacterImage
+    of the correct type."""
+
+    def _generate_secondary(self, character, image_type, region):
+        return CharacterGenerationService().generate_edit_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {
+                "region": region,
+                "image_type": image_type,
+                "variant_count": 1,
+                "preserve": {},
+                "controls": {},
+            },
+        )
+
+    def test_generate_edit_full_body_creates_character_image(self):
+        character = self.create_character()
+        job = self._generate_secondary(character, "full_body", "body")
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="full_body", is_active=True
+            ).count(),
+            1,
+            "Expected exactly 1 active full_body CharacterImage after generation",
+        )
+
+    def test_generate_edit_scene_creates_character_image(self):
+        character = self.create_character()
+        job = self._generate_secondary(character, "scene", "style")
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="scene", is_active=True
+            ).count(),
+            1,
+        )
+
+    def test_generate_edit_reference_sheet_creates_character_image(self):
+        character = self.create_character()
+        job = self._generate_secondary(character, "reference_sheet", "full_character")
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="reference_sheet", is_active=True
+            ).count(),
+            1,
+        )
+
+    def test_repeated_generation_keeps_single_active_image_per_type(self):
+        """Retry must deactivate the old image and leave only one active."""
+        character = self.create_character()
+        self._generate_secondary(character, "full_body", "body")
+        self._generate_secondary(character, "full_body", "body")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="full_body", is_active=True
+            ).count(),
+            1,
+            "After two generations of full_body there must be exactly 1 active CharacterImage",
+        )
+
+    def test_secondary_generation_does_not_affect_other_image_types(self):
+        """Generating full_body must not change scene / reference_sheet records."""
+        character = self.create_character()
+        self._generate_secondary(character, "scene", "style")
+        self._generate_secondary(character, "full_body", "body")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="scene", is_active=True
+            ).count(),
+            1,
+            "Generating full_body must leave scene image unchanged",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: Job polling API response structure
+# ---------------------------------------------------------------------------
+
+
+class EditorJobPollingApiTests(CharacterStudioTestCase):
+    """Verify that GET /api/generation-jobs/<id> returns the shape expected by
+    the frontend hook (status, progress, variants[].variant_id / image_url)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+
+    def test_get_job_returns_status_progress_and_variants(self):
+        character = self.create_character()
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 2}
+        )
+        response = self.client.get(
+            f"/api/generation-jobs/{job.job_id}", {"token_user": self.token}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn(data["status"], ("completed", "failed", "processing", "queued"))
+        self.assertIsInstance(data["progress"], int)
+        self.assertIsInstance(data["variants"], list)
+        self.assertGreater(
+            len(data["variants"]), 0, "Completed job must include at least one variant"
+        )
+        first = data["variants"][0]
+        self.assertIn("variant_id", first, "variant_id missing from variant dict")
+        self.assertIn("image_url", first, "image_url missing from variant dict")
+
+    def test_get_job_for_other_user_returns_403(self):
+        character = self.create_character()
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 1}
+        )
+        other_user_key = UserKey.objects.create(
+            user=User.objects.create_user(username="stranger_poller")
+        )
+        response = self.client.get(
+            f"/api/generation-jobs/{job.job_id}",
+            {"token_user": str(other_user_key.key)},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_get_nonexistent_job_returns_404(self):
+        response = self.client.get(
+            f"/api/generation-jobs/{uuid4()}", {"token_user": self.token}
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_completed_job_has_image_url_in_variants(self):
+        """Frontend auto-applies the first completed variant; it must have image_url."""
+        character = self.create_character()
+        job = CharacterGenerationService().generate_edit_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {
+                "region": "body",
+                "image_type": "full_body",
+                "variant_count": 1,
+                "preserve": {},
+                "controls": {},
+            },
+        )
+        response = self.client.get(
+            f"/api/generation-jobs/{job.job_id}", {"token_user": self.token}
+        )
+        data = response.json()
+        self.assertEqual(data["status"], "completed")
+        self.assertTrue(
+            data["variants"][0].get("image_url"),
+            "Completed full_body job variant must have a non-empty image_url",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3b: Character GET response includes images for all 4 asset types
+# ---------------------------------------------------------------------------
+
+
+class EditorCharacterGetResponseTests(CharacterStudioTestCase):
+    """After create_initial_image_set, GET /api/.../characters/<id> must include
+    an 'images' dict with all four types so the frontend knows which assets are ready."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+
+    def test_character_get_includes_images_after_full_generation(self):
+        character = self.create_character()
+        CharacterGenerationService().create_initial_image_set(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 1}
+        )
+        response = self.client.get(
+            f"/api/projects/{self.project.id}/characters/{character.character_id}",
+            {"token_user": self.token},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        images = data.get("images", {})
+        for image_type in ("portrait", "full_body", "scene", "reference_sheet"):
+            self.assertIn(image_type, images, f"'images' dict missing key: {image_type}")
+            self.assertTrue(
+                images[image_type].get("image_url"),
+                f"images.{image_type}.image_url is empty or missing",
+            )
+
+    def test_character_get_images_is_empty_before_any_generation(self):
+        character = self.create_character()
+        response = self.client.get(
+            f"/api/projects/{self.project.id}/characters/{character.character_id}",
+            {"token_user": self.token},
+        )
+        data = response.json()
+        images = data.get("images", {})
+        self.assertIsInstance(images, dict)
+        self.assertEqual(
+            len(images), 0, "No images should be present before any generation"
+        )
+
+    def test_character_get_images_partial_after_single_type_generation(self):
+        character = self.create_character()
+        CharacterGenerationService().create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1, "image_type": "portrait"},
+        )
+        response = self.client.get(
+            f"/api/projects/{self.project.id}/characters/{character.character_id}",
+            {"token_user": self.token},
+        )
+        images = response.json().get("images", {})
+        self.assertIn("portrait", images)
+        for t in ("full_body", "scene", "reference_sheet"):
+            self.assertNotIn(
+                t, images, f"'{t}' should not be in images before its job runs"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Retry creates a new job only for the target asset type
+# ---------------------------------------------------------------------------
+
+
+class EditorRetryTests(CharacterStudioTestCase):
+    """Retry (second generate_edit_variants call) must create a fresh job,
+    keep only one active CharacterImage, and not affect other types."""
+
+    def _generate(self, character, image_type, region):
+        return CharacterGenerationService().generate_edit_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {
+                "region": region,
+                "image_type": image_type,
+                "variant_count": 1,
+                "preserve": {},
+                "controls": {},
+            },
+        )
+
+    def test_retry_creates_new_job_with_different_id(self):
+        character = self.create_character()
+        job1 = self._generate(character, "full_body", "body")
+        job2 = self._generate(character, "full_body", "body")
+        self.assertNotEqual(
+            job1.job_id, job2.job_id, "Retry must produce a new job_id"
+        )
+
+    def test_retry_keeps_single_active_image(self):
+        character = self.create_character()
+        self._generate(character, "full_body", "body")
+        self._generate(character, "full_body", "body")
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="full_body", is_active=True
+            ).count(),
+            1,
+        )
+
+    def test_retry_full_body_does_not_create_jobs_for_other_types(self):
+        character = self.create_character()
+        jobs_before = CharacterGenerationJob.objects.filter(character=character).count()
+        self._generate(character, "full_body", "body")
+        self._generate(character, "full_body", "body")
+        total_jobs = CharacterGenerationJob.objects.filter(character=character).count()
+        self.assertEqual(
+            total_jobs - jobs_before,
+            2,
+            "Exactly 2 new jobs should be created (original + retry), not jobs for other types",
+        )
+
+
+class CharacterStatusLifecycleTests(CharacterStudioTestCase):
+    """Tests for Bug 1: character must stay 'draft' until a portrait variant is confirmed."""
+
+    def _create_and_generate(self, variant_count=2):
+        character = self.create_character()
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": variant_count}
+        )
+        return character, job
+
+    def test_new_character_is_draft(self):
+        character = self.create_character()
+        self.assertEqual(character.status, CharacterStatus.DRAFT)
+
+    def test_draft_not_in_default_list(self):
+        # Draft character must NOT appear in the default character list.
+        draft = self.create_character()
+        self.assertEqual(draft.status, CharacterStatus.DRAFT)
+
+        result = CharacterService().list_project_characters(self.user_key, self.project.id)
+        ids = [c["character_id"] for c in result]
+        self.assertNotIn(str(draft.character_id), ids)
+
+    def test_applying_portrait_variant_activates_character(self):
+        character, job = self._create_and_generate()
+        portrait_variant = job.variants.first()
+
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            portrait_variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        character.refresh_from_db()
+        self.assertEqual(character.status, CharacterStatus.ACTIVE)
+
+    def test_active_character_visible_in_default_list(self):
+        character, job = self._create_and_generate()
+        portrait_variant = job.variants.first()
+
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            portrait_variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        result = CharacterService().list_project_characters(self.user_key, self.project.id)
+        ids = [c["character_id"] for c in result]
+        self.assertIn(str(character.character_id), ids)
+
+    def test_applying_non_portrait_variant_does_not_activate(self):
+        character, job = self._create_and_generate()
+        variant = job.variants.first()
+
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "full_body"},
+        )
+
+        character.refresh_from_db()
+        self.assertEqual(character.status, CharacterStatus.DRAFT)
+
+    def test_list_with_status_all_returns_drafts_and_active(self):
+        draft = self.create_character()
+
+        active_char, job = self._create_and_generate()
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            active_char.character_id,
+            job.variants.first().variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        all_chars = CharacterService().list_project_characters(
+            self.user_key, self.project.id, filters={"status": "all"}
+        )
+        all_ids = [c["character_id"] for c in all_chars]
+        self.assertIn(str(draft.character_id), all_ids)
+        self.assertIn(str(active_char.character_id), all_ids)
+
+    def test_list_with_status_draft_returns_only_drafts(self):
+        draft = self.create_character()
+        active_char, job = self._create_and_generate()
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            active_char.character_id,
+            job.variants.first().variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        draft_chars = CharacterService().list_project_characters(
+            self.user_key, self.project.id, filters={"status": "draft"}
+        )
+        ids = [c["character_id"] for c in draft_chars]
+        self.assertIn(str(draft.character_id), ids)
+        self.assertNotIn(str(active_char.character_id), ids)
+
+    def test_regenerate_reuses_same_character_no_new_record_created(self):
+        # Simulates the "Изменить параметры" re-edit flow: the frontend sends a PATCH
+        # to update the existing draft character, then calls generate-initial-variants again.
+        # No new StudioCharacter record should be created.
+        from w_craft_back.character_studio.models import StudioCharacter
+
+        count_before = StudioCharacter.objects.filter(project=self.project).count()
+        character = self.create_character()
+        self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
+
+        # Simulate "Изменить параметры": update the same draft, generate new variants
+        CharacterService().update_character(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"name": "Mira Updated"},
+        )
+        CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 2}
+        )
+
+        # Still only one new character created during this flow
+        self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)

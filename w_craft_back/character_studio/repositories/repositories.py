@@ -29,6 +29,9 @@ class CharacterRepository(BaseRepository):
     def list_project(self, user, project_id, filters=None):
         filters = filters or {}
         queryset = self.for_project_user(user, project_id)
+        status_filter = filters.get("status", "active")
+        if status_filter != "all":
+            queryset = queryset.filter(status=status_filter)
         if filters.get("role"):
             queryset = queryset.filter(role=filters["role"])
         if filters.get("search"):

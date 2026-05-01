@@ -16,6 +16,19 @@ class CharacterType(models.TextChoices):
     OTHER = "other", "Other"
 
 
+class CharacterRole(models.TextChoices):
+    MAIN = "main", "Главный герой"
+    SECONDARY = "secondary", "Второстепенный персонаж"
+    ANTAGONIST = "antagonist", "Антагонист"
+    EPISODIC = "episodic", "Эпизодический"
+    CAMEO = "cameo", "Камео"
+
+
+class CharacterStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    ACTIVE = "active", "Active"
+
+
 class CharacterAssetType(models.TextChoices):
     UPLOADED_REFERENCE = "uploaded_reference", "Uploaded reference"
     INITIAL_VARIANT = "initial_variant", "Initial variant"
@@ -102,13 +115,19 @@ class StudioCharacter(models.Model):
     user = models.ForeignKey(UserKey, on_delete=models.CASCADE, related_name="studio_characters")
     name = models.CharField(max_length=255)
     character_type = models.CharField(max_length=32, choices=CharacterType.choices, default=CharacterType.HUMAN)
-    role = models.CharField(max_length=100, blank=True, default="")
+    role = models.CharField(max_length=100, blank=True, default="", choices=CharacterRole.choices)
     short_description = models.TextField(blank=True, default="")
     age = models.PositiveSmallIntegerField(null=True, blank=True)
     lifecycle_stage = models.CharField(max_length=128, blank=True, default="")
     gender = models.CharField(max_length=100, blank=True, default="")
     species = models.CharField(max_length=100, default="human")
     visual_style = models.CharField(max_length=100, blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=CharacterStatus.choices,
+        default=CharacterStatus.DRAFT,
+        db_index=True,
+    )
     identity_locked = models.BooleanField(default=False)
     locked_at = models.DateTimeField(null=True, blank=True)
     locked_by = models.ForeignKey(
