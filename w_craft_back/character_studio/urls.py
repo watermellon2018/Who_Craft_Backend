@@ -7,7 +7,6 @@ urlpatterns = [
     path("projects/<int:project_id>/characters/", views.characters_collection),
     path("projects/<int:project_id>/characters/<uuid:character_id>", views.character_detail),
     path("projects/<int:project_id>/characters/<uuid:character_id>/", views.character_detail),
-    path("projects/<int:project_id>/characters/<uuid:character_id>/archive", views.archive_character),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/generate-initial-variants",
         views.generate_initial_variants,
@@ -36,4 +35,3 @@ urlpatterns = [
         views.restore_revision,
     ),
 ]
-

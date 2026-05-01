@@ -22,6 +22,11 @@ def deduplicate_user_keys(apps, schema_editor):
         seen_keys.add(new_key)
 
 
+def normalize_generation_variant_counts(apps, schema_editor):
+    CharacterGenerationJob = apps.get_model("w_craft_back", "CharacterGenerationJob")
+    CharacterGenerationJob.objects.exclude(variant_count__in=[1, 2, 4]).update(variant_count=4)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -30,6 +35,7 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(deduplicate_user_keys, migrations.RunPython.noop),
+        migrations.RunPython(normalize_generation_variant_counts, migrations.RunPython.noop),
         migrations.AlterField(
             model_name="userkey",
             name="key",
@@ -142,7 +148,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="charactergenerationjob",
             constraint=models.CheckConstraint(
-                check=models.Q(("variant_count__gte", 3)) & models.Q(("variant_count__lte", 4)),
+                check=models.Q(("variant_count__in", [1, 2, 4])),
                 name="chk_generation_variant_count",
             ),
         ),

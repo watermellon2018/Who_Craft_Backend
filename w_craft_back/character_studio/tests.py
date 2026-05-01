@@ -1,19 +1,29 @@
+import base64
+import os
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
+from django.test import override_settings
 from django.test import TestCase
+from requests import HTTPError
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterOutfit
+from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterImage, CharacterOutfit
 from w_craft_back.character_studio.services.character_service import CharacterService
-from w_craft_back.character_studio.services.errors import IdentityLockedError, SafetyRejectedError, ValidationError
+from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, SafetyRejectedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
 from w_craft_back.character_studio.services.prompt_compiler import CharacterPromptCompiler
+from w_craft_back.character_studio.services.providers import GeminiProvider, ProviderContentBlockedError
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.movie.project.models import Project
+
+PROVIDER_SESSION = "w_craft_back.character_studio.services.providers.requests.Session"
 
 
 class CharacterStudioTestCase(TestCase):
@@ -28,6 +38,14 @@ class CharacterStudioTestCase(TestCase):
             desc="Long",
         )
         self.service = CharacterService()
+        self.previous_provider = os.environ.get("CHARACTER_STUDIO_IMAGE_PROVIDER")
+        os.environ["CHARACTER_STUDIO_IMAGE_PROVIDER"] = "mock"
+
+    def tearDown(self):
+        if self.previous_provider is None:
+            os.environ.pop("CHARACTER_STUDIO_IMAGE_PROVIDER", None)
+        else:
+            os.environ["CHARACTER_STUDIO_IMAGE_PROVIDER"] = self.previous_provider
 
     def create_character(self):
         return self.service.create_character(
@@ -49,6 +67,7 @@ class CharacterServiceTests(CharacterStudioTestCase):
     def test_create_character(self):
         character = self.create_character()
         self.assertEqual(character.name, "Mira")
+        self.assertEqual(character.age, 17)
         self.assertEqual(character.project, self.project)
         self.assertIsNotNone(character.active_appearance)
         self.assertEqual(character.revisions.count(), 1)
@@ -72,11 +91,11 @@ class CharacterServiceTests(CharacterStudioTestCase):
         self.assertEqual(updated.role, "protagonist")
         self.assertEqual(updated.revisions.count(), 2)
 
-    def test_archive_character_forbids_edit(self):
+    def test_delete_character_removes_record(self):
         character = self.create_character()
-        self.service.archive_character(self.user_key, self.project.id, character.character_id)
-        with self.assertRaises(ValidationError):
-            self.service.update_character(self.user_key, self.project.id, character.character_id, {"role": "new"})
+        self.service.delete_character(self.user_key, self.project.id, character.character_id)
+        with self.assertRaises(NotFoundError):
+            self.service.get_character(self.user_key, self.project.id, character.character_id)
 
     def test_lock_identity(self):
         character = self.create_character()
@@ -87,7 +106,6 @@ class CharacterServiceTests(CharacterStudioTestCase):
             {"appearance_id": str(character.active_appearance_id), "confirm": True},
         )
         self.assertTrue(locked.identity_locked)
-        self.assertEqual(locked.status, "identity_locked")
         self.assertEqual(locked.revisions.count(), 2)
 
     def test_create_outfit_and_single_default(self):
@@ -225,7 +243,7 @@ class GenerationFlowTests(CharacterStudioTestCase):
         character = self.create_character()
         generation = CharacterGenerationService()
         with self.assertRaises(ValidationError):
-            generation.create_initial_variants(self.user_key, self.project.id, character.character_id, {"variant_count": 5})
+            generation.create_initial_variants(self.user_key, self.project.id, character.character_id, {"variant_count": 3})
         with self.assertRaises(ValidationError):
             generation.generate_edit_variants(
                 self.user_key,
@@ -254,13 +272,27 @@ class GenerationFlowTests(CharacterStudioTestCase):
                 {"variant_count": "many"},
             )
 
+    def test_generation_accepts_create_page_variant_counts(self):
+        character = self.create_character()
+        generation = CharacterGenerationService()
+
+        for variant_count in (1, 2, 4):
+            job = generation.create_initial_variants(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                {"variant_count": variant_count},
+            )
+            self.assertEqual(job.status, "completed")
+            self.assertEqual(job.variants.count(), variant_count)
+
     def test_apply_current_reference_keeps_single_primary_and_canonical_asset(self):
         character = self.create_character()
         job = CharacterGenerationService().create_initial_variants(
             self.user_key,
             self.project.id,
             character.character_id,
-            {"variant_count": 3},
+            {"variant_count": 2},
         )
         variants = list(job.variants.order_by("variant_index"))
 
@@ -283,6 +315,233 @@ class GenerationFlowTests(CharacterStudioTestCase):
         self.assertEqual(character.assets.filter(is_canonical=True).count(), 1)
         self.assertTrue(character.assets.get(asset_id=variants[1].asset_id).is_primary)
         self.assertTrue(character.assets.get(asset_id=variants[1].asset_id).is_canonical)
+
+    def test_generation_saves_active_images_by_type(self):
+        character = self.create_character()
+        generation = CharacterGenerationService()
+
+        portrait_job = generation.create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 2, "image_type": "portrait"},
+        )
+        full_body_job = generation.create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 2, "image_type": "full_body"},
+        )
+
+        portrait_image = CharacterImage.objects.get(character=character, image_type="portrait", is_active=True)
+        full_body_image = CharacterImage.objects.get(character=character, image_type="full_body", is_active=True)
+        self.assertEqual(portrait_image.asset.source_job_id, portrait_job.job_id)
+        self.assertEqual(full_body_image.asset.source_job_id, full_body_job.job_id)
+        self.assertNotEqual(portrait_image.image_url, full_body_image.image_url)
+
+        generation.generate_edit_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {
+                "region": "face",
+                "image_type": "portrait",
+                "controls": {"age": 35, "changed_fields": ["age"]},
+                "previous_values": {"age": 17},
+                "new_values": {"age": 35},
+                "variant_count": 2,
+            },
+        )
+
+        self.assertEqual(CharacterImage.objects.filter(character=character, image_type="portrait", is_active=True).count(), 1)
+        full_body_image.refresh_from_db()
+        self.assertTrue(full_body_image.is_active)
+
+    def test_initial_image_set_generates_all_editor_modes(self):
+        character = self.create_character()
+
+        jobs = CharacterGenerationService().create_initial_image_set(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 2},
+        )
+
+        self.assertEqual(len(jobs), 4)
+        self.assertEqual([job.request_payload["image_type"] for job in jobs], ["portrait", "full_body", "scene", "reference_sheet"])
+        self.assertEqual(
+            set(CharacterImage.objects.filter(character=character, is_active=True).values_list("image_type", flat=True)),
+            {"portrait", "full_body", "scene", "reference_sheet"},
+        )
+
+
+class GeminiProviderTests(TestCase):
+    def test_predict_request_uses_documented_imagen_payload(self):
+        image_bytes = base64.b64encode(b"png-bytes").decode("ascii")
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "predictions": [
+                {"bytesBase64Encoded": image_bytes, "width": 768, "height": 1024},
+            ],
+        }
+        session = Mock()
+        session.post.return_value = response
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root, MEDIA_URL="/media/"):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "GEMINI_API_KEY": "test-key",
+                        "GEMINI_IMAGE_MODEL": "imagen-4.0-generate-001",
+                        "GEMINI_SEND_NEGATIVE_PROMPT": "",
+                    },
+                    clear=False,
+                ):
+                    with patch(PROVIDER_SESSION, return_value=session):
+                        provider = GeminiProvider()
+                        variants = provider.generate_character_variants(
+                            SimpleNamespace(job_id=uuid4()),
+                            {
+                                "positive_prompt": (
+                                    "Create a clean character design of a wizard"
+                                ),
+                                "negative_prompt": "extra limbs",
+                            },
+                            4,
+                        )
+
+        url = session.post.call_args.args[0]
+        kwargs = session.post.call_args.kwargs
+        parameters = kwargs["json"]["parameters"]
+
+        self.assertNotIn("key=", url)
+        self.assertEqual(kwargs["headers"]["x-goog-api-key"], "test-key")
+        self.assertEqual(parameters["sampleCount"], 4)
+        self.assertEqual(parameters["aspectRatio"], "3:4")
+        self.assertEqual(parameters["personGeneration"], "allow_adult")
+        self.assertNotIn("negativePrompt", parameters)
+        self.assertTrue(
+            variants[0]["storage_path"].startswith("character-studio/jobs/")
+        )
+        self.assertEqual(
+            variants[0]["image_url"],
+            f"/media/{variants[0]['storage_path']}",
+        )
+
+    def test_http_error_includes_google_response_without_api_key(self):
+        response = Mock()
+        response.status_code = 400
+        response.reason = "Bad Request"
+        response.raise_for_status.side_effect = HTTPError("400 Client Error")
+        response.json.return_value = {
+            "error": {"message": "Unknown name negativePrompt"}
+        }
+        session = Mock()
+        session.post.return_value = response
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=False):
+            with patch(PROVIDER_SESSION, return_value=session):
+                with self.assertRaises(RuntimeError) as ctx:
+                    GeminiProvider().generate_character_variants(
+                        SimpleNamespace(job_id=uuid4()),
+                        {
+                            "positive_prompt": "Create a character",
+                            "negative_prompt": "",
+                        },
+                        4,
+                    )
+
+        self.assertIn("Unknown name negativePrompt", str(ctx.exception))
+        self.assertNotIn("test-key", str(ctx.exception))
+
+    def test_non_ascii_prompt_is_translated_before_imagen_request(self):
+        translate_response = Mock()
+        translate_response.raise_for_status.return_value = None
+        translate_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": (
+                                    "Create a clean character design "
+                                    "of a detective"
+                                )
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        image_response = Mock()
+        image_response.raise_for_status.return_value = None
+        image_response.json.return_value = {
+            "predictions": [
+                {"bytesBase64Encoded": base64.b64encode(b"png-bytes").decode("ascii")},
+            ],
+        }
+        session = Mock()
+        session.post.side_effect = [translate_response, image_response]
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root, MEDIA_URL="/media/"):
+                with patch.dict(
+                    os.environ,
+                    {"GEMINI_API_KEY": "test-key"},
+                    clear=False,
+                ):
+                    with patch(PROVIDER_SESSION, return_value=session):
+                        GeminiProvider().generate_character_variants(
+                            SimpleNamespace(job_id=uuid4()),
+                            {
+                                "positive_prompt": (
+                                    "Create a clean character design of детектив"
+                                ),
+                                "negative_prompt": "",
+                            },
+                            4,
+                        )
+
+        translate_call = session.post.call_args_list[0]
+        image_call = session.post.call_args_list[1]
+
+        self.assertIn(":generateContent", translate_call.args[0])
+        self.assertIn(
+            "детектив",
+            translate_call.kwargs["json"]["contents"][0]["parts"][0]["text"],
+        )
+        self.assertEqual(
+            image_call.kwargs["json"]["instances"][0]["prompt"],
+            "Create a clean character design of a detective",
+        )
+
+    def test_blocked_translation_returns_user_facing_error(self):
+        blocked_response = Mock()
+        blocked_response.raise_for_status.return_value = None
+        blocked_response.json.return_value = {
+            "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"},
+            "usageMetadata": {"promptTokenCount": 136},
+        }
+        session = Mock()
+        session.post.return_value = blocked_response
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=False):
+            with patch(PROVIDER_SESSION, return_value=session):
+                with self.assertRaises(ProviderContentBlockedError) as ctx:
+                    GeminiProvider().generate_character_variants(
+                        SimpleNamespace(job_id=uuid4()),
+                        {
+                            "positive_prompt": "Create a clean character design of персонаж",
+                            "negative_prompt": "",
+                        },
+                        4,
+                    )
+
+        self.assertEqual(ctx.exception.error_code, "GEMINI_PROHIBITED_CONTENT")
+        self.assertIn("Gemini заблокировал промпт", ctx.exception.user_message)
+        self.assertNotIn("promptFeedback", str(ctx.exception))
 
 
 class CharacterStudioApiTests(CharacterStudioTestCase):

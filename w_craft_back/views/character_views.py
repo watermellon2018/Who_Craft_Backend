@@ -1,5 +1,5 @@
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterStatus, StudioCharacter
+from w_craft_back.character_studio.models import StudioCharacter
 from w_craft_back.characters.creating.models import Character
 from w_craft_back.models import MenuFolder, ItemFolder
 
@@ -7,7 +7,6 @@ import logging
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import JsonResponse, HttpResponse
-from django.utils import timezone
 from mptt.templatetags.mptt_tags import cache_tree_children
 from rest_framework.decorators import api_view
 from rest_framework.views import APIView
@@ -27,9 +26,11 @@ def rename_character(request):
         obj.name = name
         obj.save()
 
+        studio_character_id = None
         try:
             item = obj.itemfolder
             if item.studio_character_id:
+                studio_character_id = str(item.studio_character_id)
                 item.studio_character.name = name
                 item.studio_character.save(update_fields=["name", "updated_at"])
         except ObjectDoesNotExist:
@@ -42,7 +43,7 @@ def rename_character(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-    return HttpResponse(status=200)
+    return JsonResponse({"id": id, "name": name, "character_id": studio_character_id}, status=200)
 
 
 @api_view(['POST'])
@@ -154,14 +155,21 @@ class CharacterTree(APIView):
         try:
             logger.info('Удаление персонажа из дерева')
             id_to_delete = request.data.get('id')
-            model_to_delete = MenuFolder.objects.get(key=id_to_delete)
+            model_to_delete = MenuFolder.objects.filter(key=id_to_delete).first()
+            if model_to_delete is None:
+                model_to_delete = ItemFolder.objects.filter(
+                    studio_character_id=id_to_delete,
+                ).first()
+            if model_to_delete is None:
+                model_to_delete = ItemFolder.objects.filter(hero_id=id_to_delete).first()
+            if model_to_delete is None:
+                return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+
             for node in model_to_delete.get_descendants(include_self=True):
                 try:
                     studio_character = node.itemfolder.studio_character
                     if studio_character:
-                        studio_character.status = CharacterStatus.ARCHIVED
-                        studio_character.archived_at = timezone.now()
-                        studio_character.save(update_fields=["status", "archived_at", "updated_at"])
+                        studio_character.delete()
                 except ObjectDoesNotExist:
                     pass
             model_to_delete.delete()

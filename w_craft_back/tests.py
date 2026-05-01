@@ -7,7 +7,7 @@ from PIL import Image
 from rest_framework import status
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterStatus, StudioCharacter
+from w_craft_back.character_studio.models import StudioCharacter
 from w_craft_back.movie.project.models import Project
 
 
@@ -122,14 +122,14 @@ class CharacterTreeStudioTests(TestCase):
         self.assertEqual(tree[0]["name"], "Scene 1")
         self.assertEqual(tree[0]["children"][0]["character_id"], str(self.character.character_id))
 
-    def test_tree_leaf_can_be_created_as_draft_then_linked(self):
+    def test_tree_leaf_can_be_created_then_linked(self):
         leaf_id = "00000000-0000-4000-8000-000000000103"
 
-        draft_response = self.client.post(
+        create_response = self.client.post(
             "/api/character/create/",
             {
                 "id": leaf_id,
-                "name": "Draft Mira",
+                "name": "Mira",
                 "type": "leaf",
                 "parent": None,
                 "token_user": str(self.user_key.key),
@@ -137,13 +137,13 @@ class CharacterTreeStudioTests(TestCase):
             },
             content_type="application/json",
         )
-        self.assertEqual(draft_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(create_response.status_code, status.HTTP_200_OK)
 
-        draft_tree_response = self.client.get("/api/character/select/", {"projectId": self.project.id})
-        self.assertEqual(draft_tree_response.status_code, status.HTTP_200_OK)
-        draft_tree = draft_tree_response.json()
-        self.assertEqual(draft_tree[0]["name"], "Draft Mira")
-        self.assertIsNone(draft_tree[0]["character_id"])
+        tree_response = self.client.get("/api/character/select/", {"projectId": self.project.id})
+        self.assertEqual(tree_response.status_code, status.HTTP_200_OK)
+        tree = tree_response.json()
+        self.assertEqual(tree[0]["name"], "Mira")
+        self.assertIsNone(tree[0]["character_id"])
 
         link_response = self.client.post(
             "/api/character/create/",
@@ -166,7 +166,7 @@ class CharacterTreeStudioTests(TestCase):
         self.assertEqual(linked_tree[0]["name"], self.character.name)
         self.assertEqual(linked_tree[0]["character_id"], str(self.character.character_id))
 
-    def test_deleting_tree_leaf_archives_linked_studio_character(self):
+    def test_deleting_tree_leaf_removes_linked_studio_character(self):
         leaf_id = "00000000-0000-4000-8000-000000000104"
 
         leaf_response = self.client.post(
@@ -191,6 +191,4 @@ class CharacterTreeStudioTests(TestCase):
         )
         self.assertEqual(delete_response.status_code, status.HTTP_200_OK)
 
-        self.character.refresh_from_db()
-        self.assertEqual(self.character.status, CharacterStatus.ARCHIVED)
-        self.assertIsNotNone(self.character.archived_at)
+        self.assertFalse(StudioCharacter.objects.filter(character_id=self.character.character_id).exists())

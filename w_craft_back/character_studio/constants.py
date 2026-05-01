@@ -38,14 +38,6 @@ RENDER_MOODS = (
     "melancholic",
 )
 
-CHARACTER_STATUSES = (
-    "draft",
-    "generated",
-    "approved",
-    "identity_locked",
-    "archived",
-)
-
 ASSET_TYPES = (
     "uploaded_reference",
     "initial_variant",
@@ -107,4 +99,3 @@ EXPRESSION_TYPES = (
     "crying",
     "smirking",
 )
-
