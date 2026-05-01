@@ -1,4 +1,8 @@
+import logging
+
 from w_craft_back.character_studio.constants import VISUAL_STYLES
+
+logger = logging.getLogger(__name__)
 
 CHARACTER_TYPE_LABELS = {
     "human": "human",
@@ -43,6 +47,15 @@ INITIAL_PORTRAIT_NEGATIVE = (
     "reference sheet, character sheet, multiple poses in one image, silhouette only, "
     "different hair color, different eye color, changed age, changed gender, "
     "different person, distorted face, extra limbs, blurry face"
+)
+
+# Enforces identical outfit across portrait / full_body / scene / reference_sheet.
+# Placed after the image-type composition instruction so it has high weight.
+OUTFIT_LOCK = (
+    "OUTFIT CONSISTENCY REQUIRED: the character must wear exactly the same outfit in "
+    "every image type (portrait, full body, scene, reference sheet). "
+    "Outfit: {outfit_desc}. "
+    "DO NOT change, replace, or reinterpret clothing between views."
 )
 
 IMAGE_TYPE_PROMPTS = {
@@ -104,6 +117,15 @@ class CharacterPromptCompiler:
         if image_type in IMAGE_TYPE_PROMPTS:
             positive_prompt = f"{positive_prompt}. {IMAGE_TYPE_PROMPTS[image_type]}"
 
+        outfit_desc = self._outfit_description(outfit)
+        if outfit_desc:
+            positive_prompt = f"{positive_prompt}. {OUTFIT_LOCK.format(outfit_desc=outfit_desc)}"
+
+        logger.debug(
+            "compile: image_type=%s region=%s outfit=%s prompt_len=%d",
+            image_type, region, outfit_desc or "none", len(positive_prompt),
+        )
+
         edit_instruction = self._edit_instruction(region, controls, preserve, identity_locked, image_type)
         metadata = {
             "region": region,
@@ -142,7 +164,7 @@ class CharacterPromptCompiler:
         if text_refinement:
             positive_prompt = f"{positive_prompt}. {text_refinement}"
 
-        locked = self._locked_attrs_instruction(character, appearance, controls)
+        locked = self._locked_attrs_instruction(character, appearance, outfit, controls)
         if locked:
             positive_prompt = f"{positive_prompt}. STRICTLY PRESERVE IN EVERY VARIANT: {locked}"
 
@@ -150,6 +172,11 @@ class CharacterPromptCompiler:
             f"{positive_prompt}. "
             f"{INITIAL_PORTRAIT_FRAME} "
             f"{PORTRAIT_VARIATION_GUIDE}"
+        )
+
+        logger.debug(
+            "compile_initial_portrait_selection: outfit=%s locked_attrs=%s prompt_len=%d",
+            self._outfit_description(outfit) or "none", locked or "none", len(positive_prompt),
         )
 
         return {
@@ -165,7 +192,20 @@ class CharacterPromptCompiler:
             },
         }
 
-    def _locked_attrs_instruction(self, character, appearance, controls):
+    def _outfit_description(self, outfit):
+        """Returns a canonical outfit description string, or empty string if no outfit."""
+        if not outfit:
+            return ""
+        parts = []
+        desc = (getattr(outfit, "description", "") or "").strip()
+        style = (getattr(outfit, "style", "") or "").strip()
+        if desc:
+            parts.append(desc)
+        if style:
+            parts.append(f"{style} style")
+        return ", ".join(parts)
+
+    def _locked_attrs_instruction(self, character, appearance, outfit, controls):
         """Returns a comma-separated string of all user-specified fixed attributes."""
         attrs = []
 
@@ -199,6 +239,10 @@ class CharacterPromptCompiler:
                    (getattr(appearance, "special_features", "") if appearance else "") or "").strip()
         if special:
             attrs.append(f"special features: {special}")
+
+        outfit_desc = self._outfit_description(outfit)
+        if outfit_desc:
+            attrs.append(f"outfit: {outfit_desc}")
 
         return ", ".join(attrs) if attrs else ""
 

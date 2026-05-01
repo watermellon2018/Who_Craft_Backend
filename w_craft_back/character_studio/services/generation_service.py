@@ -60,9 +60,12 @@ class CharacterGenerationService:
         variant_count = self._validate_variant_count(params.get("variant_count", 4))
         image_type = self._validate_image_type(params.get("image_type") or params.get("preview_type") or CharacterImageType.PORTRAIT)
         region = self.IMAGE_TYPE_TO_REGION[image_type]
+        outfit_name = getattr(character.active_outfit, "name", None) or "none"
+        outfit_desc = getattr(character.active_outfit, "description", None) or "none"
         self.logger.info(
-            "create_initial_variants: character_id=%s visual_style=%s variant_count=%d image_type=%s",
+            "create_initial_variants: character_id=%s visual_style=%s variant_count=%d image_type=%s outfit=%r outfit_desc=%r",
             character.character_id, params.get("visual_style"), variant_count, image_type,
+            outfit_name, outfit_desc,
         )
         if image_type == CharacterImageType.PORTRAIT:
             # Use strict portrait-only prompt for initial selection variants.
@@ -182,9 +185,11 @@ class CharacterGenerationService:
         job.started_at = timezone.now()
         job.save()
         self.logger.info(
-            "_run_job: job_id=%s job_type=%s character_id=%s provider=%s",
+            "_run_job: job_id=%s job_type=%s character_id=%s provider=%s image_type=%s region=%s",
             job.job_id, job_type, character.character_id, provider_name,
+            request_payload.get("image_type", "?"), region,
         )
+        self.logger.debug("_run_job prompt: %s", compiled["positive_prompt"][:300])
         provider = get_image_provider(provider_name)
         try:
             image_type = request_payload.get("image_type") or CharacterImageType.PORTRAIT
