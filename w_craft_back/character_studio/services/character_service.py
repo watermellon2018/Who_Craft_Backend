@@ -252,6 +252,7 @@ class CharacterService:
             )
         if image_type == CharacterImageType.PORTRAIT:
             character.status = CharacterStatus.ACTIVE
+            logger.info("apply_variant: character_id=%s activated (portrait variant applied)", character.character_id)
         character.save()
         variant.applied = True
         variant.status = "applied"

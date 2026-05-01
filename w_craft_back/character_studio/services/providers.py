@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import base64
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -116,7 +117,7 @@ class GeminiProvider(AIImageProvider):
             "https://generativelanguage.googleapis.com",
         )
         self.aspect_ratio = os.getenv("GEMINI_IMAGE_ASPECT_RATIO", "3:4")
-        self.image_size = os.getenv("GEMINI_IMAGE_SIZE", "1K")
+        self.image_size = os.getenv("GEMINI_IMAGE_SIZE", "")
         self.person_generation = os.getenv("GEMINI_PERSON_GENERATION", "allow_adult")
         self.send_negative_prompt = os.getenv(
             "GEMINI_SEND_NEGATIVE_PROMPT", ""
@@ -125,6 +126,8 @@ class GeminiProvider(AIImageProvider):
             "GEMINI_TRANSLATE_PROMPT", "true"
         ).lower() not in {"0", "false", "no", "off"}
         self.text_model = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+        self.safety_filter_level = os.getenv("GEMINI_SAFETY_FILTER_LEVEL", "block_few")
+        self.logger = logging.getLogger(__name__)
 
     def generate_character_variants(self, job, compiled_prompt, variant_count):
         prompt = compiled_prompt["positive_prompt"]
@@ -197,6 +200,8 @@ class GeminiProvider(AIImageProvider):
         }
         if self.image_size:
             payload["parameters"]["imageSize"] = self.image_size
+        if self.safety_filter_level:
+            payload["parameters"]["safetyFilterLevel"] = self.safety_filter_level
         if negative_prompt and self.send_negative_prompt:
             payload["parameters"]["negativePrompt"] = negative_prompt
 
@@ -215,7 +220,15 @@ class GeminiProvider(AIImageProvider):
         predictions = data.get("predictions") or []
         if not predictions:
             self._raise_if_blocked(data)
-            raise RuntimeError(f"Gemini/Imagen returned no predictions: {data}")
+            self.logger.warning(
+                "_generate empty predictions: image_type=%s prompt_prefix=%r response=%s",
+                image_type, prompt[:120], data,
+            )
+            raise RuntimeError(
+                f"Gemini/Imagen returned no predictions for '{image_type}'. "
+                f"This may indicate a safety filter hit or an invalid API parameter. "
+                f"Response: {data}"
+            )
 
         variants: List[Dict[str, Any]] = []
         for idx, pred in enumerate(predictions[:count]):
