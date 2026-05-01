@@ -16,6 +16,35 @@ NEGATIVE_BASE = (
 )
 
 
+# Stronger portrait instruction used specifically for initial selection variants.
+INITIAL_PORTRAIT_FRAME = (
+    "HEAD AND SHOULDERS PORTRAIT ONLY. "
+    "Tight portrait composition: face, neck, and upper shoulders clearly visible. "
+    "Character centered in frame. Clear, readable facial expression. "
+    "DO NOT show full body. DO NOT show legs or torso below upper chest. "
+    "DO NOT use scenic or cinematic background composition. "
+    "DO NOT use reference-sheet layout or multiple poses. "
+    "Focus entirely on the character face and upper-body portrait."
+)
+
+# When generating N selection variants, variation is ONLY allowed in these aspects.
+PORTRAIT_VARIATION_GUIDE = (
+    "Variation between variants is allowed ONLY in: "
+    "portrait angle (front-facing, slight 3/4 left, slight 3/4 right), "
+    "facial expression (neutral, slight smile, focused), "
+    "lighting mood (soft, dramatic, diffused). "
+    "All other attributes MUST remain identical across every variant."
+)
+
+# Negative prompt for initial portrait selection – stricter than the general base.
+INITIAL_PORTRAIT_NEGATIVE = (
+    "full body, full length, legs visible, wide shot, low-angle shot showing torso, "
+    "scene composition, environmental storytelling, landscape background, "
+    "reference sheet, character sheet, multiple poses in one image, silhouette only, "
+    "different hair color, different eye color, changed age, changed gender, "
+    "different person, distorted face, extra limbs, blurry face"
+)
+
 IMAGE_TYPE_PROMPTS = {
     "portrait": (
         "Portrait composition: face and shoulders, readable facial expression, stable identity, "
@@ -91,6 +120,87 @@ class CharacterPromptCompiler:
             "reference_image_ids": reference_images,
             "metadata": metadata,
         }
+
+    def compile_initial_portrait_selection(self, character, appearance, outfit, params):
+        """
+        Strict portrait-only prompt for the initial variant selection page.
+        Enforces: portrait frame, all user-specified attributes fixed, variation only in
+        angle/expression/lighting.
+        """
+        controls = dict(params or {})
+        profile_bits = self._profile_bits(character, appearance, outfit, controls)
+
+        style = controls.get("visual_style") or getattr(character, "visual_style", "") or ""
+        if style:
+            profile_bits.append(f"{style.replace('_', ' ')} style")
+
+        positive_prompt = "Create a clean character portrait of " + ", ".join(
+            [bit for bit in profile_bits if bit]
+        )
+
+        text_refinement = (controls.get("text_refinement") or controls.get("appearance_description") or "").strip()
+        if text_refinement:
+            positive_prompt = f"{positive_prompt}. {text_refinement}"
+
+        locked = self._locked_attrs_instruction(character, appearance, controls)
+        if locked:
+            positive_prompt = f"{positive_prompt}. STRICTLY PRESERVE IN EVERY VARIANT: {locked}"
+
+        positive_prompt = (
+            f"{positive_prompt}. "
+            f"{INITIAL_PORTRAIT_FRAME} "
+            f"{PORTRAIT_VARIATION_GUIDE}"
+        )
+
+        return {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": INITIAL_PORTRAIT_NEGATIVE,
+            "edit_instruction": "",
+            "reference_image_ids": [],
+            "metadata": {
+                "region": "face",
+                "image_type": "portrait",
+                "mode": "initial_portrait_selection",
+                "controls": controls,
+            },
+        }
+
+    def _locked_attrs_instruction(self, character, appearance, controls):
+        """Returns a comma-separated string of all user-specified fixed attributes."""
+        attrs = []
+
+        if character:
+            char_type = getattr(character, "character_type", "") or ""
+            if char_type:
+                attrs.append(f"{CHARACTER_TYPE_LABELS.get(char_type, char_type)} entity type")
+            gender = getattr(character, "gender", "") or ""
+            if gender and gender != "other":
+                attrs.append(f"{gender} gender")
+            age = getattr(character, "age", None)
+            if age:
+                attrs.append(f"{age} years old")
+
+        appearance_fields = [
+            ("hair_color", "hair color"),
+            ("hair_length", "hair length"),
+            ("hair_style", "hairstyle"),
+            ("eye_color", "eye color"),
+            ("skin_tone", "skin tone"),
+            ("face_shape", "face shape"),
+        ]
+        for field, label in appearance_fields:
+            value = (controls.get(field) or "").strip()
+            if not value and appearance:
+                value = (getattr(appearance, field, "") or "").strip()
+            if value:
+                attrs.append(f"{value} {label}")
+
+        special = (controls.get("special_features") or
+                   (getattr(appearance, "special_features", "") if appearance else "") or "").strip()
+        if special:
+            attrs.append(f"special features: {special}")
+
+        return ", ".join(attrs) if attrs else ""
 
     def _profile_bits(self, character, appearance, outfit, controls):
         bits = []
