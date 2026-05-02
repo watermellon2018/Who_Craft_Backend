@@ -38,7 +38,12 @@ def appearance_dict(appearance):
 
 
 def outfit_dict(outfit):
-    return model_dict(outfit)
+    data = model_dict(outfit)
+    if data:
+        ref = outfit.reference_image
+        data["reference_image_url"] = public_url(ref.image_url) if ref else None
+        data["reference_image_asset_id"] = str(ref.asset_id) if ref else None
+    return data
 
 
 def asset_dict(asset):
@@ -108,6 +113,10 @@ def character_dict(character, include_related=False):
         image.image_type: character_image_dict(image)
         for image in active_images
     }
+    data["clothing_references"] = [
+        asset_dict(a)
+        for a in character.assets.filter(asset_type="clothing_reference").order_by("created_at")
+    ]
     if include_related:
         data["appearance"] = appearance_dict(character.active_appearance)
         data["outfits"] = [outfit_dict(outfit) for outfit in character.outfits.filter(archived_at__isnull=True)]

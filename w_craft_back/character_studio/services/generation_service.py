@@ -148,16 +148,6 @@ class CharacterGenerationService:
         except CharacterGenerationJob.DoesNotExist as exc:
             raise NotFoundError("Generation job not found.") from exc
 
-    @transaction.atomic
-    def cancel_generation_job(self, job_id):
-        job = self.get_generation_job(job_id)
-        if job.status in (GenerationJobStatus.COMPLETED, GenerationJobStatus.FAILED):
-            raise ValidationError("Completed jobs cannot be cancelled.")
-        job.status = GenerationJobStatus.CANCELLED
-        job.progress = 0
-        job.save(update_fields=["status", "progress"])
-        return job
-
     def _run_job(self, character, job_type, region, variant_count, request_payload, compiled):
         self.safety.validate_generated_prompt(compiled["positive_prompt"])
         provider_name = (

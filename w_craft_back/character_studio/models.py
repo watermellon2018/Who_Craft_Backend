@@ -43,6 +43,7 @@ class CharacterAssetType(models.TextChoices):
     SIDE_VIEW = "side_view", "Side view"
     EXPRESSION = "expression", "Expression"
     OUTFIT_REFERENCE = "outfit_reference", "Outfit reference"
+    CLOTHING_REFERENCE = "clothing_reference", "Clothing reference"
     THUMBNAIL = "thumbnail", "Thumbnail"
 
 
@@ -175,6 +176,8 @@ class StudioCharacter(models.Model):
     personality = models.JSONField(default=dict, blank=True)
     speech_style = models.TextField(blank=True, default="")
     backstory = models.TextField(blank=True, default="")
+    clothing_source = models.CharField(max_length=20, blank=True, default="text")
+    clothing_description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
