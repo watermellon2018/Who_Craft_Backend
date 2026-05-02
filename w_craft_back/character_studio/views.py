@@ -1,12 +1,15 @@
 import logging
+import uuid
+from pathlib import Path
 
+from django.conf import settings
 from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view
 
 logger = logging.getLogger(__name__)
 
-from w_craft_back.character_studio.models import CharacterOutfit, CharacterRevision
+from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterOutfit, CharacterRevision
 from w_craft_back.character_studio.repositories.repositories import OutfitRepository
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import CharacterStudioError, NotFoundError, PermissionDeniedError
@@ -14,6 +17,7 @@ from w_craft_back.character_studio.services.generation_service import CharacterG
 from w_craft_back.character_studio.services.permissions import get_owned_project, get_user_from_request
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
 from w_craft_back.character_studio.services.serialization import (
+    asset_dict,
     character_dict,
     job_dict,
     outfit_dict,
@@ -232,6 +236,134 @@ def generate_outfit_variants(request, project_id, character_id, outfit_id):
     data["controls"]["outfit_id"] = str(outfit_id)
     job = CharacterGenerationService().generate_edit_variants(user, project_id, character_id, data)
     return ok({"job_id": str(job.job_id), "status": job.status})
+
+
+_ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@api_view(["POST"])
+@handle_errors
+def upload_outfit_reference(request, project_id, character_id, outfit_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    try:
+        outfit = character.outfits.get(outfit_id=outfit_id)
+    except CharacterOutfit.DoesNotExist as exc:
+        raise NotFoundError("Outfit not found.") from exc
+
+    uploaded = request.FILES.get("file")
+    if not uploaded:
+        return JsonResponse({"error_code": "NO_FILE", "message": "No file provided."}, status=400)
+    if uploaded.content_type not in _ALLOWED_MIME_TYPES:
+        return JsonResponse(
+            {"error_code": "INVALID_FORMAT", "message": "Only jpg, png and webp are supported."},
+            status=400,
+        )
+    if uploaded.size > _MAX_UPLOAD_BYTES:
+        return JsonResponse({"error_code": "FILE_TOO_LARGE", "message": "File exceeds 10 MB limit."}, status=400)
+
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[uploaded.content_type]
+    rel_path = f"character-studio/outfits/{character_id}/{outfit_id}/{uuid.uuid4().hex}.{ext}"
+    abs_path = Path(settings.MEDIA_ROOT) / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    with abs_path.open("wb") as fh:
+        for chunk in uploaded.chunks():
+            fh.write(chunk)
+
+    media_url = getattr(settings, "MEDIA_URL", "/media/")
+    if not media_url.endswith("/"):
+        media_url += "/"
+    image_url = f"{media_url}{rel_path}"
+
+    asset = CharacterAsset.objects.create(
+        character=character,
+        project=character.project,
+        user=user,
+        asset_type=CharacterAssetType.OUTFIT_REFERENCE,
+        image_url=image_url,
+        storage_path=rel_path,
+        mime_type=uploaded.content_type,
+        source="upload",
+    )
+
+    outfit.reference_image = asset
+    outfit.save(update_fields=["reference_image", "updated_at"])
+    return ok(asset_dict(asset), status=201)
+
+
+@api_view(["DELETE"])
+@handle_errors
+def delete_outfit_reference(request, project_id, character_id, outfit_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    try:
+        outfit = character.outfits.get(outfit_id=outfit_id)
+    except CharacterOutfit.DoesNotExist as exc:
+        raise NotFoundError("Outfit not found.") from exc
+
+    asset = outfit.reference_image
+    outfit.reference_image = None
+    outfit.save(update_fields=["reference_image", "updated_at"])
+    if asset:
+        asset.delete()
+    return ok(status=204)
+
+
+@api_view(["POST"])
+@handle_errors
+def upload_clothing_reference(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+
+    uploaded = request.FILES.get("file")
+    if not uploaded:
+        return JsonResponse({"error_code": "NO_FILE", "message": "No file provided."}, status=400)
+    if uploaded.content_type not in _ALLOWED_MIME_TYPES:
+        return JsonResponse(
+            {"error_code": "INVALID_FORMAT", "message": "Only jpg, png and webp are supported."},
+            status=400,
+        )
+    if uploaded.size > _MAX_UPLOAD_BYTES:
+        return JsonResponse({"error_code": "FILE_TOO_LARGE", "message": "File exceeds 10 MB limit."}, status=400)
+
+    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[uploaded.content_type]
+    rel_path = f"character-studio/clothing-refs/{character_id}/{uuid.uuid4().hex}.{ext}"
+    abs_path = Path(settings.MEDIA_ROOT) / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    with abs_path.open("wb") as fh:
+        for chunk in uploaded.chunks():
+            fh.write(chunk)
+
+    media_url = getattr(settings, "MEDIA_URL", "/media/")
+    if not media_url.endswith("/"):
+        media_url += "/"
+    image_url = f"{media_url}{rel_path}"
+
+    asset = CharacterAsset.objects.create(
+        character=character,
+        project=character.project,
+        user=user,
+        asset_type=CharacterAssetType.CLOTHING_REFERENCE,
+        image_url=image_url,
+        storage_path=rel_path,
+        mime_type=uploaded.content_type,
+        source="upload",
+    )
+    return ok(asset_dict(asset), status=201)
+
+
+@api_view(["DELETE"])
+@handle_errors
+def delete_clothing_reference(request, project_id, character_id, asset_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    try:
+        asset = character.assets.get(asset_id=asset_id, asset_type=CharacterAssetType.CLOTHING_REFERENCE)
+    except CharacterAsset.DoesNotExist as exc:
+        raise NotFoundError("Clothing reference not found.") from exc
+    asset.delete()
+    return ok(status=204)
 
 
 @api_view(["GET"])

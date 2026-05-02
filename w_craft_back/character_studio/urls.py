@@ -29,6 +29,26 @@ urlpatterns = [
         "projects/<int:project_id>/characters/<uuid:character_id>/outfits/<uuid:outfit_id>/generate-variants",
         views.generate_outfit_variants,
     ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/outfits/<uuid:outfit_id>/upload-reference",
+        views.upload_outfit_reference,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/outfits/<uuid:outfit_id>/delete-reference",
+        views.delete_outfit_reference,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/clothing-references",
+        views.upload_clothing_reference,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/clothing-references/",
+        views.upload_clothing_reference,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/clothing-references/<uuid:asset_id>",
+        views.delete_clothing_reference,
+    ),
     path("projects/<int:project_id>/characters/<uuid:character_id>/revisions", views.revisions_collection),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/revisions/<uuid:revision_id>/restore",

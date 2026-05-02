@@ -144,11 +144,11 @@ class GeminiProvider(AIImageProvider):
 
     def edit_character_region(self, job, compiled_prompt, variant_count):
         # MVP: synthesize a new image if true image-edit is unavailable.
+        # NOTE: edit_instruction is kept in DB metadata for revision history,
+        # but is NOT concatenated into the image prompt — it contains "key: value"
+        # text that the model would render as labels on the picture.
         prompt = compiled_prompt["positive_prompt"]
         image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
-        instruction = compiled_prompt.get("edit_instruction") or ""
-        if instruction:
-            prompt = f"{prompt}. Edit instruction: {instruction}"
         negative = compiled_prompt.get("negative_prompt") or ""
         return self._generate(
             job,

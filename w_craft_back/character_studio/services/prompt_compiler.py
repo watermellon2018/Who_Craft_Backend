@@ -4,16 +4,6 @@ from w_craft_back.character_studio.constants import VISUAL_STYLES
 
 logger = logging.getLogger(__name__)
 
-CHARACTER_TYPE_LABELS = {
-    "human": "human",
-    "animal": "animal",
-    "creature": "creature",
-    "robot": "robot",
-    "object": "object",
-    "other": "other",
-}
-
-
 NEGATIVE_BASE = (
     "different person, changed face, changed eyes, changed outfit, changed age, "
     "distorted face, extra limbs"
@@ -49,33 +39,136 @@ INITIAL_PORTRAIT_NEGATIVE = (
     "different person, distorted face, extra limbs, blurry face"
 )
 
-# Enforces identical outfit across portrait / full_body / scene / reference_sheet.
-# Placed after the image-type composition instruction so it has high weight.
-OUTFIT_LOCK = (
-    "OUTFIT CONSISTENCY REQUIRED: the character must wear exactly the same outfit in "
-    "every image type (portrait, full body, scene, reference sheet). "
-    "Outfit: {outfit_desc}. "
-    "DO NOT change, replace, or reinterpret clothing between views."
+# Anti-text / anti-card negative used for portrait and full_body.
+CLEAN_FRAME_NEGATIVE = (
+    "text, letters, words, captions, labels, typography, watermark, logo, "
+    "UI elements, interface, character card, stats panel, information sheet, "
+    "infographic, table, document, poster, comic panel, speech bubbles, "
+    "multiple characters, second character, background scene, environment, "
+    "extra objects"
 )
 
-IMAGE_TYPE_PROMPTS = {
-    "portrait": (
-        "Portrait composition: face and shoulders, readable facial expression, stable identity, "
-        "clear age cues, skin, hair, eyes and facial structure in focus."
-    ),
-    "full_body": (
-        "Full body composition: whole character visible head to toe, body proportions, clothing, "
-        "silhouette and pose are clearly readable."
-    ),
-    "scene": (
-        "Scene composition: the character is placed in an environment with background, mood, "
-        "lighting and cinematic framing."
-    ),
-    "reference_sheet": (
-        "Reference sheet composition: front, side and back views on a neutral background, "
-        "consistent character design, useful for future video generation."
-    ),
+NEGATIVES_BY_IMAGE_TYPE = {
+    "portrait": f"{NEGATIVE_BASE}, {CLEAN_FRAME_NEGATIVE}",
+    "full_body": f"{NEGATIVE_BASE}, {CLEAN_FRAME_NEGATIVE}",
+    "scene": NEGATIVE_BASE,
+    "reference_sheet": NEGATIVE_BASE,
 }
+
+
+# --- Enum → natural-language phrase tables ---------------------------------
+# Each phrase is a noun phrase that fits inside a sentence WITHOUT a "label:"
+# prefix. This is what stops the model from rendering character cards.
+
+FACE_SHAPE_PHRASE = {
+    "oval": "an oval face",
+    "round": "a round face",
+    "square": "a square jawline and angular face",
+    "heart": "a heart-shaped face",
+    "long": "a long face",
+    "diamond": "a diamond-shaped face",
+}
+
+EYE_SHAPE_PHRASE = {
+    "almond": "almond-shaped eyes",
+    "round": "round eyes",
+    "narrow": "narrow eyes",
+    "hooded": "hooded eyes",
+    "upturned": "upturned eyes",
+    "downturned": "downturned eyes",
+}
+
+EYEBROW_SHAPE_PHRASE = {
+    "thin": "thin eyebrows",
+    "thick": "thick eyebrows",
+    "straight": "straight eyebrows",
+    "arched": "arched eyebrows",
+    "soft": "soft eyebrows",
+    "sharp": "sharp eyebrows",
+}
+
+NOSE_SHAPE_PHRASE = {
+    "straight": "a straight nose",
+    "button": "a small button nose",
+    "aquiline": "an aquiline nose",
+    "wide": "a wide nose",
+    "narrow": "a narrow nose",
+    "flat": "a flat nose",
+    "sharp": "a sharp nose",
+}
+
+LIPS_SHAPE_PHRASE = {
+    "thin": "thin lips",
+    "medium": "medium lips",
+    "full": "full lips",
+    "sharp": "sharply defined lips",
+    "soft": "soft lips",
+}
+
+HAIR_LENGTH_PHRASE = {
+    "short": "short hair",
+    "medium": "medium-length hair",
+    "long": "long hair",
+    "shaved": "a shaved head",
+    "bald": "a bald head",
+}
+
+BODY_TYPE_PHRASE = {
+    "slim": "a slim build",
+    "athletic": "an athletic build",
+    "muscular": "a muscular build",
+    "average": "an average build",
+    "heavy": "a heavy build",
+}
+
+DISTINCTIVE_FEATURE_PHRASE = {
+    "freckles": "freckles across the face",
+    "mole": "a small mole",
+    "scar": "a visible scar",
+    "birthmark": "a birthmark",
+    "glasses": "glasses",
+}
+
+GENDER_NOUN = {"male": "man", "female": "woman"}
+
+
+def _phrase(table, key, fallback_label=None):
+    """Look up a phrase; otherwise treat the key as plain text and append fallback_label."""
+    if not key:
+        return ""
+    text = str(key).strip()
+    if text in table:
+        return table[text]
+    cleaned = text.replace("_", " ")
+    if fallback_label:
+        return f"{cleaned} {fallback_label}"
+    return cleaned
+
+
+def _color_phrase(value, kind):
+    """skin / eye color → human readable. kind is 'skin' or 'eye'."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("#"):
+        if kind == "skin":
+            return f"a custom skin tone matching {text}"
+        return f"eyes with a custom color matching {text}"
+    if kind == "skin":
+        return f"{text.replace('_', ' ')} skin tone"
+    return f"{text.replace('_', ' ')} eyes"
+
+
+def _natural_join(items):
+    """Join with Oxford comma: ['a', 'b', 'c'] → 'a, b, and c'."""
+    items = [item for item in items if item]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
 class CharacterPromptCompiler:
@@ -99,31 +192,60 @@ class CharacterPromptCompiler:
         if identity_locked:
             preserve["identity"] = True
 
-        profile_bits = self._profile_bits(character, appearance, outfit, controls)
-        style = controls.get("visual_style") or getattr(character, "visual_style", "") or project_style
-        if style in VISUAL_STYLES or style:
-            profile_bits.append(f"{style.replace('_', ' ')} style")
+        description = self._describe_character(character, appearance, outfit, controls)
+        style_value = controls.get("visual_style") or getattr(character, "visual_style", "") or project_style
+        style_clause = f" in a {str(style_value).replace('_', ' ')} visual style" if style_value else ""
 
-        positive_prompt = "Create a clean character design of " + ", ".join(
-            [bit for bit in profile_bits if bit]
-        )
+        if image_type == "portrait":
+            positive_prompt = (
+                f"A photorealistic single-character portrait of {description}{style_clause}. "
+                "Head and shoulders, centered composition, looking at the camera, "
+                "neutral expression, plain neutral studio background, soft studio lighting. "
+                "The image contains only the character."
+            )
+        elif image_type == "full_body":
+            positive_prompt = (
+                f"A photorealistic single full-body image of {description}{style_clause}. "
+                "Visible from head to toe, centered, neutral standing pose, "
+                "plain neutral studio background, soft studio lighting. "
+                "The image contains only the character."
+            )
+        elif image_type == "scene":
+            positive_prompt = (
+                f"A cinematic image of {description}{style_clause}, placed in an environment "
+                "with mood lighting and cinematic framing."
+            )
+        elif image_type == "reference_sheet":
+            positive_prompt = (
+                f"A character reference sheet of {description}{style_clause}, showing front, "
+                "side, and back views on a neutral background, consistent design across views."
+            )
+        else:
+            positive_prompt = f"An image of {description}{style_clause}."
+
         if text_refinement:
-            positive_prompt = f"{positive_prompt}. Contextual refinement: {text_refinement}"
+            positive_prompt = f"{positive_prompt} {text_refinement}"
+
         if reference_images:
             positive_prompt = (
-                f"{positive_prompt}. Use the saved reference image to preserve the exact same "
-                "character identity across face, proportions, hair, clothing logic and visual style."
+                f"{positive_prompt} Match the saved reference image so the character identity, "
+                "face, hair, and clothing remain consistent across views."
             )
-        if image_type in IMAGE_TYPE_PROMPTS:
-            positive_prompt = f"{positive_prompt}. {IMAGE_TYPE_PROMPTS[image_type]}"
 
         outfit_desc = self._outfit_description(outfit)
-        if outfit_desc:
-            positive_prompt = f"{positive_prompt}. {OUTFIT_LOCK.format(outfit_desc=outfit_desc)}"
+        if outfit_desc and image_type != "scene":
+            positive_prompt = (
+                f"{positive_prompt} The character wears {outfit_desc} consistently across "
+                "every view."
+            )
 
-        logger.debug(
-            "compile: image_type=%s region=%s outfit=%s prompt_len=%d",
-            image_type, region, outfit_desc or "none", len(positive_prompt),
+        clothing_desc = (getattr(character, "clothing_description", "") or "").strip()
+        if clothing_desc and image_type in ("portrait", "full_body", "reference_sheet"):
+            positive_prompt = f"{positive_prompt} The character wears {clothing_desc}."
+
+        logger.info(
+            "compile: image_type=%s region=%s prompt_len=%d prompt=%r",
+            image_type, region, len(positive_prompt), positive_prompt[:400],
         )
 
         edit_instruction = self._edit_instruction(region, controls, preserve, identity_locked, image_type)
@@ -137,7 +259,7 @@ class CharacterPromptCompiler:
         }
         return {
             "positive_prompt": positive_prompt,
-            "negative_prompt": NEGATIVE_BASE,
+            "negative_prompt": NEGATIVES_BY_IMAGE_TYPE.get(image_type, NEGATIVE_BASE),
             "edit_instruction": edit_instruction,
             "reference_image_ids": reference_images,
             "metadata": metadata,
@@ -146,42 +268,35 @@ class CharacterPromptCompiler:
     def compile_initial_portrait_selection(self, character, appearance, outfit, params):
         """
         Strict portrait-only prompt for the initial variant selection page.
-        Enforces: portrait frame, all user-specified attributes fixed, variation only in
-        angle/expression/lighting.
+        Builds the same natural-language description and adds tight portrait framing.
         """
         controls = dict(params or {})
-        profile_bits = self._profile_bits(character, appearance, outfit, controls)
+        description = self._describe_character(character, appearance, outfit, controls)
+        style_value = controls.get("visual_style") or getattr(character, "visual_style", "") or ""
+        style_clause = f" in a {str(style_value).replace('_', ' ')} visual style" if style_value else ""
 
-        style = controls.get("visual_style") or getattr(character, "visual_style", "") or ""
-        if style:
-            profile_bits.append(f"{style.replace('_', ' ')} style")
-
-        positive_prompt = "Create a clean character portrait of " + ", ".join(
-            [bit for bit in profile_bits if bit]
+        positive_prompt = (
+            f"A photorealistic head-and-shoulders portrait of {description}{style_clause}. "
+            "Single character, centered, plain neutral studio background, soft studio lighting. "
+            "The image contains only the character."
         )
 
         text_refinement = (controls.get("text_refinement") or controls.get("appearance_description") or "").strip()
         if text_refinement:
-            positive_prompt = f"{positive_prompt}. {text_refinement}"
-
-        locked = self._locked_attrs_instruction(character, appearance, outfit, controls)
-        if locked:
-            positive_prompt = f"{positive_prompt}. STRICTLY PRESERVE IN EVERY VARIANT: {locked}"
+            positive_prompt = f"{positive_prompt} {text_refinement}"
 
         positive_prompt = (
-            f"{positive_prompt}. "
-            f"{INITIAL_PORTRAIT_FRAME} "
-            f"{PORTRAIT_VARIATION_GUIDE}"
+            f"{positive_prompt} {INITIAL_PORTRAIT_FRAME} {PORTRAIT_VARIATION_GUIDE}"
         )
 
-        logger.debug(
-            "compile_initial_portrait_selection: outfit=%s locked_attrs=%s prompt_len=%d",
-            self._outfit_description(outfit) or "none", locked or "none", len(positive_prompt),
+        logger.info(
+            "compile_initial_portrait_selection: prompt_len=%d prompt=%r",
+            len(positive_prompt), positive_prompt[:400],
         )
 
         return {
             "positive_prompt": positive_prompt,
-            "negative_prompt": INITIAL_PORTRAIT_NEGATIVE,
+            "negative_prompt": f"{INITIAL_PORTRAIT_NEGATIVE}, {CLEAN_FRAME_NEGATIVE}",
             "edit_instruction": "",
             "reference_image_ids": [],
             "metadata": {
@@ -191,6 +306,109 @@ class CharacterPromptCompiler:
                 "controls": controls,
             },
         }
+
+    def _describe_character(self, character, appearance, outfit, controls):
+        """Build a natural-language description of one character.
+        Never emits 'key: value' or label-style fragments."""
+        age = getattr(character, "age", None) if character else None
+        gender = (getattr(character, "gender", "") if character else "") or ""
+        char_type = (getattr(character, "character_type", "") if character else "") or "human"
+
+        if char_type in ("animal", "creature", "robot", "object"):
+            subject = f"a {char_type}"
+        else:
+            gender_noun = GENDER_NOUN.get(gender, "person")
+            subject = f"a {age}-year-old {gender_noun}" if age else f"a {gender_noun}"
+
+        short = (getattr(character, "short_description", "") or "").strip() if character else ""
+
+        has_clauses = []
+        if appearance:
+            face_shape = controls.get("face_shape") or getattr(appearance, "face_shape", "")
+            if face_shape:
+                has_clauses.append(_phrase(FACE_SHAPE_PHRASE, face_shape, "face"))
+
+            skin = controls.get("skin_tone") or getattr(appearance, "skin_tone", "")
+            skin_phrase = _color_phrase(skin, "skin")
+            if skin_phrase:
+                has_clauses.append(skin_phrase)
+
+            eye_color = controls.get("eye_color") or getattr(appearance, "eye_color", "")
+            eye_color_phrase = _color_phrase(eye_color, "eye")
+            if eye_color_phrase:
+                has_clauses.append(eye_color_phrase)
+
+            eye_shape = controls.get("eye_shape") or getattr(appearance, "eye_shape", "")
+            if eye_shape:
+                has_clauses.append(_phrase(EYE_SHAPE_PHRASE, eye_shape, "eyes"))
+
+            eyebrow = controls.get("eyebrow_shape") or getattr(appearance, "eyebrow_shape", "")
+            if eyebrow:
+                has_clauses.append(_phrase(EYEBROW_SHAPE_PHRASE, eyebrow, "eyebrows"))
+
+            nose = controls.get("nose_shape") or getattr(appearance, "nose_shape", "")
+            if nose:
+                has_clauses.append(_phrase(NOSE_SHAPE_PHRASE, nose, "nose"))
+
+            lips = controls.get("lips_shape") or getattr(appearance, "lips_shape", "")
+            if lips:
+                has_clauses.append(_phrase(LIPS_SHAPE_PHRASE, lips, "lips"))
+
+            hair_len = controls.get("hair_length") or getattr(appearance, "hair_length", "")
+            hair_color = controls.get("hair_color") or getattr(appearance, "hair_color", "")
+            hair_style = controls.get("hair_style") or getattr(appearance, "hair_style", "")
+            hair_details_raw = controls.get("hair_details") or getattr(appearance, "hair_details", None) or []
+            if isinstance(hair_details_raw, dict):
+                hair_details_raw = [k for k, v in hair_details_raw.items() if v]
+            hair_details = [str(d).replace("_", " ") for d in hair_details_raw if d]
+            hair_clause = self._hair_clause(hair_len, hair_color, hair_style, hair_details)
+            if hair_clause:
+                has_clauses.append(hair_clause)
+
+            body = controls.get("body_type") or getattr(appearance, "body_type", "")
+            if body:
+                has_clauses.append(_phrase(BODY_TYPE_PHRASE, body, "build"))
+
+            distinctive = controls.get("distinctive_features") or getattr(appearance, "distinctive_features", []) or []
+            if isinstance(distinctive, str):
+                distinctive = [distinctive]
+            for feature in distinctive:
+                phrase = _phrase(DISTINCTIVE_FEATURE_PHRASE, feature)
+                if phrase:
+                    has_clauses.append(phrase)
+
+        outfit_clause = ""
+        outfit_desc = self._outfit_description(outfit)
+        if outfit_desc:
+            outfit_clause = f"wearing {outfit_desc}"
+
+        pieces = [subject]
+        if short:
+            pieces.append(short)
+        if has_clauses:
+            pieces.append("with " + _natural_join(has_clauses))
+        if outfit_clause:
+            pieces.append(outfit_clause)
+
+        return ", ".join(pieces)
+
+    def _hair_clause(self, length, color, style, details=None):
+        if not (length or color or style):
+            return ""
+        if length:
+            base = _phrase(HAIR_LENGTH_PHRASE, length, "hair")
+        else:
+            base = "hair"
+        extras = []
+        if color:
+            extras.append(str(color).replace("_", " "))
+        if style and style != length and style != color:
+            extras.append(str(style).replace("_", " "))
+        if details:
+            extras.extend(details)
+        if extras:
+            return f"{base} ({', '.join(extras)})"
+        return base
 
     def _outfit_description(self, outfit):
         """Returns a canonical outfit description string, or empty string if no outfit."""
@@ -204,110 +422,6 @@ class CharacterPromptCompiler:
         if style:
             parts.append(f"{style} style")
         return ", ".join(parts)
-
-    def _locked_attrs_instruction(self, character, appearance, outfit, controls):
-        """Returns a comma-separated string of all user-specified fixed attributes."""
-        attrs = []
-
-        if character:
-            char_type = getattr(character, "character_type", "") or ""
-            if char_type:
-                attrs.append(f"{CHARACTER_TYPE_LABELS.get(char_type, char_type)} entity type")
-            gender = getattr(character, "gender", "") or ""
-            if gender and gender != "other":
-                attrs.append(f"{gender} gender")
-            age = getattr(character, "age", None)
-            if age:
-                attrs.append(f"{age} years old")
-
-        appearance_fields = [
-            ("hair_color", "hair color"),
-            ("hair_length", "hair length"),
-            ("hair_style", "hairstyle"),
-            ("eye_color", "eye color"),
-            ("skin_tone", "skin tone"),
-            ("face_shape", "face shape"),
-        ]
-        for field, label in appearance_fields:
-            value = (controls.get(field) or "").strip()
-            if not value and appearance:
-                value = (getattr(appearance, field, "") or "").strip()
-            if value:
-                attrs.append(f"{value} {label}")
-
-        special = (controls.get("special_features") or
-                   (getattr(appearance, "special_features", "") if appearance else "") or "").strip()
-        if special:
-            attrs.append(f"special features: {special}")
-
-        outfit_desc = self._outfit_description(outfit)
-        if outfit_desc:
-            attrs.append(f"outfit: {outfit_desc}")
-
-        return ", ".join(attrs) if attrs else ""
-
-    def _profile_bits(self, character, appearance, outfit, controls):
-        bits = []
-        if character:
-            age = getattr(character, "age", None)
-            lifecycle_stage = getattr(character, "lifecycle_stage", "")
-            gender = getattr(character, "gender", "")
-            character_type = getattr(character, "character_type", "human")
-            species = getattr(character, "species", "human")
-            if character_type:
-                bits.append(f"entity type: {CHARACTER_TYPE_LABELS.get(character_type, character_type)}")
-            if lifecycle_stage:
-                bits.append(f"life stage: {lifecycle_stage}")
-            if age:
-                bits.append(f"a {age}-year-old")
-            if gender:
-                bits.append(f"gender applicability: {gender}")
-            if species:
-                bits.append(species)
-            if getattr(character, "short_description", ""):
-                bits.append(character.short_description)
-            personality = getattr(character, "personality", {}) or {}
-            if personality:
-                bits.append("personality: " + ", ".join(self._flatten(personality)))
-        if appearance:
-            for field in (
-                "skin_tone",
-                "eye_color",
-                "eye_shape",
-                "face_shape",
-                "hair_length",
-                "hair_style",
-                "hair_color",
-                "body_type",
-                "height",
-                "posture",
-            ):
-                value = controls.get(field) or getattr(appearance, field, "")
-                if value:
-                    bits.append(f"{value.replace('_', ' ')} {field.replace('_', ' ')}")
-            body_structure = controls.get("body_structure") or getattr(appearance, "body_structure", "")
-            surface_material = controls.get("surface_material") or getattr(appearance, "surface_material", "")
-            special_features = controls.get("special_features") or getattr(appearance, "special_features", "")
-            appearance_prompt = controls.get("appearance_description") or getattr(appearance, "appearance_prompt", "")
-            if body_structure:
-                bits.append(f"body structure: {body_structure}")
-            if surface_material:
-                bits.append(f"surface material: {surface_material}")
-            if special_features:
-                bits.append(f"special features: {special_features}")
-            if appearance_prompt:
-                bits.append(f"appearance: {appearance_prompt}")
-            distinctive = controls.get("distinctive_features") or getattr(appearance, "distinctive_features", [])
-            if distinctive:
-                bits.append("distinctive features: " + ", ".join(distinctive))
-        if outfit:
-            if getattr(outfit, "description", ""):
-                bits.append(f"wearing {outfit.description}")
-            if getattr(outfit, "style", ""):
-                bits.append(f"{outfit.style} outfit")
-        if controls.get("layers"):
-            bits.append("outfit layers: " + str(controls["layers"]))
-        return bits
 
     def _edit_instruction(self, region, controls, preserve, identity_locked, image_type):
         changed = ", ".join([f"{key}: {value}" for key, value in controls.items()]) or "requested controls"

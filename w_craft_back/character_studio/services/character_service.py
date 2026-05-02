@@ -37,6 +37,8 @@ class CharacterService:
         "personality",
         "speech_style",
         "backstory",
+        "clothing_source",
+        "clothing_description",
     }
 
     def __init__(self):
@@ -173,17 +175,6 @@ class CharacterService:
         character.delete()
 
     @transaction.atomic
-    def duplicate_character(self, user, project_id, character_id):
-        source = self.get_character(user, project_id, character_id)
-        payload = character_dict(source, include_related=True)
-        payload["name"] = f"{source.name} Copy"
-        character = self.create_character(user, source.project, payload)
-        if source.active_appearance:
-            fields = character_dict(source, include_related=True).get("appearance", {})
-            fields.pop("appearance_id", None)
-        return character
-
-    @transaction.atomic
     def lock_identity(self, user, project_id, character_id, payload):
         character = self.get_character(user, project_id, character_id)
         if not payload.get("confirm"):
@@ -318,6 +309,7 @@ class CharacterService:
             "hair_length": "hair_length",
             "hair_style": "hair_style",
             "hair_color": "hair_color",
+            "hair_details": "hair_details",
             "height": "height",
             "body_type": "body_type",
             "body_structure": "body_structure",
@@ -327,9 +319,16 @@ class CharacterService:
             "distinctive_features": "distinctive_features",
         }
         result = {}
+        # Allow explicit clearing of free-text and list fields; for shape/color fields
+        # an empty value means "not present in this PATCH" — must NOT overwrite saved data.
+        empty_ok = {"appearance_description", "distinctive_features", "hair_details"}
         for source, target in mapping.items():
-            if source in payload:
-                result[target] = payload[source] or ""
+            if source not in payload:
+                continue
+            value = payload[source]
+            if value in (None, "") and source not in empty_ok:
+                continue
+            result[target] = value if value is not None else ""
         if "appearance_description" in payload:
             result["source_type"] = "description"
             result["source_description"] = payload.get("appearance_description") or ""
