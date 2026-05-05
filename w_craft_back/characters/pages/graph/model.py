@@ -2,9 +2,10 @@ from django.db import models
 from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project.models import Project
 
+
 class RelationshipType(models.Model):
     name = models.CharField(max_length=255)
-    translit = models.CharField(max_length=255)
+    translit = models.CharField(max_length=255, unique=True)
 
     def __str__(self):
         return self.name
@@ -19,3 +20,11 @@ class GraphEdge(models.Model):
 
     def __str__(self):
         return f"{self.project.title}: {self.from_node} -> {self.to_node} ({self.label})"
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "project", "from_node", "to_node"],
+                name="uniq_graph_edge_direction",
+            )
+        ]

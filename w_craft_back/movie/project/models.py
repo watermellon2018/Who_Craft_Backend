@@ -7,7 +7,7 @@ from django.db import models
 class Project(models.Model):
     user = models.ForeignKey(UserKey, on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
-    image = models.ImageField(upload_to='project/poster/')  # Поле для загрузки изображения
+    image = models.ImageField(upload_to='project/poster/', blank=True, default='')
     genre = models.ManyToManyField(Genre)
     format = models.CharField(max_length=255)
     audience = models.ManyToManyField(Audience)
