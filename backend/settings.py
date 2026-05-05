@@ -10,23 +10,36 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 
+import os
 from pathlib import Path
+
+# Load environment variables from backend/.env (dev convenience).
+# This makes CHARACTER_STUDIO_IMAGE_PROVIDER / GEMINI_API_KEY available to Character Studio services.
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+if load_dotenv:
+    load_dotenv(BASE_DIR / ".env")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-h^)_d=jc_d%zgrtjv*_bao26f&0ud66b5@w5_fsfo)^uh-!5r^'
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("DJANGO_SECRET_KEY is not set. Define it in backend/.env.")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes", "on"}
 
 ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
+    h.strip()
+    for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if h.strip()
 ]
 
 # Application definition
@@ -53,10 +66,11 @@ INSTALLED_APPS = [
 #         'rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly'
 #     ]
 # }
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_ALLOW_ALL = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes", "on"}
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # Your React development server
-    # Add other allowed origins as needed
+    o.strip()
+    for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 # CORS_URLS_REGEX = r'^.*$'
@@ -67,12 +81,12 @@ CORS_ALLOW_CREDENTIALS = True
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
 ]
 
@@ -99,10 +113,21 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
+_db_user = os.getenv('W_CRAFT_POSTGRES_USER')
+_db_password = os.getenv('W_CRAFT_POSTGRES_PASSWORD')
+if not _db_user or not _db_password:
+    raise RuntimeError(
+        "W_CRAFT_POSTGRES_USER / W_CRAFT_POSTGRES_PASSWORD are not set. Define them in backend/.env."
+    )
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': os.getenv('W_CRAFT_POSTGRES_ENGINE', 'django.db.backends.postgresql'),
+        'NAME': os.getenv('W_CRAFT_POSTGRES_DB', 'w_craft'),
+        'USER': _db_user,
+        'PASSWORD': _db_password,
+        'HOST': os.getenv('W_CRAFT_POSTGRES_HOST', '127.0.0.1'),
+        'PORT': os.getenv('W_CRAFT_POSTGRES_PORT', '5432'),
     }
 }
 
@@ -148,14 +173,34 @@ DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+            'datefmt': '%H:%M:%S',
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
         },
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',
+        'level': 'WARNING',
+    },
+    'loggers': {
+        'w_craft_back': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
     },
 }
 # CORS_ORIGIN_ALLOW_ALL=True
@@ -166,9 +211,7 @@ LOGGING = {
 #     "http://localhost:3000"
 # ]
 
-MEDIA_URL = 'media/'
-import os
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATIC_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MEDIA_ROOT = os.path.join(BASE_DIR, STATIC_URL, MEDIA_URL)
+MEDIA_URL = '/media/'
+STATIC_ROOT = BASE_DIR
+MEDIA_ROOT = BASE_DIR / "static" / "media"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
