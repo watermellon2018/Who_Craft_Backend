@@ -4,6 +4,8 @@ import os
 import logging
 
 from w_craft_back.character_studio.models import (
+    CharacterAsset,
+    CharacterAssetStatus,
     CharacterAssetType,
     CharacterGenerationJob,
     CharacterImageType,
@@ -29,20 +31,77 @@ class CharacterGenerationService:
         CharacterImageType.PORTRAIT,
         CharacterImageType.FULL_BODY,
         CharacterImageType.SCENE,
-        CharacterImageType.REFERENCE_SHEET,
     )
     IMAGE_TYPE_TO_REGION = {
         CharacterImageType.PORTRAIT: "face",
         CharacterImageType.FULL_BODY: "body",
         CharacterImageType.SCENE: "style",
         CharacterImageType.REFERENCE_SHEET: "full_character",
+        CharacterImageType.THREE_QUARTER: "full_character",
+        CharacterImageType.PROFILE: "full_character",
+        CharacterImageType.BACK_VIEW: "full_character",
+        CharacterImageType.EMOTIONS: "face",
+        CharacterImageType.POSES: "body",
+        CharacterImageType.OUTFIT_DETAILS: "outfit",
     }
     IMAGE_TYPE_TO_ASSET_TYPE = {
         CharacterImageType.PORTRAIT: CharacterAssetType.PORTRAIT,
         CharacterImageType.FULL_BODY: CharacterAssetType.FULL_BODY,
         CharacterImageType.SCENE: CharacterAssetType.SCENE,
         CharacterImageType.REFERENCE_SHEET: CharacterAssetType.REFERENCE_SHEET,
+        CharacterImageType.THREE_QUARTER: CharacterAssetType.THREE_QUARTER,
+        CharacterImageType.PROFILE: CharacterAssetType.PROFILE,
+        CharacterImageType.BACK_VIEW: CharacterAssetType.BACK_VIEW,
+        CharacterImageType.EMOTIONS: CharacterAssetType.EMOTIONS_SHEET,
+        CharacterImageType.POSES: CharacterAssetType.POSES_SHEET,
+        CharacterImageType.OUTFIT_DETAILS: CharacterAssetType.OUTFIT_DETAILS,
     }
+    # Asset_type values that the References stage exposes. The 'character_sheet'
+    # alias from the frontend maps onto reference_sheet.
+    REFERENCE_ASSET_TYPES = (
+        CharacterAssetType.PORTRAIT,
+        CharacterAssetType.FULL_BODY,
+        CharacterAssetType.THREE_QUARTER,
+        CharacterAssetType.PROFILE,
+        CharacterAssetType.BACK_VIEW,
+        CharacterAssetType.EMOTIONS_SHEET,
+        CharacterAssetType.POSES_SHEET,
+        CharacterAssetType.OUTFIT_DETAILS,
+        CharacterAssetType.REFERENCE_SHEET,
+    )
+    REFERENCE_TYPE_TO_IMAGE_TYPE = {
+        CharacterAssetType.PORTRAIT: CharacterImageType.PORTRAIT,
+        CharacterAssetType.FULL_BODY: CharacterImageType.FULL_BODY,
+        CharacterAssetType.THREE_QUARTER: CharacterImageType.THREE_QUARTER,
+        CharacterAssetType.PROFILE: CharacterImageType.PROFILE,
+        CharacterAssetType.BACK_VIEW: CharacterImageType.BACK_VIEW,
+        CharacterAssetType.EMOTIONS_SHEET: CharacterImageType.EMOTIONS,
+        CharacterAssetType.POSES_SHEET: CharacterImageType.POSES,
+        CharacterAssetType.OUTFIT_DETAILS: CharacterImageType.OUTFIT_DETAILS,
+        CharacterAssetType.REFERENCE_SHEET: CharacterImageType.REFERENCE_SHEET,
+    }
+    # Dependent regeneration map: editing one mode forces re-generation of all
+    # downstream modes that derive identity/composition from it. Single source
+    # of truth — frontend mirrors this and the response of generate-edit-variants
+    # exposes it under dependent_image_types.
+    EDIT_DEPENDENCIES = {
+        CharacterImageType.PORTRAIT: (
+            CharacterImageType.PORTRAIT,
+            CharacterImageType.FULL_BODY,
+            CharacterImageType.SCENE,
+        ),
+        CharacterImageType.FULL_BODY: (
+            CharacterImageType.FULL_BODY,
+            CharacterImageType.SCENE,
+        ),
+        CharacterImageType.SCENE: (
+            CharacterImageType.SCENE,
+        ),
+    }
+
+    @classmethod
+    def dependent_image_types(cls, image_type):
+        return cls.EDIT_DEPENDENCIES.get(image_type, (image_type,))
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -112,6 +171,257 @@ class CharacterGenerationService:
             if job.status == GenerationJobStatus.FAILED:
                 break
         return jobs
+
+    @transaction.atomic
+    def generate_zone_edit(self, user, project_id, character_id, payload):
+        """Localized rectangular zone edit on portrait/full_body/scene.
+
+        Applies the edit only to the requested asset_type — no cascading
+        regeneration of dependent formats. The caller (frontend) decides
+        whether to trigger additional regenerations. Selection is stored in
+        request_payload + asset.metadata so a future inpainting provider can
+        build a pixel mask without changing the pipeline.
+        """
+        image_type = self._validate_image_type(payload.get("asset_type") or payload.get("image_type"))
+        if image_type not in (
+            CharacterImageType.PORTRAIT,
+            CharacterImageType.FULL_BODY,
+            CharacterImageType.SCENE,
+        ):
+            raise ValidationError("asset_type must be portrait, full_body, or scene.")
+        instruction = (payload.get("instruction") or "").strip()
+        if not instruction:
+            raise ValidationError("instruction must not be empty.")
+        if len(instruction) > 500:
+            raise ValidationError("instruction max length is 500.")
+        selection = self._validate_selection(payload.get("selection"))
+        self.safety.validate_user_text(instruction)
+
+        character = self.characters.get_character(user, project_id, character_id)
+        region = self.IMAGE_TYPE_TO_REGION[image_type]
+        preserve = {"identity": True, "outside_selection": True}
+        compiled = self.compiler.compile(
+            project_style=payload.get("project_style"),
+            character=character,
+            appearance=character.active_appearance,
+            outfit=character.active_outfit,
+            region=region,
+            controls={"zone_edit": True, "zone_instruction": instruction},
+            text_refinement=instruction,
+            preserve=preserve,
+            identity_locked=character.identity_locked,
+            reference_images=self._reference_ids(character),
+            image_type=image_type,
+            zone_edit={"selection": selection, "instruction": instruction},
+        )
+        primary_payload = {
+            "image_type": image_type,
+            "region": region,
+            "edit_type": "zone_edit",
+            "instruction": instruction,
+            "selection": selection,
+            "preserve": preserve,
+            "activate_image": True,
+            "variant_count": 1,
+        }
+        job = self._run_job(
+            character, GenerationJobType.EDIT_VARIANTS, region, 1, primary_payload, compiled
+        )
+        return job, []
+
+    def _validate_selection(self, selection):
+        if not isinstance(selection, dict):
+            raise ValidationError("selection must be an object with x, y, width, height.")
+        try:
+            x = float(selection.get("x"))
+            y = float(selection.get("y"))
+            width = float(selection.get("width"))
+            height = float(selection.get("height"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("selection x, y, width, height must be numbers.") from exc
+        if x < 0 or y < 0:
+            raise ValidationError("selection x and y must be >= 0.")
+        if width <= 0 or height <= 0:
+            raise ValidationError("selection width and height must be > 0.")
+        if x + width > 1 or y + height > 1:
+            raise ValidationError("selection must be within [0, 1] (x+width and y+height <= 1).")
+        return {"x": x, "y": y, "width": width, "height": height}
+
+    @transaction.atomic
+    def generate_reference(self, user, project_id, character_id, params):
+        """Generate (or regenerate) a single reference view.
+
+        params: {reference_type, correction_prompt?, preserve_identity?}
+        reference_type comes from the UI vocabulary (portrait, full_body,
+        three_quarter, profile, back_view, emotions, poses, outfit_details,
+        character_sheet) and is mapped to the corresponding CharacterImageType.
+        """
+        from w_craft_back.character_studio.services.asset_service import (
+            REFERENCE_UI_TO_ASSET_TYPE,
+        )
+
+        ui_type = (params or {}).get("reference_type")
+        if ui_type not in REFERENCE_UI_TO_ASSET_TYPE:
+            raise ValidationError(f"Unknown reference_type: {ui_type}.")
+        asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
+        image_type = self.REFERENCE_TYPE_TO_IMAGE_TYPE[asset_type]
+
+        character = self.characters.get_character(user, project_id, character_id)
+
+        # Conflict guard: another in-flight job for this same image_type would
+        # produce racing results and identical asset_type rows. Reject the new
+        # request with 409 instead of silently double-generating.
+        active_job_exists = CharacterGenerationJob.objects.filter(
+            character=character,
+            status__in=[GenerationJobStatus.QUEUED, GenerationJobStatus.PROCESSING],
+            request_payload__image_type=image_type,
+        ).exists()
+        if active_job_exists:
+            raise ValidationError(
+                "Generation already running for this reference_type.",
+            )
+
+        correction_prompt = (params.get("correction_prompt") or "").strip()
+        preserve_identity = bool(params.get("preserve_identity", True))
+        if correction_prompt:
+            self.safety.validate_user_text(correction_prompt)
+            if len(correction_prompt) > 500:
+                raise ValidationError("correction_prompt max length is 500.")
+
+        region = self.IMAGE_TYPE_TO_REGION[image_type]
+        compiled = self.compiler.compile(
+            project_style=params.get("project_style"),
+            character=character,
+            appearance=character.active_appearance,
+            outfit=character.active_outfit,
+            region=region,
+            controls=params.get("controls", {}),
+            text_refinement=params.get("text_refinement", ""),
+            preserve=params.get("preserve", {}),
+            identity_locked=character.identity_locked,
+            reference_images=self._reference_ids(character),
+            image_type=image_type,
+            correction_prompt=correction_prompt,
+            preserve_identity=preserve_identity,
+        )
+        request_payload = {
+            **params,
+            "image_type": image_type,
+            "reference_type": ui_type,
+            "asset_type": asset_type,
+            "activate_image": False,
+            "variant_count": 1,
+            "correction_prompt": correction_prompt,
+            "preserve_identity": preserve_identity,
+        }
+        return self._run_job(
+            character,
+            GenerationJobType.INITIAL_VARIANTS,
+            region,
+            1,
+            request_payload,
+            compiled,
+        )
+
+    def generate_missing_references(self, user, project_id, character_id, params):
+        """Idempotent batch trigger.
+
+        For each requested reference_type:
+          - already ready latest -> skip (already_ready)
+          - generating placeholder/asset OR active job -> skip (already_generating)
+          - otherwise: create a generation job through generate_reference()
+
+        Each per-type call runs in its own transaction (generate_reference is
+        @transaction.atomic) so a partial failure on one type does not roll back
+        successfully created jobs for the other types.
+        """
+        from w_craft_back.character_studio.services.asset_service import (
+            REFERENCE_UI_TO_ASSET_TYPE,
+        )
+
+        params = params or {}
+        only_missing = bool(params.get("only_missing", True))
+        preserve_identity = bool(params.get("preserve_identity", True))
+        requested_types = params.get("reference_types") or []
+        if not isinstance(requested_types, (list, tuple)) or not requested_types:
+            raise ValidationError("reference_types must be a non-empty list.")
+
+        unknown = [rt for rt in requested_types if rt not in REFERENCE_UI_TO_ASSET_TYPE]
+        if unknown:
+            raise ValidationError(
+                f"Unknown reference_type(s): {', '.join(unknown)}.",
+            )
+
+        character = self.characters.get_character(user, project_id, character_id)
+
+        latest_ready = self.assets.latest_ready_by_reference_type(character)
+        created_jobs = []
+        skipped = []
+
+        for ui_type in requested_types:
+            asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
+            image_type = self.REFERENCE_TYPE_TO_IMAGE_TYPE[asset_type]
+
+            if only_missing and asset_type in latest_ready:
+                skipped.append({"reference_type": ui_type, "reason": "already_ready"})
+                continue
+
+            active_job = CharacterGenerationJob.objects.filter(
+                character=character,
+                status__in=[GenerationJobStatus.QUEUED, GenerationJobStatus.PROCESSING],
+                request_payload__image_type=image_type,
+            ).exists()
+            if active_job:
+                skipped.append({"reference_type": ui_type, "reason": "already_generating"})
+                continue
+
+            try:
+                job = self.generate_reference(
+                    user, project_id, character_id,
+                    {
+                        "reference_type": ui_type,
+                        "preserve_identity": preserve_identity,
+                    },
+                )
+                created_jobs.append({"reference_type": ui_type, "job_id": str(job.job_id)})
+            except ValidationError as exc:
+                # generate_reference raises ValidationError on the same conflict
+                # — treat as a soft skip rather than failing the whole batch.
+                if "already running" in str(exc).lower():
+                    skipped.append({"reference_type": ui_type, "reason": "already_generating"})
+                else:
+                    raise
+
+        return {"created_jobs": created_jobs, "skipped": skipped}
+
+    @transaction.atomic
+    def correct_reference(self, user, project_id, character_id, reference_id, params):
+        """Apply a textual correction to an existing reference and create a NEW
+        version. The previous version is preserved (status stays ready) so the
+        user can revert by simply marking it primary."""
+        try:
+            reference = CharacterAsset.objects.get(asset_id=reference_id, character_id=character_id)
+        except CharacterAsset.DoesNotExist as exc:
+            raise NotFoundError("Reference not found.") from exc
+        from w_craft_back.character_studio.services.asset_service import (
+            ASSET_TYPE_TO_REFERENCE_UI,
+        )
+        ui_type = ASSET_TYPE_TO_REFERENCE_UI.get(reference.asset_type)
+        if ui_type is None:
+            raise ValidationError("Asset is not a reference and cannot be corrected.")
+        correction_prompt = (params or {}).get("correction_prompt", "").strip()
+        if not correction_prompt:
+            raise ValidationError("correction_prompt must not be empty.")
+        return self.generate_reference(
+            user,
+            project_id,
+            character_id,
+            {
+                "reference_type": ui_type,
+                "correction_prompt": correction_prompt,
+                "preserve_identity": params.get("preserve_identity", True),
+            },
+        )
 
     @transaction.atomic
     def generate_edit_variants(self, user, project_id, character_id, edit_request):
@@ -190,6 +500,8 @@ class CharacterGenerationService:
                 results = provider.edit_character_region(job, compiled, variant_count)
                 asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(image_type, CharacterAssetType.EDIT_VARIANT)
             first_asset = None
+            correction_prompt = (request_payload.get("correction_prompt") or "").strip()
+            preserve_identity = bool(request_payload.get("preserve_identity", False))
             for item in results:
                 metadata = {
                     **(item.get("metadata") or {}),
@@ -197,9 +509,17 @@ class CharacterGenerationService:
                     "job_type": job_type,
                     "edit_instruction": compiled.get("edit_instruction", ""),
                 }
-                asset = self.assets.save_asset(
-                    character,
-                    asset_type,
+                edit_type = request_payload.get("edit_type")
+                if edit_type:
+                    metadata["edit_type"] = edit_type
+                if request_payload.get("selection"):
+                    metadata["selection"] = request_payload["selection"]
+                if request_payload.get("instruction"):
+                    metadata["instruction"] = request_payload["instruction"]
+                if correction_prompt:
+                    metadata["correction_prompt"] = correction_prompt
+                    metadata["preserve_identity"] = preserve_identity
+                asset_kwargs = dict(
                     image_url=item["image_url"],
                     storage_path=item["storage_path"],
                     width=item["width"],
@@ -214,6 +534,13 @@ class CharacterGenerationService:
                     seed=item["seed"],
                     metadata=metadata,
                     safety_status="passed",
+                )
+                if correction_prompt:
+                    asset_kwargs["correction_prompt"] = correction_prompt
+                asset = self.assets.save_asset(
+                    character,
+                    asset_type,
+                    **asset_kwargs,
                 )
                 first_asset = first_asset or asset
                 variant = self.variants.create(

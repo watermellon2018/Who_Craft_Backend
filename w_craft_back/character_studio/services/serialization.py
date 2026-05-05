@@ -53,6 +53,43 @@ def asset_dict(asset):
     return data
 
 
+def reference_dict(asset, reference_type):
+    """Serialize a CharacterAsset as a row of the References screen.
+
+    `reference_type` is the UI vocabulary (portrait, full_body, three_quarter,
+    profile, back_view, emotions, poses, outfit_details, character_sheet) and
+    is included in the row even when the asset is missing — the response
+    always contains all 9 reference types in stable order.
+    """
+    if asset is None:
+        return {
+            "reference_type": reference_type,
+            "status": "missing",
+            "asset_id": None,
+            "image_url": None,
+            "is_primary": False,
+            "version": 0,
+            "source": None,
+            "correction_prompt": "",
+            "error_message": "",
+            "updated_at": None,
+        }
+    return {
+        "reference_type": reference_type,
+        "status": asset.status,
+        "asset_id": str(asset.asset_id),
+        "image_url": public_url(asset.image_url),
+        "thumbnail_url": public_url(asset.image_url),
+        "is_primary": bool(asset.is_primary),
+        "version": int(asset.version or 1),
+        "source": asset.source or "",
+        "generation_job_id": str(asset.source_job_id) if asset.source_job_id else None,
+        "correction_prompt": asset.correction_prompt or "",
+        "error_message": asset.error_message or "",
+        "updated_at": value_to_json(asset.updated_at),
+    }
+
+
 def character_image_dict(image):
     data = model_dict(image)
     if data:
@@ -124,6 +161,58 @@ def character_dict(character, include_related=False):
         data["active_version"] = model_dict(character.active_version)
         data["current_revision"] = revision_dict(character.current_revision)
     return data
+
+
+def references_payload(character, readiness):
+    """Build the full GET /references/ response.
+
+    Always returns all 9 reference rows in REFERENCE_UI_ORDER so the UI grid
+    layout is stable regardless of which assets exist yet.
+    """
+    from w_craft_back.character_studio.services.asset_service import (
+        ASSET_TYPE_TO_REFERENCE_UI,
+        REFERENCE_UI_ORDER,
+        REFERENCE_UI_TO_ASSET_TYPE,
+    )
+
+    latest = readiness["latest_ready_by_type"]
+
+    # The "live" view has to surface in-progress generations and failures, not
+    # only ready rows. Pick the most recent row per asset_type that the user
+    # cares about: ready (latest version), or generating, or failed.
+    rows = []
+    primary_id = None
+    from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetStatus
+
+    for ui_type in REFERENCE_UI_ORDER:
+        asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
+        chosen = latest.get(asset_type)
+        if chosen is None:
+            # No ready row — surface the most recent generating/failed instead.
+            chosen = (
+                CharacterAsset.objects
+                .filter(character=character, asset_type=asset_type)
+                .exclude(status=CharacterAssetStatus.READY)
+                .order_by("-created_at")
+                .first()
+            )
+        rows.append(reference_dict(chosen, ui_type))
+        if chosen and chosen.is_primary:
+            primary_id = str(chosen.asset_id)
+
+    return {
+        "character": {
+            "character_id": str(character.character_id),
+            "name": character.name,
+            "identity_locked": bool(character.identity_locked),
+            "status": character.status,
+        },
+        "references": rows,
+        "primary_reference_id": primary_id,
+        "checklist": readiness["checklist"],
+        "can_proceed_to_3d": readiness["can_proceed"],
+        "proceed_blockers": readiness["blockers"],
+    }
 
 
 def job_dict(job, include_variants=True):
