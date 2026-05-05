@@ -22,9 +22,13 @@ logger = logging.getLogger(__name__)
 
 @receiver(pre_delete, sender=Character)
 def delete_related_file(sender, instance, **kwargs):
-    directory_path = os.path.dirname(instance.photo.path)
-    if instance.photo:
-        instance.photo.delete(False)
+    if not instance.photo:
+        return
+    try:
+        directory_path = os.path.dirname(instance.photo.path)
+    except ValueError:
+        return
+    instance.photo.delete(False)
     if os.path.exists(directory_path) and len(os.listdir(directory_path)) == 0:
         os.rmdir(directory_path)
 

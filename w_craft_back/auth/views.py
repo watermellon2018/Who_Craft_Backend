@@ -7,13 +7,13 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.auth.serializers import UserSerializer, UserKeySerializer
+from w_craft_back.auth.serializers import UserSerializer
 
 logger = logging.getLogger(__name__)
+
 
 class RegistrationView(APIView):
     def post(self, request):
@@ -39,16 +39,13 @@ class LoginView(APIView):
         logger.info(f'User {username} tried to log')
 
         user = authenticate(username=username, password=password)
-        user = UserKey.objects.get(user=user)
-        from django.forms.models import model_to_dict
-
-        key = user.key
-
         if user is None:
             return Response({'status': 'fail'})
-        else:
-            return Response({
-                'status': 200,
-                'refresh': str(key),
-                'access': str(key),
-            })
+
+        user_key, _ = UserKey.objects.get_or_create(user=user)
+        key = user_key.key
+        return Response({
+            'status': 200,
+            'refresh': str(key),
+            'access': str(key),
+        })

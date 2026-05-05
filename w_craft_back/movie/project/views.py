@@ -92,7 +92,8 @@ def select_project_info(request):
             with open(project.image.path, "rb") as img_file:
                 img_obj = base64.b64encode(img_file.read()).decode('utf-8')
                 logger.info('Постер найден')
-        logger.info(project.image.url)
+        if project.image:
+            logger.info(project.image.url)
 
         response = {
             'id': project.id,
@@ -116,11 +117,17 @@ def select_project_info(request):
 
 @receiver(pre_delete, sender=Project)
 def delete_related_file(sender, instance, **kwargs):
-    directory_path = os.path.dirname(instance.image.path)
-    if instance.image:
-        instance.image.delete(False)
+    if not instance.image:
+        return
+    try:
+        directory_path = os.path.dirname(instance.image.path)
+    except ValueError:
+        return
+    instance.image.delete(False)
     if os.path.exists(directory_path) and len(os.listdir(directory_path)) == 0:
         os.rmdir(directory_path)
+
+
 @api_view(['POST'])
 def update_info_project(request):
     logger.info('Обновить информацию о проекте')
