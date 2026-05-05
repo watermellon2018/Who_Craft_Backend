@@ -367,11 +367,11 @@ class GenerationFlowTests(CharacterStudioTestCase):
             {"variant_count": 2},
         )
 
-        self.assertEqual(len(jobs), 4)
-        self.assertEqual([job.request_payload["image_type"] for job in jobs], ["portrait", "full_body", "scene", "reference_sheet"])
+        self.assertEqual(len(jobs), 3)
+        self.assertEqual([job.request_payload["image_type"] for job in jobs], ["portrait", "full_body", "scene"])
         self.assertEqual(
             set(CharacterImage.objects.filter(character=character, is_active=True).values_list("image_type", flat=True)),
-            {"portrait", "full_body", "scene", "reference_sheet"},
+            {"portrait", "full_body", "scene"},
         )
 
 
@@ -861,7 +861,7 @@ class EditorJobPollingApiTests(CharacterStudioTestCase):
 
 class EditorCharacterGetResponseTests(CharacterStudioTestCase):
     """After create_initial_image_set, GET /api/.../characters/<id> must include
-    an 'images' dict with all four types so the frontend knows which assets are ready."""
+    an 'images' dict with all editor modes so the frontend knows which assets are ready."""
 
     def setUp(self):
         super().setUp()
@@ -880,7 +880,7 @@ class EditorCharacterGetResponseTests(CharacterStudioTestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         images = data.get("images", {})
-        for image_type in ("portrait", "full_body", "scene", "reference_sheet"):
+        for image_type in ("portrait", "full_body", "scene"):
             self.assertIn(image_type, images, f"'images' dict missing key: {image_type}")
             self.assertTrue(
                 images[image_type].get("image_url"),
@@ -1104,3 +1104,341 @@ class CharacterStatusLifecycleTests(CharacterStudioTestCase):
 
         # Still only one new character created during this flow
         self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
+
+
+# ---------------------------------------------------------------------------
+# References stage — board GET, generate, correct, upload, make-primary,
+# checklist, proceed-to-3D, identity preservation in compiled prompt.
+# ---------------------------------------------------------------------------
+
+
+class ReferencesStageTests(CharacterStudioTestCase):
+    REFERENCE_TYPES = (
+        "portrait", "full_body", "three_quarter", "profile", "back_view",
+        "emotions", "poses", "outfit_details", "character_sheet",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+        self.character = self.create_character()
+        self.character_id = self.character.character_id
+
+    def _url(self, suffix=""):
+        return (
+            f"/api/projects/{self.project.id}/characters/{self.character_id}/references"
+            f"{suffix}"
+        )
+
+    def _generate(self, reference_type, **extra):
+        return self.client.post(
+            self._url("/generate"),
+            {"token_user": self.token, "reference_type": reference_type, **extra},
+            format="json",
+        )
+
+    def test_get_returns_all_nine_reference_types_in_stable_order(self):
+        response = self.client.get(self._url(), {"token_user": self.token})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        types = [row["reference_type"] for row in body["references"]]
+        self.assertEqual(types, list(self.REFERENCE_TYPES))
+        # Without any references yet — every row is missing and proceed is blocked.
+        self.assertTrue(all(row["status"] == "missing" for row in body["references"]))
+        self.assertFalse(body["can_proceed_to_3d"])
+        self.assertIn("missing_portrait", body["proceed_blockers"])
+        self.assertIn("missing_full_body", body["proceed_blockers"])
+        self.assertIn("missing_back_view", body["proceed_blockers"])
+        self.assertIn("missing_profile_or_three_quarter", body["proceed_blockers"])
+
+    def test_generate_creates_ready_asset_with_versioning(self):
+        response = self._generate("portrait")
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        portrait = next(r for r in body["references"]["references"] if r["reference_type"] == "portrait")
+        self.assertEqual(portrait["status"], "ready")
+        self.assertEqual(portrait["version"], 1)
+        # Regenerate => new version, old asset still exists.
+        response2 = self._generate("portrait")
+        self.assertEqual(response2.status_code, 200, response2.content)
+        portrait2 = next(r for r in response2.json()["references"]["references"] if r["reference_type"] == "portrait")
+        self.assertEqual(portrait2["status"], "ready")
+        self.assertEqual(portrait2["version"], 2)
+        self.assertNotEqual(portrait2["asset_id"], portrait["asset_id"])
+        self.assertEqual(
+            CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+            ).count(),
+            2,
+        )
+
+    def test_generate_rejects_unknown_reference_type(self):
+        response = self._generate("not_a_thing")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_correct_creates_new_version_keeping_old(self):
+        self._generate("profile")
+        original = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.PROFILE,
+        ).first()
+        response = self.client.post(
+            self._url(f"/{original.asset_id}/correct"),
+            {
+                "token_user": self.token,
+                "correction_prompt": "fix the side profile, keep identity",
+                "preserve_identity": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.PROFILE,
+        ).order_by("version")
+        self.assertEqual(rows.count(), 2)
+        latest = rows.last()
+        self.assertEqual(latest.version, 2)
+        self.assertIn("identity", latest.correction_prompt)
+        self.assertTrue(latest.metadata.get("preserve_identity"))
+
+    def test_upload_creates_uploaded_ready_asset(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+        )
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            upload = SimpleUploadedFile("photo.png", png_bytes, content_type="image/png")
+            response = self.client.post(
+                self._url("/upload"),
+                {
+                    "token_user": self.token,
+                    "reference_type": "outfit_details",
+                    "file": upload,
+                },
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertEqual(body["reference_type"], "outfit_details")
+        self.assertEqual(body["status"], "ready")
+        self.assertEqual(body["source"], "uploaded")
+
+    def test_upload_rejects_invalid_mime(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        bad = SimpleUploadedFile("evil.gif", b"GIF89a", content_type="image/gif")
+        response = self.client.post(
+            self._url("/upload"),
+            {"token_user": self.token, "reference_type": "portrait", "file": bad},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_make_primary_resets_others(self):
+        self._generate("portrait")
+        self._generate("full_body")
+        portrait = CharacterAsset.objects.get(
+            character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+        )
+        full_body = CharacterAsset.objects.get(
+            character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+        )
+        # Make portrait primary first.
+        response = self.client.post(
+            self._url(f"/{portrait.asset_id}/make-primary"),
+            {"token_user": self.token},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        portrait.refresh_from_db()
+        self.assertTrue(portrait.is_primary)
+        # Switch to full_body — portrait should be unset.
+        response = self.client.post(
+            self._url(f"/{full_body.asset_id}/make-primary"),
+            {"token_user": self.token},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        portrait.refresh_from_db()
+        full_body.refresh_from_db()
+        self.assertFalse(portrait.is_primary)
+        self.assertTrue(full_body.is_primary)
+
+    def test_proceed_to_3d_blocked_without_required_references(self):
+        response = self.client.post(
+            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertFalse(body["can_proceed"])
+        self.assertIn("missing_portrait", body["blockers"])
+
+    def test_proceed_to_3d_succeeds_when_required_ready(self):
+        for ref_type in ("portrait", "full_body", "profile", "back_view"):
+            response = self._generate(ref_type)
+            self.assertEqual(response.status_code, 200, response.content)
+        response = self.client.post(
+            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertTrue(body["can_proceed"])
+        self.assertEqual(body["next_stage"], "3d_model")
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.status, CharacterStatus.REFERENCES_LOCKED)
+
+    def test_three_quarter_satisfies_profile_requirement(self):
+        # profile OR three_quarter is acceptable for the side requirement.
+        for ref_type in ("portrait", "full_body", "three_quarter", "back_view"):
+            self._generate(ref_type)
+        response = self.client.post(
+            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_checklist_patch_persists_user_state(self):
+        response = self.client.patch(
+            self._url("/checklist"),
+            {
+                "token_user": self.token,
+                "appearance_stable": True,
+                "outfit_readable": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertTrue(body["checklist"]["appearance_stable"])
+        self.assertTrue(body["checklist"]["outfit_readable"])
+        self.character.refresh_from_db()
+        self.assertTrue(self.character.references_state["appearance_stable"])
+
+    def test_compiled_prompt_for_back_view_contains_identity_lock_tail(self):
+        compiler = CharacterPromptCompiler()
+        compiled = compiler.compile(
+            character=self.character,
+            appearance=self.character.active_appearance,
+            outfit=None,
+            region="full_character",
+            image_type="back_view",
+            identity_locked=True,
+            preserve_identity=True,
+            reference_images=["fake-canonical-id"],
+        )
+        prompt = compiled["positive_prompt"].lower()
+        self.assertIn("back view", prompt)
+        self.assertIn("do not change face identity", prompt)
+        # canonical reference is included
+        self.assertEqual(compiled["reference_image_ids"], ["fake-canonical-id"])
+        # Match-the-saved-reference tail is present (reference_images path).
+        self.assertIn("saved reference image", prompt)
+
+    def test_generate_missing_creates_jobs_only_for_absent_required(self):
+        # Pre-create one ready portrait so the batch endpoint must skip it.
+        self._generate("portrait")
+        portrait_count_before = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+        ).count()
+
+        response = self.client.post(
+            self._url("/generate-missing"),
+            {
+                "token_user": self.token,
+                "reference_types": [
+                    "portrait", "full_body", "three_quarter", "profile", "back_view",
+                ],
+                "only_missing": True,
+                "preserve_identity": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        created_types = {job["reference_type"] for job in body["created_jobs"]}
+        skipped_types = {item["reference_type"] for item in body["skipped"]}
+        self.assertEqual(created_types, {"full_body", "three_quarter", "profile", "back_view"})
+        self.assertEqual(skipped_types, {"portrait"})
+        # Portrait was NOT regenerated.
+        self.assertEqual(
+            CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+            ).count(),
+            portrait_count_before,
+        )
+
+    def test_generate_missing_is_idempotent(self):
+        # First call creates jobs for everything.
+        first = self.client.post(
+            self._url("/generate-missing"),
+            {
+                "token_user": self.token,
+                "reference_types": ["portrait", "full_body", "profile", "back_view"],
+                "only_missing": True,
+            },
+            format="json",
+        )
+        self.assertEqual(first.status_code, 200, first.content)
+        # All 4 jobs created the first time. The mock provider runs the job
+        # synchronously inside _run_job, so the assets are already `ready`
+        # by the time the response returns — the second call must skip them.
+        second = self.client.post(
+            self._url("/generate-missing"),
+            {
+                "token_user": self.token,
+                "reference_types": ["portrait", "full_body", "profile", "back_view"],
+                "only_missing": True,
+            },
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200, second.content)
+        body = second.json()
+        self.assertEqual(body["created_jobs"], [])
+        skipped_types = {item["reference_type"] for item in body["skipped"]}
+        self.assertEqual(skipped_types, {"portrait", "full_body", "profile", "back_view"})
+        # Each required type still has exactly one CharacterAsset row.
+        for asset_type in (
+            CharacterAssetType.PORTRAIT,
+            CharacterAssetType.FULL_BODY,
+            CharacterAssetType.PROFILE,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            count = CharacterAsset.objects.filter(
+                character=self.character, asset_type=asset_type,
+            ).count()
+            self.assertEqual(count, 1, f"{asset_type} was duplicated by the second batch call")
+
+    def test_generate_missing_rejects_unknown_reference_type(self):
+        response = self.client.post(
+            self._url("/generate-missing"),
+            {"token_user": self.token, "reference_types": ["portrait", "moonwalk"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_generate_missing_rejects_empty_reference_types(self):
+        response = self.client.post(
+            self._url("/generate-missing"),
+            {"token_user": self.token, "reference_types": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_compiled_prompt_includes_correction_block(self):
+        compiler = CharacterPromptCompiler()
+        compiled = compiler.compile(
+            character=self.character,
+            appearance=self.character.active_appearance,
+            outfit=None,
+            region="full_character",
+            image_type="profile",
+            correction_prompt="lift the chin slightly",
+            preserve_identity=True,
+        )
+        self.assertIn("USER CORRECTION", compiled["positive_prompt"])
+        self.assertIn("lift the chin slightly", compiled["positive_prompt"])
+        self.assertEqual(compiled["metadata"]["correction_prompt"], "lift the chin slightly")
+        self.assertTrue(compiled["metadata"]["preserve_identity"])

@@ -311,6 +311,7 @@ class CharacterService:
             "hair_color": "hair_color",
             "hair_details": "hair_details",
             "height": "height",
+            "height_cm": "height_cm",
             "body_type": "body_type",
             "body_structure": "body_structure",
             "surface_material": "surface_material",
@@ -327,6 +328,16 @@ class CharacterService:
                 continue
             value = payload[source]
             if value in (None, "") and source not in empty_ok:
+                continue
+            if target == "height_cm":
+                # Coerce + clamp to a sane range; PositiveSmallIntegerField accepts 0–32767.
+                try:
+                    coerced = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if coerced < 50 or coerced > 280:
+                    continue
+                result[target] = coerced
                 continue
             result[target] = value if value is not None else ""
         if "appearance_description" in payload:

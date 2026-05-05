@@ -27,6 +27,7 @@ class CharacterRole(models.TextChoices):
 class CharacterStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     ACTIVE = "active", "Active"
+    REFERENCES_LOCKED = "references_locked", "References locked"
 
 
 class CharacterAssetType(models.TextChoices):
@@ -41,10 +42,22 @@ class CharacterAssetType(models.TextChoices):
     FACE_CLOSEUP = "face_closeup", "Face closeup"
     FRONT_VIEW = "front_view", "Front view"
     SIDE_VIEW = "side_view", "Side view"
+    THREE_QUARTER = "three_quarter", "Three-quarter view"
+    PROFILE = "profile", "Profile view"
+    BACK_VIEW = "back_view", "Back view"
+    EMOTIONS_SHEET = "emotions_sheet", "Emotions sheet"
+    POSES_SHEET = "poses_sheet", "Poses sheet"
+    OUTFIT_DETAILS = "outfit_details", "Outfit details"
     EXPRESSION = "expression", "Expression"
     OUTFIT_REFERENCE = "outfit_reference", "Outfit reference"
     CLOTHING_REFERENCE = "clothing_reference", "Clothing reference"
     THUMBNAIL = "thumbnail", "Thumbnail"
+
+
+class CharacterAssetStatus(models.TextChoices):
+    GENERATING = "generating", "Generating"
+    READY = "ready", "Ready"
+    FAILED = "failed", "Failed"
 
 
 class GenerationJobType(models.TextChoices):
@@ -78,6 +91,12 @@ class CharacterImageType(models.TextChoices):
     FULL_BODY = "full_body", "Full body"
     SCENE = "scene", "Scene"
     REFERENCE_SHEET = "reference_sheet", "Reference sheet"
+    THREE_QUARTER = "three_quarter", "Three-quarter view"
+    PROFILE = "profile", "Profile view"
+    BACK_VIEW = "back_view", "Back view"
+    EMOTIONS = "emotions", "Emotions"
+    POSES = "poses", "Poses"
+    OUTFIT_DETAILS = "outfit_details", "Outfit details"
 
 
 class VariantStatus(models.TextChoices):
@@ -178,6 +197,9 @@ class StudioCharacter(models.Model):
     backstory = models.TextField(blank=True, default="")
     clothing_source = models.CharField(max_length=20, blank=True, default="text")
     clothing_description = models.TextField(blank=True, default="")
+    # User-editable references checklist (subjective items only). Auto-derived
+    # items (full_body_ready, front_side_back_ready) are computed at request time.
+    references_state = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -218,6 +240,10 @@ class CharacterAppearance(models.Model):
     hair_color = models.CharField(max_length=100, blank=True, default="")
     hair_details = models.JSONField(default=dict, blank=True)
     height = models.CharField(max_length=100, blank=True, default="")
+    # Numeric height in centimeters. Drives the height ruler in the full-body
+    # editor and is fed into the generation prompt. The legacy `height` enum
+    # field above is kept for backwards-compatibility but no longer used.
+    height_cm = models.PositiveSmallIntegerField(null=True, blank=True)
     body_type = models.CharField(max_length=100, blank=True, default="")
     body_structure = models.CharField(max_length=128, blank=True, default="")
     surface_material = models.CharField(max_length=128, blank=True, default="")
@@ -316,12 +342,25 @@ class CharacterAsset(models.Model):
     source_variant_id = models.UUIDField(null=True, blank=True)
     generation_prompt = models.TextField(blank=True, default="")
     negative_prompt = models.TextField(blank=True, default="")
+    correction_prompt = models.TextField(blank=True, default="")
     model_name = models.CharField(max_length=100, blank=True, default="")
     model_version = models.CharField(max_length=100, blank=True, default="")
     seed = models.BigIntegerField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     safety_status = models.CharField(max_length=100, blank=True, default="unchecked")
+    # Lifecycle status of this asset row. Existing rows default to READY via
+    # data migration; new rows representing in-progress generations are created
+    # with GENERATING and updated to READY/FAILED when the job terminates.
+    status = models.CharField(
+        max_length=32,
+        choices=CharacterAssetStatus.choices,
+        default=CharacterAssetStatus.READY,
+        db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1)
+    error_message = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "character_assets"
@@ -329,6 +368,7 @@ class CharacterAsset(models.Model):
             models.Index(fields=["character"], name="character_a_charact_0d1067_idx"),
             models.Index(fields=["project"], name="character_a_project_d415f6_idx"),
             models.Index(fields=["asset_type"], name="character_a_asset_t_07aa97_idx"),
+            models.Index(fields=["character", "asset_type", "status"], name="character_a_char_at_st_idx"),
         ]
         constraints = [
             models.UniqueConstraint(

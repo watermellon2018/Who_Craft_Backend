@@ -9,10 +9,21 @@ from rest_framework.decorators import api_view
 
 logger = logging.getLogger(__name__)
 
-from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterOutfit, CharacterRevision
+from w_craft_back.character_studio.models import (
+    CharacterAsset,
+    CharacterAssetType,
+    CharacterOutfit,
+    CharacterRevision,
+    CharacterStatus,
+    RevisionChangeType,
+)
 from w_craft_back.character_studio.repositories.repositories import OutfitRepository
+from w_craft_back.character_studio.services.asset_service import (
+    CharacterAssetService,
+    REFERENCE_UI_TO_ASSET_TYPE,
+)
 from w_craft_back.character_studio.services.character_service import CharacterService
-from w_craft_back.character_studio.services.errors import CharacterStudioError, NotFoundError, PermissionDeniedError
+from w_craft_back.character_studio.services.errors import CharacterStudioError, NotFoundError, PermissionDeniedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
 from w_craft_back.character_studio.services.permissions import get_owned_project, get_user_from_request
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
@@ -21,6 +32,8 @@ from w_craft_back.character_studio.services.serialization import (
     character_dict,
     job_dict,
     outfit_dict,
+    reference_dict,
+    references_payload,
     revision_dict,
 )
 
@@ -119,7 +132,37 @@ def generate_initial_variants(request, project_id, character_id):
 def generate_edit_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     job = CharacterGenerationService().generate_edit_variants(user, project_id, character_id, payload(request))
-    return ok({"job_id": str(job.job_id), "status": job.status, "error_code": job.error_code, "error_message": job.error_message})
+    deps = CharacterGenerationService.dependent_image_types(job.request_payload.get("image_type"))
+    return ok({
+        "job_id": str(job.job_id),
+        "status": job.status,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "dependent_image_types": [str(t) for t in deps],
+    })
+
+
+@api_view(["POST"])
+@handle_errors
+def zone_edit(request, project_id, character_id):
+    user = get_user_from_request(request)
+    primary_job, secondary_jobs = CharacterGenerationService().generate_zone_edit(
+        user, project_id, character_id, payload(request)
+    )
+    deps = CharacterGenerationService.dependent_image_types(
+        primary_job.request_payload.get("image_type")
+    )
+    return ok({
+        "job_id": str(primary_job.job_id),
+        "status": primary_job.status,
+        "error_code": primary_job.error_code,
+        "error_message": primary_job.error_message,
+        "dependent_image_types": [str(t) for t in deps],
+        "secondary_job_ids": {
+            str(job.request_payload.get("image_type")): str(job.job_id)
+            for job in secondary_jobs
+        },
+    })
 
 
 def generation_job_summary(job):
@@ -385,3 +428,188 @@ def restore_revision(request, project_id, character_id, revision_id):
         raise NotFoundError("Revision not found.") from exc
     new_revision = CharacterRevisionService().restore_revision(character, revision, user)
     return ok(revision_dict(new_revision), status=201)
+
+
+# ----------------------------------------------------------------------------
+# References stage (read board / generate / correct / upload / make-primary /
+# readiness / checklist / proceed-to-3D)
+# ----------------------------------------------------------------------------
+
+
+def _readiness_for(character):
+    return CharacterAssetService().compute_readiness(character)
+
+
+@api_view(["GET"])
+@handle_errors
+def references_collection(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    return ok(references_payload(character, readiness))
+
+
+@api_view(["POST"])
+@handle_errors
+def references_generate(request, project_id, character_id):
+    user = get_user_from_request(request)
+    data = payload(request)
+    job = CharacterGenerationService().generate_reference(user, project_id, character_id, data)
+    # Refresh state so the client gets the updated row immediately (the asset
+    # is created by _run_job before the request returns when using the mock
+    # provider; for real providers it may still be GENERATING).
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    return ok({
+        "job_id": str(job.job_id),
+        "status": job.status,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "references": references_payload(character, readiness),
+    })
+
+
+@api_view(["POST"])
+@handle_errors
+def references_generate_missing(request, project_id, character_id):
+    """Batch-trigger generation of all missing required references.
+
+    Idempotent: re-calling with the same payload returns
+    `skipped` for any reference_type that is already ready or generating —
+    no duplicate jobs are created.
+    """
+    user = get_user_from_request(request)
+    data = payload(request)
+    result = CharacterGenerationService().generate_missing_references(
+        user, project_id, character_id, data,
+    )
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    return ok({
+        "created_jobs": result["created_jobs"],
+        "skipped": result["skipped"],
+        "references": references_payload(character, readiness),
+    })
+
+
+@api_view(["POST"])
+@handle_errors
+def references_correct(request, project_id, character_id, reference_id):
+    user = get_user_from_request(request)
+    data = payload(request)
+    job = CharacterGenerationService().correct_reference(
+        user, project_id, character_id, reference_id, data,
+    )
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    return ok({
+        "job_id": str(job.job_id),
+        "status": job.status,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "references": references_payload(character, readiness),
+    })
+
+
+@api_view(["POST"])
+@handle_errors
+def references_upload(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    ui_type = request.POST.get("reference_type") or request.data.get("reference_type")
+    replace = (request.POST.get("replace_current") or request.data.get("replace_current") or "").lower() in (
+        "1", "true", "yes",
+    )
+    uploaded = request.FILES.get("file")
+    asset = CharacterAssetService().upload_reference(
+        character, user, ui_type, uploaded, replace_current=replace,
+    )
+    return ok(reference_dict(asset, ui_type), status=201)
+
+
+@api_view(["POST"])
+@handle_errors
+def references_make_primary(request, project_id, character_id, reference_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    CharacterAssetService().make_primary_reference(character, reference_id)
+    readiness = _readiness_for(character)
+    return ok(references_payload(character, readiness))
+
+
+@api_view(["GET"])
+@handle_errors
+def references_readiness(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    return ok({
+        "can_proceed": readiness["can_proceed"],
+        "required_ready": readiness["can_proceed"],
+        "blockers": readiness["blockers"],
+        "checklist": readiness["checklist"],
+    })
+
+
+_USER_CHECKLIST_KEYS = ("appearance_stable", "face_matches_base", "outfit_readable", "suitable_for_3d")
+
+
+@api_view(["PATCH"])
+@handle_errors
+def references_checklist(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    data = payload(request)
+    state = dict(character.references_state or {})
+    for key in _USER_CHECKLIST_KEYS:
+        if key in data:
+            state[key] = bool(data[key])
+    character.references_state = state
+    character.save(update_fields=["references_state", "updated_at"])
+    readiness = _readiness_for(character)
+    return ok({
+        "checklist": readiness["checklist"],
+        "can_proceed": readiness["can_proceed"],
+        "blockers": readiness["blockers"],
+    })
+
+
+@api_view(["POST"])
+@handle_errors
+def references_proceed_to_3d(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    readiness = _readiness_for(character)
+    if not readiness["can_proceed"]:
+        return JsonResponse(
+            {
+                "can_proceed": False,
+                "error_code": "REFERENCES_NOT_READY",
+                "message": "Required references are missing.",
+                "blockers": readiness["blockers"],
+                "checklist": readiness["checklist"],
+            },
+            status=400,
+        )
+    # Snapshot the locked-in set so the future 3D step has a stable list to
+    # consume. Recorded as a revision; CharacterRevision is the existing audit
+    # log so we don't introduce a new table.
+    locked_ids = [
+        str(asset.asset_id)
+        for asset in readiness["latest_ready_by_type"].values()
+    ]
+    character.status = CharacterStatus.REFERENCES_LOCKED
+    character.save(update_fields=["status", "updated_at"])
+    CharacterRevisionService().create_revision(
+        character,
+        RevisionChangeType.VERSION_CREATE,
+        changed_region="full_character",
+        change_summary="references_locked",
+        snapshot={"references": locked_ids, "stage": "references_locked"},
+    )
+    return ok({
+        "can_proceed": True,
+        "next_stage": "3d_model",
+        "next_url": f"/project/{project_id}/characters/{character_id}/3d-model",
+        "locked_reference_ids": locked_ids,
+    })
