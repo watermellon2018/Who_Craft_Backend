@@ -29,17 +29,17 @@ if load_dotenv:
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    'django-insecure-h^)_d=jc_d%zgrtjv*_bao26f&0ud66b5@w5_fsfo)^uh-!5r^',
-)
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("DJANGO_SECRET_KEY is not set. Define it in backend/.env.")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes", "on"}
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes", "on"}
 
 ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
+    h.strip()
+    for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if h.strip()
 ]
 
 # Application definition
@@ -66,10 +66,11 @@ INSTALLED_APPS = [
 #         'rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly'
 #     ]
 # }
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_ALLOW_ALL = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes", "on"}
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # Your React development server
-    # Add other allowed origins as needed
+    o.strip()
+    for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 # CORS_URLS_REGEX = r'^.*$'
@@ -112,12 +113,19 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
+_db_user = os.getenv('W_CRAFT_POSTGRES_USER')
+_db_password = os.getenv('W_CRAFT_POSTGRES_PASSWORD')
+if not _db_user or not _db_password:
+    raise RuntimeError(
+        "W_CRAFT_POSTGRES_USER / W_CRAFT_POSTGRES_PASSWORD are not set. Define them in backend/.env."
+    )
+
 DATABASES = {
     'default': {
         'ENGINE': os.getenv('W_CRAFT_POSTGRES_ENGINE', 'django.db.backends.postgresql'),
         'NAME': os.getenv('W_CRAFT_POSTGRES_DB', 'w_craft'),
-        'USER': os.getenv('W_CRAFT_POSTGRES_USER', 'angry_dog'),
-        'PASSWORD': os.getenv('W_CRAFT_POSTGRES_PASSWORD', 'G4gk#%kfpCVw5K21k'),
+        'USER': _db_user,
+        'PASSWORD': _db_password,
         'HOST': os.getenv('W_CRAFT_POSTGRES_HOST', '127.0.0.1'),
         'PORT': os.getenv('W_CRAFT_POSTGRES_PORT', '5432'),
     }

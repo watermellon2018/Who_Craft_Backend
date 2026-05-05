@@ -18,6 +18,8 @@ load_dotenv()
 TOKEN_HUGGING = os.getenv('TOKEN_HUGGING_FACE')
 NVIDIA_KEY = os.getenv('NVIDIA_KEY')
 STABLE_KEY = os.getenv('STABLE_KEY')
+NVIDIA_BASE_URL = os.getenv('NVIDIA_BASE_URL', 'https://api.nvcf.nvidia.com')
+NVIDIA_FUNCTION_ID = os.getenv('NVIDIA_FUNCTION_ID')
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +199,8 @@ def create_image_from_string(user_string):
     # return image
     logger.info('Begin generating...')
 
-    invoke_url = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/89848fb8-549f-41bb-88cb-95d6597044a4"
-    fetch_url_format = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/"
+    invoke_url = f"{NVIDIA_BASE_URL}/v2/nvcf/pexec/functions/{NVIDIA_FUNCTION_ID}"
+    fetch_url_format = f"{NVIDIA_BASE_URL}/v2/nvcf/pexec/status/"
 
     headers = {
         "Authorization": f"Bearer {NVIDIA_KEY}",
