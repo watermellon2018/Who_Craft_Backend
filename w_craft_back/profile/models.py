@@ -6,13 +6,13 @@ from django.db import models
 from django.utils.text import slugify
 
 
-USERNAME_RE = re.compile(r'^[a-z0-9_-]{3,32}$')
+USERNAME_RE = re.compile(r'^[a-z0-9_]{3,30}$')
 
 
 def validate_public_username(value: str) -> None:
     if not USERNAME_RE.match(value):
         raise ValidationError(
-            'username must be 3-32 chars, lowercase latin letters, digits, "_" or "-"'
+            'username must be 3-30 chars, lowercase latin letters, digits or "_"'
         )
 
 
@@ -120,7 +120,7 @@ class UserSocialLink(models.Model):
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     public_username = models.CharField(
-        max_length=32,
+        max_length=30,
         unique=True,
         blank=True,
         null=True,
@@ -151,6 +151,8 @@ class UserProfile(models.Model):
     notifications_enabled = models.BooleanField(default=True)
     favorite_genres = models.JSONField(default=list, blank=True)
     interests = models.JSONField(default=list, blank=True)
+    subscribers_count = models.IntegerField(default=0)
+    subscriptions_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
