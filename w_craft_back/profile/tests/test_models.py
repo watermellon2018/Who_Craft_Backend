@@ -41,8 +41,8 @@ class UserProfileCompletionTest(TestCase):
         # avatar + about + interests filled (3/4 = 75%), socials always False
         self.assertEqual(result['percent'], 50)  # bio + interests = 2/4
 
-    def test_socials_always_false(self):
-        profile = self._make_profile(bio='bio', interests=['tag'])
+    def test_socials_false_without_social_links(self):
+        profile = UserProfile.objects.create(user=self.user, bio='bio', interests=['tag'])
         result = profile.get_profile_completion()
         self.assertFalse(result['items']['socials'])
 

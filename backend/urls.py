@@ -30,6 +30,7 @@ urlpatterns = [
     path('api/projects/hero/graph/', include('w_craft_back.characters.pages.graph.urls')),
     path('api/', include('w_craft_back.character_studio.urls')),
     path('api/profile/', include('w_craft_back.profile.urls')),
+    path('api/', include('w_craft_back.subscriptions.urls')),
 
 ]
 urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
