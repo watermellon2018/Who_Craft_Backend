@@ -975,115 +975,26 @@ class EditorRetryTests(CharacterStudioTestCase):
         )
 
 
-class CharacterStatusLifecycleTests(CharacterStudioTestCase):
-    """Tests for Bug 1: character must stay 'draft' until a portrait variant is confirmed."""
+class CharacterListingTests(CharacterStudioTestCase):
+    """Smoke tests for the character listing/lifecycle.
 
-    def _create_and_generate(self, variant_count=2):
+    The legacy draft -> active lifecycle was removed: characters are 'active'
+    immediately on creation. These tests guard the listing contract.
+    """
+
+    def test_new_character_is_active(self):
         character = self.create_character()
-        job = CharacterGenerationService().create_initial_variants(
-            self.user_key, self.project.id, character.character_id, {"variant_count": variant_count}
-        )
-        return character, job
-
-    def test_new_character_is_draft(self):
-        character = self.create_character()
-        self.assertEqual(character.status, CharacterStatus.DRAFT)
-
-    def test_draft_not_in_default_list(self):
-        # Draft character must NOT appear in the default character list.
-        draft = self.create_character()
-        self.assertEqual(draft.status, CharacterStatus.DRAFT)
-
-        result = CharacterService().list_project_characters(self.user_key, self.project.id)
-        ids = [c["character_id"] for c in result]
-        self.assertNotIn(str(draft.character_id), ids)
-
-    def test_applying_portrait_variant_activates_character(self):
-        character, job = self._create_and_generate()
-        portrait_variant = job.variants.first()
-
-        CharacterService().apply_variant(
-            self.user_key,
-            self.project.id,
-            character.character_id,
-            portrait_variant.variant_id,
-            {"apply_as": "current_reference", "image_type": "portrait"},
-        )
-
-        character.refresh_from_db()
         self.assertEqual(character.status, CharacterStatus.ACTIVE)
 
-    def test_active_character_visible_in_default_list(self):
-        character, job = self._create_and_generate()
-        portrait_variant = job.variants.first()
-
-        CharacterService().apply_variant(
-            self.user_key,
-            self.project.id,
-            character.character_id,
-            portrait_variant.variant_id,
-            {"apply_as": "current_reference", "image_type": "portrait"},
-        )
-
+    def test_new_character_visible_in_default_list(self):
+        character = self.create_character()
         result = CharacterService().list_project_characters(self.user_key, self.project.id)
         ids = [c["character_id"] for c in result]
         self.assertIn(str(character.character_id), ids)
 
-    def test_applying_non_portrait_variant_does_not_activate(self):
-        character, job = self._create_and_generate()
-        variant = job.variants.first()
-
-        CharacterService().apply_variant(
-            self.user_key,
-            self.project.id,
-            character.character_id,
-            variant.variant_id,
-            {"apply_as": "current_reference", "image_type": "full_body"},
-        )
-
-        character.refresh_from_db()
-        self.assertEqual(character.status, CharacterStatus.DRAFT)
-
-    def test_list_with_status_all_returns_drafts_and_active(self):
-        draft = self.create_character()
-
-        active_char, job = self._create_and_generate()
-        CharacterService().apply_variant(
-            self.user_key,
-            self.project.id,
-            active_char.character_id,
-            job.variants.first().variant_id,
-            {"apply_as": "current_reference", "image_type": "portrait"},
-        )
-
-        all_chars = CharacterService().list_project_characters(
-            self.user_key, self.project.id, filters={"status": "all"}
-        )
-        all_ids = [c["character_id"] for c in all_chars]
-        self.assertIn(str(draft.character_id), all_ids)
-        self.assertIn(str(active_char.character_id), all_ids)
-
-    def test_list_with_status_draft_returns_only_drafts(self):
-        draft = self.create_character()
-        active_char, job = self._create_and_generate()
-        CharacterService().apply_variant(
-            self.user_key,
-            self.project.id,
-            active_char.character_id,
-            job.variants.first().variant_id,
-            {"apply_as": "current_reference", "image_type": "portrait"},
-        )
-
-        draft_chars = CharacterService().list_project_characters(
-            self.user_key, self.project.id, filters={"status": "draft"}
-        )
-        ids = [c["character_id"] for c in draft_chars]
-        self.assertIn(str(draft.character_id), ids)
-        self.assertNotIn(str(active_char.character_id), ids)
-
     def test_regenerate_reuses_same_character_no_new_record_created(self):
         # Simulates the "Изменить параметры" re-edit flow: the frontend sends a PATCH
-        # to update the existing draft character, then calls generate-initial-variants again.
+        # to update the existing character, then calls generate-initial-variants again.
         # No new StudioCharacter record should be created.
         from w_craft_back.character_studio.models import StudioCharacter
 
@@ -1091,7 +1002,6 @@ class CharacterStatusLifecycleTests(CharacterStudioTestCase):
         character = self.create_character()
         self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
 
-        # Simulate "Изменить параметры": update the same draft, generate new variants
         CharacterService().update_character(
             self.user_key,
             self.project.id,
@@ -1102,7 +1012,6 @@ class CharacterStatusLifecycleTests(CharacterStudioTestCase):
             self.user_key, self.project.id, character.character_id, {"variant_count": 2}
         )
 
-        # Still only one new character created during this flow
         self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
 
 

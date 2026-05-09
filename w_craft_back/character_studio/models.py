@@ -25,7 +25,6 @@ class CharacterRole(models.TextChoices):
 
 
 class CharacterStatus(models.TextChoices):
-    DRAFT = "draft", "Draft"
     ACTIVE = "active", "Active"
     REFERENCES_LOCKED = "references_locked", "References locked"
 
@@ -145,7 +144,7 @@ class StudioCharacter(models.Model):
     status = models.CharField(
         max_length=20,
         choices=CharacterStatus.choices,
-        default=CharacterStatus.DRAFT,
+        default=CharacterStatus.ACTIVE,
         db_index=True,
     )
     identity_locked = models.BooleanField(default=False)
