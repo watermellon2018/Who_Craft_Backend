@@ -24,6 +24,48 @@ from w_craft_back.movie.project.models import Project, ProjectStatus
 # Project create / update
 # --------------------------------------------------------------------------- #
 
+# Format choices accepted on write paths. Stored as plain strings on Project.format
+# (the legacy column is a CharField), but validated here so the editor cannot push
+# arbitrary values.
+PROJECT_FORMAT_CHOICES = (
+    ("short_film", "Короткометражный фильм"),
+    ("feature_film", "Полнометражный фильм"),
+    ("series", "Сериал"),
+    ("clip", "Клип"),
+    ("commercial", "Реклама"),
+    ("other", "Другое"),
+    # Legacy values still present in some rows / older frontend builds.
+    ("full-movie", "Полнометражный фильм (legacy)"),
+    ("short-movie", "Короткометражка (legacy)"),
+    ("marketing", "Реклама (legacy)"),
+)
+
+PROJECT_TARGET_AUDIENCE_CHOICES = (
+    ("all", "Все"),
+    ("kids", "Дети"),
+    ("teens", "Подростки"),
+    ("young_adults", "Молодёжь"),
+    ("adults", "Взрослые"),
+    ("elderly", "Пожилые люди"),
+)
+
+
+def _genre_field():
+    return serializers.ListField(
+        child=serializers.CharField(max_length=120, allow_blank=False),
+        required=False,
+        allow_empty=True,
+    )
+
+
+def _audience_field():
+    return serializers.ListField(
+        child=serializers.CharField(max_length=255, allow_blank=False),
+        required=False,
+        allow_empty=True,
+    )
+
+
 class ProjectCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(allow_blank=True, required=False, default="")
@@ -40,6 +82,29 @@ class ProjectCreateSerializer(serializers.Serializer):
     )
     is_favorite = serializers.BooleanField(required=False, default=False)
 
+    # Editor fields (legacy columns).
+    format = serializers.ChoiceField(
+        choices=PROJECT_FORMAT_CHOICES, required=False, default="feature_film"
+    )
+    genre = _genre_field()
+    audience = _audience_field()
+    annotation = serializers.CharField(
+        max_length=2000, allow_blank=True, required=False, default=""
+    )
+    synopsis = serializers.CharField(
+        max_length=5000, allow_blank=True, required=False, default=""
+    )
+    # Base64 data URL for poster upload (kept compatible with the old endpoint).
+    poster_image_data = serializers.CharField(
+        allow_blank=True, required=False, default=""
+    )
+
+    def validate_title(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Title is required")
+        return value
+
 
 class ProjectUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False)
@@ -51,6 +116,29 @@ class ProjectUpdateSerializer(serializers.Serializer):
         required=False,
         allow_empty=True,
     )
+
+    format = serializers.ChoiceField(
+        choices=PROJECT_FORMAT_CHOICES, required=False
+    )
+    genre = _genre_field()
+    audience = _audience_field()
+    annotation = serializers.CharField(
+        max_length=2000, allow_blank=True, required=False
+    )
+    synopsis = serializers.CharField(
+        max_length=5000, allow_blank=True, required=False
+    )
+    poster_image_data = serializers.CharField(allow_blank=True, required=False)
+    # Pass an empty string explicitly to clear the poster.
+    poster_url = serializers.CharField(
+        allow_blank=True, allow_null=True, required=False
+    )
+
+    def validate_title(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Title cannot be empty")
+        return value
 
 
 # --------------------------------------------------------------------------- #

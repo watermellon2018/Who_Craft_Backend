@@ -563,6 +563,32 @@ def build_project_summary(project: Project, request=None) -> dict[str, Any]:
     }
 
 
+def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]:
+    """Full payload for the project settings/edit page.
+
+    Includes editor-specific fields (format, genre, audience, annotation,
+    synopsis, posterUrl) on top of the regular summary so the frontend can
+    populate the form from a single GET call.
+    """
+
+    base = build_project_summary(project, request)
+    poster_url = _absolute_url(request, project.image) or _absolute_url(
+        request, project.cover_image
+    )
+    base.update({
+        "format": project.format or "",
+        "genre": [g.translit for g in project.genre.all()],
+        # Stable English values (e.g. "kids") so the frontend chips can match
+        # by value, not by display label.
+        "audience": [a.translit for a in project.audience.all() if a.translit],
+        "annotation": project.annot or "",
+        "synopsis": project.desc or project.description or "",
+        "posterUrl": poster_url,
+        "createdAt": project.created_at.isoformat() if project.created_at else None,
+    })
+    return base
+
+
 # --------------------------------------------------------------------------- #
 # Activity helper (used by CRUD action views)
 # --------------------------------------------------------------------------- #

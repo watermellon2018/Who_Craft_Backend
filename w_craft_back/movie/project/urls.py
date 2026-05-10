@@ -18,6 +18,14 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectMusicView,
     ProjectScenesView,
 )
+from w_craft_back.movie.poster.dashboard_views import (
+    ProjectPosterGenerateView,
+    ProjectPosterJobDetailView,
+    ProjectPosterSelectView,
+    ProjectPosterVariantDeleteView,
+    ProjectPosterVariantsView,
+    ProjectPosterView,
+)
 
 urlpatterns = [
     # Legacy endpoints (kept for back-compat).
@@ -37,4 +45,12 @@ urlpatterns = [
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
     path('<int:project_id>/generation-jobs/', ProjectGenerationJobsView.as_view(), name='project-generation-jobs'),
+
+    # Poster generation page (/create-project/gen-poster).
+    path('<int:project_id>/poster/', ProjectPosterView.as_view(), name='project-poster'),
+    path('<int:project_id>/poster/generate/', ProjectPosterGenerateView.as_view(), name='project-poster-generate'),
+    path('<int:project_id>/poster/jobs/<int:job_id>/', ProjectPosterJobDetailView.as_view(), name='project-poster-job'),
+    path('<int:project_id>/poster/variants/', ProjectPosterVariantsView.as_view(), name='project-poster-variants'),
+    path('<int:project_id>/poster/variants/<int:variant_id>/', ProjectPosterVariantDeleteView.as_view(), name='project-poster-variant-detail'),
+    path('<int:project_id>/poster/select/', ProjectPosterSelectView.as_view(), name='project-poster-select'),
 ]
