@@ -52,20 +52,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'mptt',
-    # 'w_craft_back.apps.WCraftBackConfig',
     'w_craft_back',
     'corsheaders',
     'rest_framework',
-    # 'rest_framework_simplejwt',
 ]
 
-# REST_FRAMEWORK = {
-#     # Use Django's standard `django.contrib.auth` permissions,
-#     # or allow read-only access for unauthenticated users.
-#     'DEFAULT_PERMISSION_CLASSES': [
-#         'rest_framework.permissions.DjangoModelPermissionsOrAnonReadOnly'
-#     ]
-# }
 CORS_ORIGIN_ALLOW_ALL = os.getenv("CORS_ALLOW_ALL", "false").lower() in {"1", "true", "yes", "on"}
 CORS_ALLOWED_ORIGINS = [
     o.strip()
@@ -73,13 +64,9 @@ CORS_ALLOWED_ORIGINS = [
     if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
-# CORS_URLS_REGEX = r'^.*$'
 
 from corsheaders.defaults import default_headers as _cors_default_headers
 CORS_ALLOW_HEADERS = (*_cors_default_headers, "x-user-token")
-
-# SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTOCOL", "https")
-# CSRF_COOKIE_SECURE  = True
 
 
 MIDDLEWARE = [
@@ -206,13 +193,6 @@ LOGGING = {
         },
     },
 }
-# CORS_ORIGIN_ALLOW_ALL=True
-
-# CORS_ORIGIN_WHITELIST = [
-#
-#     "http://127.0.0.1:8000",
-#     "http://localhost:3000"
-# ]
 
 MEDIA_URL = '/media/'
 STATIC_ROOT = BASE_DIR
