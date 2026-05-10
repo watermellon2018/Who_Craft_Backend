@@ -9,3 +9,5 @@ from w_craft_back.profile.models import *
 from w_craft_back.subscriptions.models import *
 # Dashboard models depend on StudioCharacter — import last.
 from w_craft_back.movie.project.dashboard_models import *
+# Poster models depend on Project + ProjectAsset (defined above).
+from w_craft_back.movie.poster.models import *

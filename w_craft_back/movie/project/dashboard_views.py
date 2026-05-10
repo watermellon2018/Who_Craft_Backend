@@ -7,10 +7,14 @@ the request body for access control.
 
 from __future__ import annotations
 
+import base64
 import logging
+import re
+import uuid
 from typing import Optional
 
 from django.contrib.auth.models import User
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -48,9 +52,11 @@ from w_craft_back.movie.project.serializers import (
 )
 from w_craft_back.movie.project.services import (
     build_project_dashboard,
+    build_project_edit_payload,
     build_project_summary,
     record_activity,
 )
+from w_craft_back.movie.properties.models import Audience, Genre
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,214 @@ def _replace_tags(project: Project, names) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Editor helpers (genre / audience / poster)
+# --------------------------------------------------------------------------- #
+
+def _slugify_genre(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"\s+", "_", value)
+    value = re.sub(r"[^a-z0-9_\-]", "", value)
+    return value or "genre"
+
+
+# Mirror of frontend src/constants/projectOptions.ts — used so that when we
+# auto-create a Genre row for a known editor value, we store the readable
+# Russian label in `name` rather than the raw machine value.
+_GENRE_LABELS = {
+    "drama": "Драма",
+    "comedy": "Комедия",
+    "action": "Экшен",
+    "thriller": "Триллер",
+    "horror": "Хоррор",
+    "sci_fi": "Научная фантастика",
+    "fantasy": "Фэнтези",
+    "adventure": "Приключения",
+    "romance": "Романтика",
+    "detective": "Детектив",
+    "mystery": "Мистика",
+    "crime": "Криминал",
+    "historical": "Исторический",
+    "documentary": "Документальный",
+    "animation": "Анимация",
+    "family": "Семейный",
+    "musical": "Мюзикл",
+    "war": "Военный",
+    "western": "Вестерн",
+    "cyberpunk": "Киберпанк",
+    "post_apocalyptic": "Постапокалипсис",
+    "slice_of_life": "Повседневность",
+    "superhero": "Супергерои",
+    "other": "Другое",
+}
+
+
+def _resolve_genres(values) -> list[Genre]:
+    """Return Genre rows for the supplied translit/name values, creating
+    user-defined entries on the fly (frontend allows free-form genres)."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        if not isinstance(raw, str):
+            continue
+        v = raw.strip()
+        if not v or v.lower() in seen:
+            continue
+        seen.add(v.lower())
+        cleaned.append(v)
+
+    if not cleaned:
+        return []
+
+    existing = list(
+        Genre.objects.filter(Q(translit__in=cleaned) | Q(name__in=cleaned))
+    )
+    by_translit = {g.translit: g for g in existing}
+    by_name = {g.name: g for g in existing}
+
+    resolved: list[Genre] = []
+    seen_ids: set[int] = set()
+    for value in cleaned:
+        match = by_translit.get(value) or by_name.get(value)
+        if match is None:
+            translit = _slugify_genre(value)
+            base_translit = translit
+            suffix = 1
+            while Genre.objects.filter(translit=translit).exists():
+                suffix += 1
+                translit = f"{base_translit}_{suffix}"
+            display_name = _GENRE_LABELS.get(value.lower(), value)
+            match = Genre.objects.create(name=display_name, translit=translit)
+        if match.id in seen_ids:
+            continue
+        seen_ids.add(match.id)
+        resolved.append(match)
+    return resolved
+
+
+# Mirror of frontend src/constants/projectOptions.ts. Keys are stable English
+# values stored as Audience.translit; the dict gives us the readable Russian
+# name to use when we have to auto-create the row.
+_AUDIENCE_LABELS = {
+    "all": "Все",
+    "kids": "Дети",
+    "teens": "Подростки",
+    "young_adults": "Молодёжь",
+    "adults": "Взрослые",
+    "elderly": "Пожилые люди",
+}
+
+# Allowed values accepted on write. Anything outside this set gets dropped.
+_AUDIENCE_ALLOWED = set(_AUDIENCE_LABELS.keys())
+
+
+def _normalize_audience_values(values) -> list[str]:
+    """Normalize the raw values from the editor:
+
+    - drop anything outside the canonical set,
+    - dedupe,
+    - if "all" is present alongside specific values, collapse to ["all"],
+    - if the result is empty, fall back to ["all"] so the project always has
+      at least one audience.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        if not isinstance(raw, str):
+            continue
+        v = raw.strip().lower()
+        if v not in _AUDIENCE_ALLOWED or v in seen:
+            continue
+        seen.add(v)
+        cleaned.append(v)
+
+    if not cleaned:
+        return ["all"]
+    if "all" in cleaned:
+        return ["all"]
+    return cleaned
+
+
+def _resolve_audiences(values) -> list[Audience]:
+    """Return Audience rows for the editor values, creating canonical rows
+    on the fly so the legacy M2M storage stays in sync with the frontend
+    value vocabulary."""
+    normalized = _normalize_audience_values(values)
+    if not normalized:
+        return []
+
+    existing = list(Audience.objects.filter(translit__in=normalized))
+    by_translit = {a.translit: a for a in existing}
+
+    resolved: list[Audience] = []
+    seen_ids: set[int] = set()
+    for value in normalized:
+        match = by_translit.get(value)
+        if match is None:
+            display_name = _AUDIENCE_LABELS.get(value, value)
+            # Re-fetch race-safe via get_or_create on the unique translit field.
+            match, _ = Audience.objects.get_or_create(
+                translit=value,
+                defaults={"name": display_name},
+            )
+            by_translit[value] = match
+        if match.id in seen_ids:
+            continue
+        seen_ids.add(match.id)
+        resolved.append(match)
+    return resolved
+
+
+_BASE64_PREFIX_RE = re.compile(r"^data:(?P<mime>[\w/+\-.]+);base64,(?P<data>.+)$", re.S)
+
+
+def _decode_poster_data_url(data_url: str, owner_id, title: str) -> Optional[ContentFile]:
+    """Convert a data: URL into a Django ContentFile usable with ImageField.save."""
+    if not data_url:
+        return None
+    m = _BASE64_PREFIX_RE.match(data_url.strip())
+    if not m:
+        return None
+    mime = m.group("mime").lower()
+    if mime not in {"image/jpeg", "image/png", "image/webp"}:
+        return None
+    try:
+        raw = base64.b64decode(m.group("data"), validate=True)
+    except (ValueError, base64.binascii.Error):
+        return None
+    if len(raw) > 5 * 1024 * 1024:  # 5 MB hard cap
+        return None
+    ext = mime.split("/")[-1]
+    safe_title = re.sub(r"[^\w\-.]+", "_", title or "project")[:60]
+    name = f"{owner_id or 'anon'}/{safe_title}/{uuid.uuid4()}.{ext}"
+    return ContentFile(raw, name=name)
+
+
+def _apply_poster(project: Project, data: dict, owner_id) -> None:
+    """Apply poster_image_data (base64) or poster_url ('' clears) to the project."""
+    if "poster_image_data" in data and data["poster_image_data"]:
+        decoded = _decode_poster_data_url(
+            data["poster_image_data"], owner_id, project.title
+        )
+        if decoded is not None:
+            old = project.image
+            if old:
+                try:
+                    old.delete(save=False)
+                except Exception:  # pragma: no cover - filesystem race
+                    logger.warning("Failed to delete old poster", exc_info=True)
+            project.image.save(decoded.name, decoded, save=False)
+        return
+
+    if "poster_url" in data and data["poster_url"] in (None, ""):
+        if project.image:
+            try:
+                project.image.delete(save=False)
+            except Exception:  # pragma: no cover
+                logger.warning("Failed to delete poster on clear", exc_info=True)
+        project.image = ""
+
+
+# --------------------------------------------------------------------------- #
 # Project list / create
 # --------------------------------------------------------------------------- #
 
@@ -149,19 +363,27 @@ class ProjectListCreateView(APIView):
         data = serializer.validated_data
 
         with transaction.atomic():
+            synopsis = data.get("synopsis", "") or ""
             project = Project.objects.create(
                 owner=user,
                 title=data["title"],
-                description=data.get("description", ""),
+                description=data.get("description", "") or synopsis,
                 status=data.get("status", ProjectStatus.DRAFT),
                 is_favorite=data.get("is_favorite", False),
-                # legacy required fields kept blank-safe
+                # legacy required fields
                 user_id=_legacy_userkey_id(user),
-                format="",
-                annot="",
-                desc=data.get("description", ""),
+                format=data.get("format", "") or "",
+                annot=data.get("annotation", "") or "",
+                desc=synopsis or data.get("description", "") or "",
             )
             _replace_tags(project, data.get("tags", []))
+            if "genre" in data:
+                project.genre.set(_resolve_genres(data["genre"]))
+            if "audience" in data:
+                project.audience.set(_resolve_audiences(data["audience"]))
+            _apply_poster(project, data, owner_id=user.id)
+            project.save()
+
             ProjectMember.objects.get_or_create(
                 project=project,
                 user=user,
@@ -176,7 +398,10 @@ class ProjectListCreateView(APIView):
                 description="проект создан",
             )
 
-        return Response(build_project_summary(project, request), status=status.HTTP_201_CREATED)
+        return Response(
+            build_project_edit_payload(project, request),
+            status=status.HTTP_201_CREATED,
+        )
 
 
 def _legacy_userkey_id(user: User) -> Optional[int]:
@@ -200,7 +425,7 @@ class ProjectDetailView(APIView):
         project = _get_project_or_404(project_id)
         if not user_has_project_access(user, project):
             return _forbidden()
-        return Response(build_project_summary(project, request))
+        return Response(build_project_edit_payload(project, request))
 
     def patch(self, request, project_id: int):
         user = _resolve_user(request)
@@ -219,27 +444,47 @@ class ProjectDetailView(APIView):
 
         prev_status = project.status
 
+        editor_fields = (
+            "format", "genre", "audience", "annotation", "synopsis",
+            "poster_image_data", "poster_url",
+        )
+
         with transaction.atomic():
             for field in ("title", "description", "status", "is_favorite"):
                 if field in data:
                     setattr(project, field, data[field])
             if "description" in data:
                 project.desc = data["description"]
+            if "format" in data:
+                project.format = data["format"] or ""
+            if "annotation" in data:
+                project.annot = data["annotation"] or ""
+            if "synopsis" in data:
+                project.desc = data["synopsis"] or ""
+
             # Maintain archived_at when transitioning to/from archived.
             if "status" in data:
                 if data["status"] == ProjectStatus.ARCHIVED and project.archived_at is None:
                     project.archived_at = _tz.now()
                 elif data["status"] != ProjectStatus.ARCHIVED and project.archived_at is not None:
                     project.archived_at = None
+
+            _apply_poster(project, data, owner_id=user.id)
             project.save()
+
             if "tags" in data:
                 _replace_tags(project, data["tags"])
+            if "genre" in data:
+                project.genre.set(_resolve_genres(data["genre"]))
+            if "audience" in data:
+                project.audience.set(_resolve_audiences(data["audience"]))
 
             # Differentiated activity entries.
             new_status = data.get("status")
             status_changed = new_status is not None and new_status != prev_status
             non_status_changed = any(
-                f in data for f in ("title", "description", "is_favorite", "tags")
+                f in data
+                for f in ("title", "description", "is_favorite", "tags") + editor_fields
             )
 
             if status_changed and new_status == ProjectStatus.ARCHIVED:
@@ -270,7 +515,7 @@ class ProjectDetailView(APIView):
                     description="проект обновлён",
                 )
 
-        return Response(build_project_summary(project, request))
+        return Response(build_project_edit_payload(project, request))
 
     def delete(self, request, project_id: int):
         user = _resolve_user(request)
