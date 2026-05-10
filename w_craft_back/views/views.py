@@ -8,163 +8,14 @@ import requests
 from django.http import HttpResponse
 from dotenv import load_dotenv
 from PIL import Image
-from huggingface_hub.inference_api import InferenceApi
-from rest_framework.views import APIView
-
-from w_craft_back.generation.promt.builder import get_promt_age
 
 # Load environment variables from .env file
 load_dotenv()
-TOKEN_HUGGING = os.getenv('TOKEN_HUGGING_FACE')
 NVIDIA_KEY = os.getenv('NVIDIA_KEY')
-STABLE_KEY = os.getenv('STABLE_KEY')
 NVIDIA_BASE_URL = os.getenv('NVIDIA_BASE_URL', 'https://api.nvcf.nvidia.com')
 NVIDIA_FUNCTION_ID = os.getenv('NVIDIA_FUNCTION_ID')
 
 logger = logging.getLogger(__name__)
-
-
-class GenerateImageView(APIView):
-    def get(self, request):
-        params = request.GET
-
-        gender = params.get('gender', None)
-        min_value = params.get('minAge', None)
-        max_value = params.get('maxAge', None)
-        eyes = params.get('eyes', None)
-        hair = params.get('hair', None)
-        body = params.get('body', None)
-        appearance = params.get('appearance', None)
-        character = params.get('character', None)
-        style_gen = params.get('styleGen')
-
-        prompt_global = 'Generate a movie poster one character'
-        begin_len_prompt = len(prompt_global)
-
-        prompt_gender = '' if gender is None else 'Gender: {}. '.format(gender)
-        prompt_global += prompt_gender
-
-        prompt_age: str = get_promt_age(min_value, max_value)
-        prompt_global += prompt_age
-
-        prompt_eyes = '' if eyes is None else 'Eyes: {}. '.format(eyes)
-        prompt_global += prompt_eyes
-
-        prompt_hair = '' if hair is None else 'Hair: {}. '.format(hair)
-        prompt_global += prompt_hair
-
-        prompt_body = '' if body is None else 'Physique: {}. '.format(body)
-        prompt_global += prompt_body
-
-        prompt_appearance = '' if appearance is None \
-            else 'Appearance: {}. '.format(appearance)
-        prompt_global += prompt_appearance
-
-        prompt_character = '' if character is None \
-            else 'The appearance should reflect the character. ' \
-                 'Personality: {}. '.format(character)
-        prompt_global += prompt_character
-
-        end_len_promt = len(prompt_global)
-
-        if begin_len_prompt < end_len_promt:
-            substring = ' with the following details. '
-            prompt_global = prompt_global[:begin_len_prompt] + \
-                            substring + prompt_global[begin_len_prompt:]
-
-
-        prompt_global += f'. Style: {style_gen}.'
-        logger.info(f'Prompt person: ${prompt_global}')
-
-        image = create_image_from_string(prompt_global)
-        response = img2response(image)
-
-        return response
-
-
-class GenerateImageUndefinedView(APIView):
-    def get(self, request):
-        params = request.GET
-
-        desc = params.get('description', None)
-        character = params.get('character', None)
-        style_gen = params.get('styleGen')
-
-        prompt_global = 'Generate a movie poster one character'
-        begin_len_prompt = len(prompt_global)
-
-        prompt_desc = '' if desc is None else 'Description: {}. '.format(desc)
-        prompt_global += prompt_desc
-
-        prompt_character = '' if character is None \
-            else 'The appearance should reflect the character. ' \
-                 'Personality: {}. '.format(character)
-        prompt_global += prompt_character
-
-        end_len_prompt = len(prompt_global)
-
-        if begin_len_prompt < end_len_prompt:
-            substring = ' with the following details. '
-            prompt_global = prompt_global[:begin_len_prompt] + \
-                            substring + prompt_global[begin_len_prompt:]
-
-        prompt_global += f'. Style: {style_gen}.'
-
-        logger.info(f'Prompt undefined: ${prompt_global}')
-
-        image = create_image_from_string(prompt_global)
-        response = img2response(image)
-
-        return response
-
-
-class GenerateImg2ImgView(APIView):
-    def get(self, request):
-        logger.info('Request to image to image')
-        params = request.GET
-
-        url = params.get('url')
-        prompt = params.get('prompt', '')
-        character = params.get('character', None)
-        style_gen = params.get('styleGen')
-
-        prompt_global = 'Generate a movie poster one character by image. '
-        prompt_global += prompt
-
-        prompt_character = '' if character is None \
-            else 'The appearance should reflect the character. ' \
-                 'Personality: {}. '.format(character)
-        prompt_global += prompt_character
-        prompt_global += f'. Style: {style_gen}.'
-
-        logger.info(f'Prompt img2img: ${prompt_global}')
-
-        img_bytes = requests.get(url, stream=True)
-        response = query_model_hub(img_bytes, prompt_global)
-
-        return response
-
-
-def query_model_hub(data, prompt):
-
-    logger.info('Begin generate...')
-    # repo_id = "stabilityai/stable-diffusion-xl-refiner-1.0"
-    # repo_id: str = "stabilityai/stable-diffusion-xl-refiner-0.9"
-    repo_id: str = 'instruction-tuning-sd/cartoonizer' # прикольная / делаем мультик
-    inference = InferenceApi(repo_id=repo_id,
-                             token=TOKEN_HUGGING)
-
-
-    image = inference(data=data, inputs=prompt)
-    if isinstance(image, dict) and 'error' in image.keys():
-        logger.error('Model dont running!')
-        logger.error(image['error'])
-        return HttpResponse(status=500)
-
-    logger.info(f'Image was generated with shape: {image.size}')
-
-    response: HttpResponse = img2response(image)
-    return response
 
 
 def img2response(image):
@@ -183,61 +34,247 @@ def img2response(image):
     resized_image.save(buffered, format="PNG")
     f = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-    # buffer: BytesIO = BytesIO()
-    # image.save(buffer, format='PNG')
-    # f = base64.b64encode(buffer.getvalue()).decode('utf-8')
     response: HttpResponse = HttpResponse(f, content_type='image/png')
     return response
 
 
-def create_image_from_string(user_string):
-    # Create a blank image
-    # import time
-    # time.sleep(3)
-    # imarray = np.random.rand(100, 100, 3) * 255
-    # image = Image.fromarray(imarray.astype('uint8')).convert('RGB')
-    # return image
-    logger.info('Begin generating...')
+class ImageProviderError(Exception):
+    """Structured error from the image generation provider.
+
+    Carries enough info for the view layer to render a clean JSON response
+    (``code``/``message``/``http_status``) and for ops to debug the upstream
+    failure (``provider_status``/``provider_body``) — without leaking the API
+    key or other secrets.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        http_status: int = 502,
+        provider_status: int | None = None,
+        provider_body: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.http_status = http_status
+        self.provider_status = provider_status
+        self.provider_body = provider_body
+
+
+def _mask_secret(value: str | None) -> str:
+    """Return a log-safe fingerprint of an API key (first/last 4 only)."""
+    if not value:
+        return "<missing>"
+    if len(value) <= 8:
+        return "***"
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def _gemini_kind_to_provider_error(exc) -> "ImageProviderError":
+    """Translate ``GeminiImageError`` into the public ``ImageProviderError``."""
+    kind = exc.kind
+    provider_status = exc.provider_status
+    provider_body = exc.provider_body
+
+    if kind == "not_configured":
+        return ImageProviderError(
+            code="IMAGE_PROVIDER_NOT_CONFIGURED",
+            message=(
+                "Не настроен API ключ провайдера генерации изображений. "
+                "Задайте GEMINI_API_KEY в окружении."
+            ),
+            http_status=503,
+        )
+    if kind == "forbidden":
+        return ImageProviderError(
+            code="IMAGE_PROVIDER_FORBIDDEN",
+            message=(
+                "Провайдер генерации изображений отклонил запрос. "
+                "Проверьте GEMINI_API_KEY, доступ проекта к Imagen API и квоты."
+            ),
+            http_status=502,
+            provider_status=provider_status,
+            provider_body=provider_body,
+        )
+    if kind == "unavailable":
+        return ImageProviderError(
+            code="IMAGE_PROVIDER_UNAVAILABLE",
+            message="Провайдер генерации изображений недоступен. Попробуйте позже.",
+            http_status=503,
+            provider_status=provider_status,
+            provider_body=provider_body,
+        )
+    if kind == "blocked":
+        return ImageProviderError(
+            code="IMAGE_PROVIDER_BLOCKED",
+            message=(
+                "Промпт был заблокирован фильтрами безопасности Gemini. "
+                "Переформулируйте описание."
+            ),
+            http_status=400,
+            provider_status=provider_status,
+            provider_body=provider_body,
+        )
+    if kind in ("empty", "bad_response"):
+        return ImageProviderError(
+            code="IMAGE_PROVIDER_BAD_RESPONSE",
+            message="Провайдер генерации изображений вернул некорректный ответ.",
+            http_status=502,
+            provider_status=provider_status,
+            provider_body=provider_body,
+        )
+    return ImageProviderError(
+        code="IMAGE_PROVIDER_ERROR",
+        message=f"Провайдер генерации изображений вернул ошибку (HTTP {provider_status}).",
+        http_status=502,
+        provider_status=provider_status,
+        provider_body=provider_body,
+    )
+
+
+def _create_image_via_gemini(user_string: str, poster_format: str | None):
+    """Generate one image via Gemini/Imagen and return the dict shape that
+    ``img2response`` expects (``{"b64_json": ...}``)."""
+    # Imported lazily so a test that patches ``create_image_from_string`` at
+    # the call site doesn't pull network deps.
+    from w_craft_back.movie.poster.gemini_image import (
+        GeminiImageError,
+        generate_image_via_gemini,
+    )
+
+    try:
+        png_bytes = generate_image_via_gemini(
+            user_string, poster_format=poster_format
+        )
+    except GeminiImageError as exc:
+        raise _gemini_kind_to_provider_error(exc) from exc
+    return {"b64_json": base64.b64encode(png_bytes).decode("ascii")}
+
+
+def _create_image_via_nvidia(user_string: str):
+    """Legacy NVIDIA NVCF path. Kept for back-compat — opt in by setting
+    ``POSTER_IMAGE_PROVIDER=nvidia``."""
+    if not NVIDIA_KEY:
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_NOT_CONFIGURED",
+            message=(
+                "Не настроен API ключ провайдера генерации изображений. "
+                "Задайте NVIDIA_KEY в окружении."
+            ),
+            http_status=503,
+        )
+    if not NVIDIA_FUNCTION_ID:
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_NOT_CONFIGURED",
+            message=(
+                "Не настроен function id провайдера генерации изображений. "
+                "Задайте NVIDIA_FUNCTION_ID в окружении."
+            ),
+            http_status=503,
+        )
 
     invoke_url = f"{NVIDIA_BASE_URL}/v2/nvcf/pexec/functions/{NVIDIA_FUNCTION_ID}"
     fetch_url_format = f"{NVIDIA_BASE_URL}/v2/nvcf/pexec/status/"
-
     headers = {
         "Authorization": f"Bearer {NVIDIA_KEY}",
         "Accept": "application/json",
+        "Content-Type": "application/json",
     }
-
-
     payload = {
         "prompt": user_string,
         "negative_prompt": "anime",
         "sampler": "DPM",
         "seed": 0,
         "guidance_scale": 5,
-        "inference_steps": 25
+        "inference_steps": 25,
     }
-
     session = requests.Session()
+    try:
+        response = session.post(invoke_url, headers=headers, json=payload, timeout=120)
+        while response.status_code == 202:
+            request_id = response.headers.get("NVCF-REQID")
+            fetch_url = fetch_url_format + (request_id or "")
+            response = session.get(fetch_url, headers=headers, timeout=120)
+    except requests.RequestException as exc:
+        logger.error(
+            "Image provider transport error: %s url=%s key=%s",
+            exc, invoke_url, _mask_secret(NVIDIA_KEY),
+        )
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_UNAVAILABLE",
+            message="Провайдер генерации изображений недоступен. Попробуйте позже.",
+            http_status=503,
+        ) from exc
 
-    response = session.post(invoke_url, headers=headers, json=payload)
+    if response.status_code in (401, 403):
+        body_preview = (response.text or "")[:1000]
+        logger.error(
+            "Image provider rejected request: status=%s url=%s key=%s body=%s",
+            response.status_code, invoke_url, _mask_secret(NVIDIA_KEY), body_preview,
+        )
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_FORBIDDEN",
+            message=(
+                "Провайдер генерации изображений отклонил запрос. "
+                "Проверьте NVIDIA API key, доступ к function id и настройки провайдера."
+            ),
+            http_status=502,
+            provider_status=response.status_code,
+            provider_body=body_preview,
+        )
 
-    while response.status_code == 202:
-        request_id = response.headers.get("NVCF-REQID")
-        fetch_url = fetch_url_format + request_id
-        response = session.get(fetch_url, headers=headers)
+    if response.status_code >= 400:
+        body_preview = (response.text or "")[:1000]
+        logger.error(
+            "Image provider error: status=%s url=%s body=%s",
+            response.status_code, invoke_url, body_preview,
+        )
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_ERROR",
+            message=(
+                f"Провайдер генерации изображений вернул ошибку "
+                f"(HTTP {response.status_code})."
+            ),
+            http_status=502,
+            provider_status=response.status_code,
+            provider_body=body_preview,
+        )
 
-    response.raise_for_status()
-    response_body = response.json()
-    return response_body
+    try:
+        return response.json()
+    except ValueError as exc:
+        logger.error("Image provider returned non-JSON body: %s", response.text[:500])
+        raise ImageProviderError(
+            code="IMAGE_PROVIDER_BAD_RESPONSE",
+            message="Провайдер генерации изображений вернул некорректный ответ.",
+            http_status=502,
+            provider_status=response.status_code,
+        ) from exc
 
 
-    # logger.info('Begin generating...')
-    # inference = InferenceApi(repo_id="stablediffusionapi/nightvision-xl-0791",
-    #                          token=TOKEN_HUGGING)  # stabilityai/stable-diffusion-2
-    # # inference = InferenceApi(repo_id="stabilityai/stable-diffusion-2")
-    # output = inference(user_string)
-    # logger.info(f'Image generated with shape: ${output.size}')
-    # return output
+def create_image_from_string(user_string, poster_format: str | None = None):
+    """Generate one poster image. Provider is selected by the
+    ``POSTER_IMAGE_PROVIDER`` env var (default ``gemini``).
 
+    Returns a dict with at least ``b64_json`` so ``img2response`` works for
+    every provider. On failure raises :class:`ImageProviderError`.
+    """
+    logger.info('Begin generating...')
 
+    provider = (os.getenv("POSTER_IMAGE_PROVIDER") or "gemini").lower()
+    if provider in ("gemini", "google", "imagen"):
+        return _create_image_via_gemini(user_string, poster_format)
+    if provider == "nvidia":
+        return _create_image_via_nvidia(user_string)
+    raise ImageProviderError(
+        code="IMAGE_PROVIDER_NOT_CONFIGURED",
+        message=(
+            f"Неизвестный провайдер генерации изображений: '{provider}'. "
+            "Поддерживаются: gemini, nvidia."
+        ),
+        http_status=503,
+    )
 
