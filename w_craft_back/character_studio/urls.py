@@ -105,6 +105,10 @@ urlpatterns = [
         views.references_proceed_to_3d,
     ),
     path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/model3d",
+        views.model3d_state,
+    ),
+    path(
         "projects/<int:project_id>/characters/<uuid:character_id>/references/<uuid:reference_id>/correct",
         views.references_correct,
     ),

@@ -214,6 +214,10 @@ class StudioCharacter(models.Model):
     # User-editable references checklist (subjective items only). Auto-derived
     # items (full_body_ready, front_side_back_ready) are computed at request time.
     references_state = models.JSONField(default=dict, blank=True)
+    # Parametric state of the 3D editor stage: {zone_id: {param_id: value}}.
+    # Leaf values are numbers in [-1, 1], short strings (color hex / preset
+    # ids) or booleans — validated in services/model3d_service.py.
+    model3d_params = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

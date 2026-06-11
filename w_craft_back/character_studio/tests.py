@@ -1755,3 +1755,106 @@ class IdentityAnchoredEditTests(CharacterStudioTestCase):
         # Portrait edit must never carry a source_identity_asset_id — portrait
         # IS the identity source.
         self.assertIsNone(portrait.metadata.get("source_identity_asset_id"))
+
+
+# ---------------------------------------------------------------------------
+# 3D model stage — parametric editor state (GET/PUT /model3d)
+# ---------------------------------------------------------------------------
+
+
+class Model3DStageTests(CharacterStudioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+        self.character = self.create_character()
+
+    def _url(self):
+        return (
+            f"/api/projects/{self.project.id}/characters/"
+            f"{self.character.character_id}/model3d"
+        )
+
+    def _put(self, params, token=None):
+        return self.client.put(
+            self._url(),
+            {"token_user": token or self.token, "params": params},
+            format="json",
+        )
+
+    def test_get_returns_empty_params_by_default(self):
+        response = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.token)
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["params"], {})
+        self.assertIn("updated_at", body)
+
+    def test_put_then_get_roundtrip(self):
+        params = {
+            "torso": {"chestWidth": 0.45, "chestDepth": -0.2},
+            "eyes": {"eyeColor": "#244a2a", "eyeTilt": 0.3},
+            "skin_details": {"freckles": True},
+            "face_shape": {"shape": "heart"},
+        }
+        response = self._put(params)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.model3d_params["torso"]["chestWidth"], 0.45)
+
+        get_response = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.token)
+        body = get_response.json()
+        self.assertEqual(body["params"]["eyes"]["eyeColor"], "#244a2a")
+        self.assertIs(body["params"]["skin_details"]["freckles"], True)
+        self.assertEqual(body["params"]["face_shape"]["shape"], "heart")
+
+    def test_put_clamps_out_of_range_numbers(self):
+        response = self._put({"torso": {"chestWidth": 7.5, "chestDepth": -42}})
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["params"]["torso"]["chestWidth"], 1.0)
+        self.assertEqual(body["params"]["torso"]["chestDepth"], -1.0)
+
+    def test_put_replaces_the_whole_document(self):
+        self._put({"torso": {"chestWidth": 0.5}})
+        self._put({"waist": {"waistWidth": -0.3}})
+        self.character.refresh_from_db()
+        self.assertEqual(
+            self.character.model3d_params, {"waist": {"waistWidth": -0.3}},
+        )
+
+    def test_put_records_a_revision(self):
+        count_before = self.character.revisions.count()
+        response = self._put({"waist": {"waistWidth": 0.2}})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.character.revisions.count(), count_before + 1)
+        revision = self.character.revisions.order_by("-created_at").first()
+        self.assertEqual(revision.change_summary, "model3d_updated")
+
+    def test_put_rejects_malformed_documents(self):
+        bad_payloads = [
+            [1, 2, 3],
+            "not an object",
+            {"zone": [1]},
+            {"bad zone!": {}},
+            {"zone": {"параметр": 1}},
+            {"zone": {"p": None}},
+            {"zone": {"p": "x" * 65}},
+        ]
+        for bad in bad_payloads:
+            response = self._put(bad)
+            self.assertEqual(response.status_code, 400, bad)
+            self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.model3d_params, {})
+
+    def test_foreign_user_cannot_read_or_write(self):
+        intruder = User.objects.create_user(username="intruder", password="x")
+        intruder_key = UserKey.objects.create(user=intruder)
+        get_response = self.client.get(
+            self._url(), HTTP_X_USER_TOKEN=str(intruder_key.key),
+        )
+        self.assertGreaterEqual(get_response.status_code, 400)
+        put_response = self._put({"torso": {"chestWidth": 1}}, token=str(intruder_key.key))
+        self.assertGreaterEqual(put_response.status_code, 400)
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.model3d_params, {})
