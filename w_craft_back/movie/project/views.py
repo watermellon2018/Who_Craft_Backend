@@ -1,99 +1,106 @@
-import uuid
-
-
-from w_craft_back.auth.models import UserKey
-from w_craft_back.movie.project.models import Project, Genre, Audience
-
 import base64
 import logging
 import os
+import uuid
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.files.base import ContentFile
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
-from django.http import JsonResponse, HttpResponse
-from django.core.files.base import ContentFile
+from django.http import HttpResponse, JsonResponse
 from rest_framework import status
 from rest_framework.decorators import api_view
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.views import APIView
 
+from w_craft_back.auth.utils import resolve_user_key
+from w_craft_back.movie.project.models import Audience, Genre, Project
 
 logger = logging.getLogger(__name__)
 
 
+def _auth_failed_response():
+    return JsonResponse({'error': 'authentication_failed'}, status=401)
+
+
 @api_view(['GET'])
 def get_list_projects(request):
-    user_token = request.GET.get('token_user')
-    cur_user = UserKey.objects.get(key=user_token)
-    logger.info(f'Пользователь {cur_user.key}')
+    try:
+        cur_user = resolve_user_key(request)
+    except AuthenticationFailed:
+        return _auth_failed_response()
 
     try:
-        logger.info('Запрос на получение объектов')
-        projects_list = Project.objects.filter(user=cur_user)
-
-        logger.info('Объекты получены')
+        projects_list = Project.objects.filter(user=cur_user).select_related('user')
     except ObjectDoesNotExist:
-        logger.info('Проекты для пользователя не найдены')
         return JsonResponse([], safe=False, status=200)
 
     def build_project_list(proj):
         try:
             with open(proj.image.path, "rb") as img_file:
                 img_obj = base64.b64encode(img_file.read()).decode('utf-8')
-        except ValueError:
+        except (ValueError, OSError):
             img_obj = None
 
-        response = {
+        return {
             'id': proj.id,
             'title': proj.title,
             'src': img_obj,
         }
-        return response
 
     data = [build_project_list(proj) for proj in projects_list]
-    logger.info('Количество проектов: {}'.format(len(data)))
     return JsonResponse(data, safe=False, status=200)
 
 
-@api_view(['GET'])
+@api_view(['DELETE', 'POST'])
 def delete_project(request):
-    user_token = request.GET.get('token_user')
-    cur_user = UserKey.objects.get(key=user_token)
+    """Delete a project. Accepts DELETE (preferred) or POST for back-compat.
 
+    GET is rejected: state-mutating requests over GET are CSRF-vulnerable and
+    can be triggered by image tags, prefetchers, or browser history replay.
+    """
+    try:
+        cur_user = resolve_user_key(request)
+    except AuthenticationFailed:
+        return _auth_failed_response()
+
+    project_id = (
+        request.data.get('id') if isinstance(request.data, dict) else None
+    ) or request.GET.get('id')
 
     try:
-        logger.info('Удаление проекта')
-        id = request.GET.get('id')
-        project = Project.objects.get(id=id, user=cur_user)
+        project = Project.objects.get(id=project_id, user=cur_user)
         project.delete()
-        logger.info('Проект удален!')
-
-    except Project.DoesNotExist:
+    except (Project.DoesNotExist, ValueError, TypeError):
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
-
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    except Exception:
+        logger.exception('delete_project failed for project_id=%s', project_id)
+        return JsonResponse({'error': 'internal_error'}, status=500)
 
     return HttpResponse(status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 def select_project_info(request):
-    user_token = request.GET.get('token_user')
-    cur_user = UserKey.objects.get(key=user_token)
-
     try:
-        logger.info('Select запрос проекта')
-        id = request.GET.get('id')
-        project = Project.objects.prefetch_related('genre', 'audience').get(id=id, user=cur_user)
-        logger.info(f'Проект найден id: {id}')
+        cur_user = resolve_user_key(request)
+    except AuthenticationFailed:
+        return _auth_failed_response()
+
+    project_id = request.GET.get('id')
+    try:
+        project = (
+            Project.objects
+            .prefetch_related('genre', 'audience')
+            .get(id=project_id, user=cur_user)
+        )
         img_obj = None
-        if not project.image == '':
-            with open(project.image.path, "rb") as img_file:
-                img_obj = base64.b64encode(img_file.read()).decode('utf-8')
-                logger.info('Постер найден')
         if project.image:
-            logger.info(project.image.url)
+            try:
+                with open(project.image.path, "rb") as img_file:
+                    img_obj = base64.b64encode(img_file.read()).decode('utf-8')
+            except (ValueError, OSError):
+                img_obj = None
 
         response = {
             'id': project.id,
@@ -103,17 +110,16 @@ def select_project_info(request):
             'audience': [aud.name for aud in project.audience.all()],
             'annot': project.annot,
             'desc': project.desc,
-            'src': img_obj
+            'src': img_obj,
         }
         return JsonResponse(response, safe=False, status=200)
 
-    except Project.DoesNotExist:
-        logger.error('Object with specified ID does not exist')
+    except (Project.DoesNotExist, ValueError, TypeError):
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+    except Exception:
+        logger.exception('select_project_info failed for project_id=%s', project_id)
+        return JsonResponse({'error': 'internal_error'}, status=500)
 
-    except Exception as e:
-        logger.error(str(e))
-        return JsonResponse({'error': str(e)}, status=500)
 
 @receiver(pre_delete, sender=Project)
 def delete_related_file(sender, instance, **kwargs):
@@ -125,121 +131,129 @@ def delete_related_file(sender, instance, **kwargs):
         return
     instance.image.delete(False)
     if os.path.exists(directory_path) and len(os.listdir(directory_path)) == 0:
-        os.rmdir(directory_path)
+        try:
+            os.rmdir(directory_path)
+        except OSError:
+            logger.warning('Failed to rmdir empty project dir: %s', directory_path)
 
 
 @api_view(['POST'])
 def update_info_project(request):
-    logger.info('Обновить информацию о проекте')
-    data = request.data['data']
-    user_token = data['token_user']
-    cur_user = UserKey.objects.get(key=user_token)
-
     try:
-        id = data['id']
-        project = Project.objects.get(id=id, user=cur_user)
-        logger.info(f'Проект найден id: {id}')
+        cur_user = resolve_user_key(request)
+    except AuthenticationFailed:
+        return _auth_failed_response()
 
+    data = request.data.get('data') if isinstance(request.data, dict) else None
+    if not isinstance(data, dict):
+        return JsonResponse({'error': 'invalid_payload'}, status=400)
 
-        if not data['image'] == '':
+    project_id = data.get('id')
+    try:
+        project = Project.objects.get(id=project_id, user=cur_user)
+
+        image_data = data.get('image') or ''
+        if image_data:
             old_photo = project.image
             if old_photo:
                 old_photo.delete()
 
-            title = data['title']
-            logger.info('Пользователь загрузил постер для своего проекта')
-            image_data = data['image']
-
-            format, imgstr = image_data.split(';base64,')
-            ext = format.split('/')[-1]
+            title = data.get('title') or ''
+            try:
+                fmt, imgstr = image_data.split(';base64,')
+            except ValueError:
+                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
+            ext = fmt.split('/')[-1]
 
             user_id = project.user_id
             unique_id = uuid.uuid4()
-            path = '{}/{}/{}.{}'.format(user_id,
-                                        title,
-                                        unique_id,
-                                        ext)
+            path = f'{user_id}/{title}/{unique_id}.{ext}'
 
-            image_data = ContentFile(base64.b64decode(imgstr),  name=path)
-            project.image = image_data
+            try:
+                decoded = base64.b64decode(imgstr)
+            except Exception:
+                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
+            project.image = ContentFile(decoded, name=path)
 
-        project.title = data['title']
-        project.format = data['format']
-        project.annot = data['annot']
-        project.desc = data['desc']
+        project.title = data.get('title', project.title)
+        project.format = data.get('format', project.format)
+        project.annot = data.get('annot', project.annot)
+        project.desc = data.get('desc', project.desc)
 
-        audience_list: list = data['audience']
-        audience_objs = Audience.objects.filter(name__in=audience_list)
-        project.audience.set(audience_objs)
+        audience_list = data.get('audience') or []
+        if isinstance(audience_list, list):
+            project.audience.set(Audience.objects.filter(name__in=audience_list))
 
-        genre_list: list = data['genre']
-        genre_objs = Genre.objects.filter(translit__in=genre_list)
-        project.genre.set(genre_objs)
+        genre_list = data.get('genre') or []
+        if isinstance(genre_list, list):
+            project.genre.set(Genre.objects.filter(translit__in=genre_list))
 
         project.save()
-
         return HttpResponse(status=200)
 
-    except Project.DoesNotExist:
+    except (Project.DoesNotExist, ValueError, TypeError):
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
-
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+    except Exception:
+        logger.exception('update_info_project failed for project_id=%s', project_id)
+        return JsonResponse({'error': 'internal_error'}, status=500)
 
 
 class ProjectView(APIView):
-
-    def __init__(self):
-        super().__init__()
-        self.format_choices = ['full-movie', 'short-movie', 'series', 'marketing']
+    format_choices = ('full-movie', 'short-movie', 'series', 'marketing')
 
     def post(self, request):
-        logger.info('Создаем проект')
-        data = request.data['data']
+        try:
+            cur_user = resolve_user_key(request)
+        except AuthenticationFailed:
+            return _auth_failed_response()
 
-        user_token = data['token_user']
-        cur_user = UserKey.objects.get(key=user_token)
-        logger.info(cur_user.user)
+        data = request.data.get('data') if isinstance(request.data, dict) else None
+        if not isinstance(data, dict):
+            return JsonResponse({'error': 'invalid_payload'}, status=400)
 
-        title: str = data['title']
-        genre_list: list = data['genre']
-        audience_list: list = data['audience']
-        format: str = data['format']
-        desc: str = data['desc']
-        annot: str = data['annot']
+        title = data.get('title') or ''
+        genre_list = data.get('genre') or []
+        audience_list = data.get('audience') or []
+        fmt = data.get('format') or ''
+        desc = data.get('desc') or ''
+        annot = data.get('annot') or ''
 
-        if format not in self.format_choices:
-            logger.error('Пользователь ввел странный формат фильма!!!')
+        if fmt not in self.format_choices:
             return HttpResponse(status=status.HTTP_400_BAD_REQUEST,
                                 reason='Некорректный тип формата')
+        if not title.strip():
+            return JsonResponse({'error': 'title_required'}, status=400)
 
-        arguments = {'title': title,
-                     'format': format,
-                     'annot': annot,
-                     'desc': desc,
-                     'user': cur_user,
-                     }
-        if not data['image'] == '':
-            logger.info('Пользователь загрузил постер для своего проекта')
-            image_data = data['image']
-            format, imgstr = image_data.split(';base64,')
-            ext = format.split('/')[-1]
+        arguments = {
+            'title': title,
+            'format': fmt,
+            'annot': annot,
+            'desc': desc,
+            'user': cur_user,
+        }
+        image_data = data.get('image') or ''
+        if image_data:
+            try:
+                img_fmt, imgstr = image_data.split(';base64,')
+            except ValueError:
+                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
+            ext = img_fmt.split('/')[-1]
             unique_id = uuid.uuid4()
-            path = '{}/{}/{}.{}'.format(cur_user.id,
-                                        title,
-                                        unique_id,
-                                        ext)
+            path = f'{cur_user.id}/{title}/{unique_id}.{ext}'
+            try:
+                decoded = base64.b64decode(imgstr)
+            except Exception:
+                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
+            arguments['image'] = ContentFile(decoded, name=path)
 
-            image_data = ContentFile(base64.b64decode(imgstr), name=path)
-            arguments['image'] = image_data
+        try:
+            obj = Project.objects.create(**arguments)
+            if isinstance(audience_list, list):
+                obj.audience.set(Audience.objects.filter(name__in=audience_list))
+            if isinstance(genre_list, list):
+                obj.genre.set(Genre.objects.filter(translit__in=genre_list))
+        except Exception:
+            logger.exception('Project create failed')
+            return JsonResponse({'error': 'internal_error'}, status=500)
 
-        obj = Project.objects.create(**arguments)
-
-        audience_objs = Audience.objects.filter(name__in=audience_list)
-        obj.audience.set(audience_objs)
-
-        genre_objs = Genre.objects.filter(translit__in=genre_list)
-        obj.genre.set(genre_objs)
-
-        logger.info('Проект создан!')
         return JsonResponse({'project_id': obj.id}, status=200)

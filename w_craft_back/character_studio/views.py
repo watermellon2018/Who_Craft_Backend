@@ -22,6 +22,10 @@ from w_craft_back.character_studio.services.asset_service import (
     CharacterAssetService,
     REFERENCE_UI_TO_ASSET_TYPE,
 )
+from w_craft_back.character_studio.services.upload_validation import (
+    UploadValidationError,
+    validate_image_upload,
+)
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import CharacterStudioError, NotFoundError, PermissionDeniedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
@@ -48,6 +52,14 @@ def ok(data=None, status=200):
     return JsonResponse(response_data, status=status, safe=isinstance(response_data, dict))
 
 
+def _get_user_outfit(character, outfit_id):
+    """Fetch an outfit belonging to ``character`` or raise ``NotFoundError``."""
+    try:
+        return character.outfits.get(outfit_id=outfit_id)
+    except CharacterOutfit.DoesNotExist as exc:
+        raise NotFoundError("Outfit not found.") from exc
+
+
 def handle_errors(func):
     def wrapped(request, *args, **kwargs):
         try:
@@ -57,10 +69,12 @@ def handle_errors(func):
                 {"error_code": exc.error_code, "message": exc.message},
                 status=exc.status_code,
             )
-        except Exception as exc:
+        except Exception:
+            # Never echo raw exception text to clients — internal paths, SQL
+            # fragments, etc. leak. The traceback is captured in logs instead.
             logger.exception("Unhandled error in %s", func.__name__)
             return JsonResponse(
-                {"error_code": "INTERNAL_ERROR", "message": str(exc)},
+                {"error_code": "INTERNAL_ERROR", "message": "internal_error"},
                 status=500,
             )
 
@@ -79,10 +93,123 @@ def characters_collection(request, project_id):
             "search": request.GET.get("search"),
         }
         return ok(service.list_project_characters(user, project.id, filters), status=200)
-    logger.info("create_character start: user=%s project_id=%s", user.id, project_id)
+    logger.info("create_character start: project_id=%s", project_id)
     character = service.create_character(user, project, payload(request))
     logger.info("create_character done: character_id=%s project_id=%s", character.character_id, project_id)
     return ok(character_dict(character, include_related=True), status=201)
+
+
+def _form_value(request, key, default=""):
+    """Read a multipart form text field. Falls back to request.data."""
+    if key in request.POST:
+        return request.POST.get(key)
+    return request.data.get(key, default) if request.data else default
+
+
+def _form_int(request, key):
+    raw = _form_value(request, key, "")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _form_bool(request, key, default=False):
+    raw = _form_value(request, key, None)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@api_view(["POST"])
+@handle_errors
+def create_character_from_reference(request, project_id):
+    user = get_user_from_request(request)
+    project = get_owned_project(user, project_id)
+    uploaded = request.FILES.get("reference_image")
+    if not uploaded:
+        raise ValidationError("reference_image is required.")
+    try:
+        validate_image_upload(uploaded)
+    except UploadValidationError as exc:
+        raise ValidationError(exc.message) from exc
+
+    char_payload = {
+        "name": _form_value(request, "name", ""),
+        "character_type": _form_value(request, "character_type") or _form_value(request, "entity_type") or None,
+        "role": _form_value(request, "role") or "",
+        "age": _form_int(request, "age"),
+        "lifecycle_stage": _form_value(request, "lifecycle_stage") or "",
+        "gender": _form_value(request, "gender") or "",
+        "visual_style": _form_value(request, "visual_style") or _form_value(request, "style") or "",
+        "short_description": _form_value(request, "description") or _form_value(request, "short_description") or "",
+    }
+
+    logger.info(
+        "create_character_from_reference start: project_id=%s name_len=%d size=%s mime=%s",
+        project_id, len(char_payload["name"] or ""), getattr(uploaded, "size", "?"),
+        getattr(uploaded, "content_type", "?"),
+    )
+
+    character, reference_asset = CharacterService().create_character_from_reference(
+        user, project, char_payload, uploaded
+    )
+
+    generation_params = {
+        "variant_count": _form_int(request, "variants_count") or _form_int(request, "variant_count") or 1,
+        "preserve_identity": _form_bool(request, "use_image_as_identity", default=True)
+        if "use_image_as_identity" in request.POST
+        else _form_bool(request, "preserve_identity", default=True),
+        "visual_style": char_payload["visual_style"],
+        "text_refinement": _form_value(request, "refinement") or _form_value(request, "text_refinement") or "",
+    }
+    job = CharacterGenerationService().create_reference_variants(
+        user, project_id, character.character_id, reference_asset, generation_params
+    )
+
+    logger.info(
+        "create_character_from_reference done: character_id=%s job_id=%s job_status=%s",
+        character.character_id, job.job_id, job.status,
+    )
+
+    # If the generation kickoff failed (provider unavailable, model can't accept
+    # image input, etc.), we don't want to leave a half-created character with no
+    # variants cluttering the user's character list. Roll back: delete the
+    # character (cascades to assets + job rows) and unlink the uploaded file from
+    # disk, then return a 400 with the upstream error code/message.
+    if job.status == "failed":
+        error_code = job.error_code or "REFERENCE_GENERATION_FAILED"
+        error_message = (
+            job.error_message
+            or "Не удалось сгенерировать варианты по референсу. Попробуйте ещё раз позже."
+        )
+        ref_path = reference_asset.storage_path
+        try:
+            character.delete()  # cascades to CharacterAsset (incl. reference), job, variants
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to roll back character after generation failure (character_id=%s)",
+                character.character_id,
+            )
+        if ref_path:
+            try:
+                (Path(settings.MEDIA_ROOT) / ref_path).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not unlink reference file %s", ref_path)
+        logger.info(
+            "create_character_from_reference rolled back: project_id=%s error_code=%s",
+            project_id, error_code,
+        )
+        raise CharacterStudioError(message=error_message, error_code=error_code, status_code=400)
+
+    response = {
+        "character": character_dict(character, include_related=True),
+        "reference": asset_dict(reference_asset),
+        "generation_job": job_dict(job),
+    }
+    return ok(response, status=201)
 
 
 @api_view(["GET", "PATCH", "DELETE"])
@@ -106,7 +233,7 @@ def generate_initial_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     data = payload(request)
     service = CharacterGenerationService()
-    logger.info("generate_initial_variants start: user=%s project_id=%s character_id=%s", user.id, project_id, character_id)
+    logger.info("generate_initial_variants start: project_id=%s character_id=%s", project_id, character_id)
     if data.get("image_types"):
         jobs = service.create_initial_image_set(user, project_id, character_id, data)
         failed = next((job for job in jobs if job.status == "failed"), None)
@@ -238,10 +365,7 @@ def outfits_collection(request, project_id, character_id):
 def outfit_detail(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
-    try:
-        outfit = character.outfits.get(outfit_id=outfit_id)
-    except CharacterOutfit.DoesNotExist as exc:
-        raise NotFoundError("Outfit not found.") from exc
+    outfit = _get_user_outfit(character, outfit_id)
     if request.method == "DELETE":
         outfit.archived_at = timezone.now()
         outfit.save(update_fields=["archived_at", "updated_at"])
@@ -259,10 +383,7 @@ def outfit_detail(request, project_id, character_id, outfit_id):
 def set_default_outfit(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
-    try:
-        outfit = character.outfits.get(outfit_id=outfit_id)
-    except CharacterOutfit.DoesNotExist as exc:
-        raise NotFoundError("Outfit not found.") from exc
+    outfit = _get_user_outfit(character, outfit_id)
     OutfitRepository().set_default(character, outfit)
     character.active_outfit = outfit
     character.save(update_fields=["active_outfit", "updated_at"])
@@ -281,32 +402,19 @@ def generate_outfit_variants(request, project_id, character_id, outfit_id):
     return ok({"job_id": str(job.job_id), "status": job.status})
 
 
-_ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
-_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-
-
 @api_view(["POST"])
 @handle_errors
 def upload_outfit_reference(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
-    try:
-        outfit = character.outfits.get(outfit_id=outfit_id)
-    except CharacterOutfit.DoesNotExist as exc:
-        raise NotFoundError("Outfit not found.") from exc
+    outfit = _get_user_outfit(character, outfit_id)
 
     uploaded = request.FILES.get("file")
-    if not uploaded:
-        return JsonResponse({"error_code": "NO_FILE", "message": "No file provided."}, status=400)
-    if uploaded.content_type not in _ALLOWED_MIME_TYPES:
-        return JsonResponse(
-            {"error_code": "INVALID_FORMAT", "message": "Only jpg, png and webp are supported."},
-            status=400,
-        )
-    if uploaded.size > _MAX_UPLOAD_BYTES:
-        return JsonResponse({"error_code": "FILE_TOO_LARGE", "message": "File exceeds 10 MB limit."}, status=400)
+    try:
+        mime, ext = validate_image_upload(uploaded)
+    except UploadValidationError as exc:
+        return JsonResponse({"error_code": exc.error_code, "message": exc.message}, status=exc.status)
 
-    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[uploaded.content_type]
     rel_path = f"character-studio/outfits/{character_id}/{outfit_id}/{uuid.uuid4().hex}.{ext}"
     abs_path = Path(settings.MEDIA_ROOT) / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,7 +434,7 @@ def upload_outfit_reference(request, project_id, character_id, outfit_id):
         asset_type=CharacterAssetType.OUTFIT_REFERENCE,
         image_url=image_url,
         storage_path=rel_path,
-        mime_type=uploaded.content_type,
+        mime_type=mime,
         source="upload",
     )
 
@@ -340,10 +448,7 @@ def upload_outfit_reference(request, project_id, character_id, outfit_id):
 def delete_outfit_reference(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
-    try:
-        outfit = character.outfits.get(outfit_id=outfit_id)
-    except CharacterOutfit.DoesNotExist as exc:
-        raise NotFoundError("Outfit not found.") from exc
+    outfit = _get_user_outfit(character, outfit_id)
 
     asset = outfit.reference_image
     outfit.reference_image = None
@@ -360,17 +465,11 @@ def upload_clothing_reference(request, project_id, character_id):
     character = CharacterService().get_character(user, project_id, character_id)
 
     uploaded = request.FILES.get("file")
-    if not uploaded:
-        return JsonResponse({"error_code": "NO_FILE", "message": "No file provided."}, status=400)
-    if uploaded.content_type not in _ALLOWED_MIME_TYPES:
-        return JsonResponse(
-            {"error_code": "INVALID_FORMAT", "message": "Only jpg, png and webp are supported."},
-            status=400,
-        )
-    if uploaded.size > _MAX_UPLOAD_BYTES:
-        return JsonResponse({"error_code": "FILE_TOO_LARGE", "message": "File exceeds 10 MB limit."}, status=400)
+    try:
+        mime, ext = validate_image_upload(uploaded)
+    except UploadValidationError as exc:
+        return JsonResponse({"error_code": exc.error_code, "message": exc.message}, status=exc.status)
 
-    ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[uploaded.content_type]
     rel_path = f"character-studio/clothing-refs/{character_id}/{uuid.uuid4().hex}.{ext}"
     abs_path = Path(settings.MEDIA_ROOT) / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -390,7 +489,7 @@ def upload_clothing_reference(request, project_id, character_id):
         asset_type=CharacterAssetType.CLOTHING_REFERENCE,
         image_url=image_url,
         storage_path=rel_path,
-        mime_type=uploaded.content_type,
+        mime_type=mime,
         source="upload",
     )
     return ok(asset_dict(asset), status=201)

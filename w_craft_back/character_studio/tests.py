@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.test import override_settings
 from django.test import TestCase
@@ -13,7 +14,7 @@ from requests import HTTPError
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetType, CharacterGenerationJob, CharacterImage, CharacterOutfit, CharacterStatus
+from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetStatus, CharacterAssetType, CharacterGenerationJob, CharacterImage, CharacterOutfit, CharacterStatus
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, SafetyRejectedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
@@ -28,6 +29,11 @@ PROVIDER_SESSION = "w_craft_back.character_studio.services.providers.requests.Se
 
 class CharacterStudioTestCase(TestCase):
     def setUp(self):
+        # DRF throttle counters live in Django's default cache and persist
+        # across tests inside the same process, so a class with many upload
+        # calls (e.g. ReferencesStageTests) hits 60/min and starts returning
+        # 429. Reset between tests so throttling behaves like a cold start.
+        cache.clear()
         user = User.objects.create_user(username="owner", password="x")
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
@@ -566,7 +572,7 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         )
         self.assertEqual(job_response.status_code, 200)
         job_id = job_response.json()["job_id"]
-        job = self.client.get(f"/api/generation-jobs/{job_id}", {"token_user": self.token})
+        job = self.client.get(f"/api/generation-jobs/{job_id}", HTTP_X_USER_TOKEN=self.token)
         job_data = job.json()
         self.assertEqual(len(job_data["variants"]), 4)
 
@@ -587,13 +593,13 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
 
     def test_permission_rejected(self):
         other = UserKey.objects.create(user=User.objects.create_user(username="other"))
-        response = self.client.get(f"/api/projects/{self.project.id}/characters", {"token_user": str(other.key)})
+        response = self.client.get(f"/api/projects/{self.project.id}/characters", HTTP_X_USER_TOKEN=str(other.key))
         self.assertEqual(response.status_code, 403)
 
     def test_empty_character_list_returns_json_array(self):
         response = self.client.get(
             f"/api/projects/{self.project.id}/characters",
-            {"token_user": self.token},
+            HTTP_X_USER_TOKEN=self.token,
         )
 
         self.assertEqual(response.status_code, 200)
@@ -794,7 +800,7 @@ class EditorJobPollingApiTests(CharacterStudioTestCase):
             self.user_key, self.project.id, character.character_id, {"variant_count": 2}
         )
         response = self.client.get(
-            f"/api/generation-jobs/{job.job_id}", {"token_user": self.token}
+            f"/api/generation-jobs/{job.job_id}", HTTP_X_USER_TOKEN=self.token
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -818,13 +824,13 @@ class EditorJobPollingApiTests(CharacterStudioTestCase):
         )
         response = self.client.get(
             f"/api/generation-jobs/{job.job_id}",
-            {"token_user": str(other_user_key.key)},
+            HTTP_X_USER_TOKEN=str(other_user_key.key),
         )
         self.assertEqual(response.status_code, 403)
 
     def test_get_nonexistent_job_returns_404(self):
         response = self.client.get(
-            f"/api/generation-jobs/{uuid4()}", {"token_user": self.token}
+            f"/api/generation-jobs/{uuid4()}", HTTP_X_USER_TOKEN=self.token
         )
         self.assertEqual(response.status_code, 404)
 
@@ -844,7 +850,7 @@ class EditorJobPollingApiTests(CharacterStudioTestCase):
             },
         )
         response = self.client.get(
-            f"/api/generation-jobs/{job.job_id}", {"token_user": self.token}
+            f"/api/generation-jobs/{job.job_id}", HTTP_X_USER_TOKEN=self.token
         )
         data = response.json()
         self.assertEqual(data["status"], "completed")
@@ -875,7 +881,7 @@ class EditorCharacterGetResponseTests(CharacterStudioTestCase):
         )
         response = self.client.get(
             f"/api/projects/{self.project.id}/characters/{character.character_id}",
-            {"token_user": self.token},
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -891,7 +897,7 @@ class EditorCharacterGetResponseTests(CharacterStudioTestCase):
         character = self.create_character()
         response = self.client.get(
             f"/api/projects/{self.project.id}/characters/{character.character_id}",
-            {"token_user": self.token},
+            HTTP_X_USER_TOKEN=self.token,
         )
         data = response.json()
         images = data.get("images", {})
@@ -910,7 +916,7 @@ class EditorCharacterGetResponseTests(CharacterStudioTestCase):
         )
         response = self.client.get(
             f"/api/projects/{self.project.id}/characters/{character.character_id}",
-            {"token_user": self.token},
+            HTTP_X_USER_TOKEN=self.token,
         )
         images = response.json().get("images", {})
         self.assertIn("portrait", images)
@@ -978,16 +984,48 @@ class EditorRetryTests(CharacterStudioTestCase):
 class CharacterListingTests(CharacterStudioTestCase):
     """Smoke tests for the character listing/lifecycle.
 
-    The legacy draft -> active lifecycle was removed: characters are 'active'
-    immediately on creation. These tests guard the listing contract.
+    Characters start as ``draft`` (so duplicates from abandoned creation
+    attempts don't pollute the gallery/tree) and graduate to ``active`` when
+    the user applies their first variant. Default list filtering hides drafts.
     """
 
-    def test_new_character_is_active(self):
+    def test_new_character_starts_as_draft(self):
         character = self.create_character()
-        self.assertEqual(character.status, CharacterStatus.ACTIVE)
+        self.assertEqual(character.status, CharacterStatus.DRAFT)
 
-    def test_new_character_visible_in_default_list(self):
+    def test_draft_character_is_hidden_from_default_list(self):
         character = self.create_character()
+        result = CharacterService().list_project_characters(self.user_key, self.project.id)
+        ids = [c["character_id"] for c in result]
+        self.assertNotIn(str(character.character_id), ids)
+
+    def test_draft_character_is_visible_when_status_all(self):
+        character = self.create_character()
+        result = CharacterService().list_project_characters(
+            self.user_key, self.project.id, {"status": "all"},
+        )
+        ids = [c["character_id"] for c in result]
+        self.assertIn(str(character.character_id), ids)
+
+    def test_applying_a_variant_promotes_draft_to_active(self):
+        # Generating + applying a portrait variant is the user's confirmation
+        # that this is the character they want — the row should then show up
+        # in the default gallery list.
+        character = self.create_character()
+        job = CharacterGenerationService().create_initial_variants(
+            self.user_key, self.project.id, character.character_id, {"variant_count": 1},
+        )
+        variant = job.variants.first()
+        self.assertIsNotNone(variant)
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            variant.variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait", "notes": "test"},
+        )
+        character.refresh_from_db()
+        self.assertEqual(character.status, CharacterStatus.ACTIVE)
         result = CharacterService().list_project_characters(self.user_key, self.project.id)
         ids = [c["character_id"] for c in result]
         self.assertIn(str(character.character_id), ids)
@@ -1048,7 +1086,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         )
 
     def test_get_returns_all_nine_reference_types_in_stable_order(self):
-        response = self.client.get(self._url(), {"token_user": self.token})
+        response = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.status_code, 200)
         body = response.json()
         types = [row["reference_type"] for row in body["references"]]
@@ -1088,6 +1126,9 @@ class ReferencesStageTests(CharacterStudioTestCase):
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
 
     def test_correct_creates_new_version_keeping_old(self):
+        # Identity-anchored generation requires an existing identity asset
+        # (portrait), so seed one before generating the profile view.
+        self._generate("portrait")
         self._generate("profile")
         original = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.PROFILE,
@@ -1351,3 +1392,366 @@ class ReferencesStageTests(CharacterStudioTestCase):
         self.assertIn("lift the chin slightly", compiled["positive_prompt"])
         self.assertEqual(compiled["metadata"]["correction_prompt"], "lift the chin slightly")
         self.assertTrue(compiled["metadata"]["preserve_identity"])
+
+
+PNG_1X1_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+)
+
+
+class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+
+    def _url(self):
+        return f"/api/projects/{self.project.id}/characters/from-reference"
+
+    def _png(self, name="ref.png"):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        return SimpleUploadedFile(name, base64.b64decode(PNG_1X1_B64), content_type="image/png")
+
+    def test_happy_path_creates_character_reference_and_job(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            response = self.client.post(
+                self._url(),
+                {
+                    "token_user": self.token,
+                    "name": "Энгри дог",
+                    "character_type": "human",
+                    "role": "main",
+                    "age": "26",
+                    "gender": "girl",
+                    "variants_count": "1",
+                    "use_image_as_identity": "true",
+                    "reference_image": self._png(),
+                },
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertIn("character", body)
+        self.assertIn("reference", body)
+        self.assertIn("generation_job", body)
+        self.assertEqual(body["character"]["name"], "Энгри дог")
+        self.assertEqual(body["reference"]["asset_type"], CharacterAssetType.UPLOADED_REFERENCE)
+        self.assertEqual(body["reference"]["source"], "uploaded")
+        # MockProvider always succeeds.
+        self.assertEqual(body["generation_job"]["status"], "completed")
+        self.assertEqual(body["generation_job"]["job_type"], "reference_variants")
+
+    def test_missing_file_returns_400(self):
+        response = self.client.post(
+            self._url(),
+            {
+                "token_user": self.token,
+                "name": "Sasha",
+                "character_type": "human",
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_invalid_mime_returns_400(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        bad = SimpleUploadedFile("evil.gif", b"GIF89a", content_type="image/gif")
+        response = self.client.post(
+            self._url(),
+            {
+                "token_user": self.token,
+                "name": "Sasha",
+                "character_type": "human",
+                "reference_image": bad,
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_foreign_project_returns_403(self):
+        other_user = User.objects.create_user(username="intruder", password="x")
+        other_key = UserKey.objects.create(user=other_user)
+        other_project = Project.objects.create(
+            user=other_key, title="Other", format="series", annot="x", desc="y",
+        )
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            response = self.client.post(
+                f"/api/projects/{other_project.id}/characters/from-reference",
+                {
+                    "token_user": self.token,
+                    "name": "Sasha",
+                    "character_type": "human",
+                    "reference_image": self._png(),
+                },
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error_code"], "PERMISSION_DENIED")
+
+    def test_provider_without_image_input_marks_job_failed(self):
+        # GeminiProvider (mode="image", supports_edit=False) doesn't accept image-in.
+        from w_craft_back.character_studio.services import providers as providers_module
+
+        original = providers_module.get_image_provider
+
+        def force_gemini(_name="mock"):
+            return providers_module.GeminiProvider()
+
+        providers_module.get_image_provider = force_gemini
+        # Patch through generation_service's already-bound import too.
+        from w_craft_back.character_studio.services import generation_service as gs
+
+        original_gs = gs.get_image_provider
+        gs.get_image_provider = force_gemini
+        try:
+            with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+                response = self.client.post(
+                    self._url(),
+                    {
+                        "token_user": self.token,
+                        "name": "Sasha",
+                        "character_type": "human",
+                        "variants_count": "1",
+                        "reference_image": self._png(),
+                    },
+                    format="multipart",
+                )
+        finally:
+            providers_module.get_image_provider = original
+            gs.get_image_provider = original_gs
+
+        # When generation fails, the whole create flow is rolled back: 400 + the
+        # provider's error_code surfaced in the body, and no orphaned character
+        # left behind to clutter the user's character list.
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        self.assertEqual(body["error_code"], "MODEL_DOES_NOT_SUPPORT_IMAGE_INPUT")
+        # No character should have been persisted for this project.
+        from w_craft_back.character_studio.models import StudioCharacter
+
+        self.assertFalse(
+            StudioCharacter.objects.filter(project=self.project).exists()
+        )
+
+
+class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+        self.character = self.create_character()
+
+    def _references_url(self, suffix=""):
+        return (
+            f"/api/projects/{self.project.id}/characters/"
+            f"{self.character.character_id}/references{suffix}"
+        )
+
+    def _generate(self, reference_type):
+        return self.client.post(
+            self._references_url("/generate"),
+            {"token_user": self.token, "reference_type": reference_type},
+            format="json",
+        )
+
+    def test_full_body_requires_identity_asset(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            response = self._generate("full_body")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error_code"], "IDENTITY_ASSET_REQUIRED")
+        # No CharacterAsset of type full_body should have been created.
+        self.assertFalse(
+            CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+            ).exists()
+        )
+
+    def test_full_body_uses_existing_portrait_as_identity(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            portrait_response = self._generate("portrait")
+            self.assertEqual(portrait_response.status_code, 200, portrait_response.content)
+            portrait = CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+            ).first()
+            self.assertIsNotNone(portrait)
+
+            response = self._generate("full_body")
+        self.assertEqual(response.status_code, 200, response.content)
+        full_body = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+        ).first()
+        self.assertIsNotNone(full_body)
+        # Identity asset id is the portrait we just made.
+        self.assertEqual(
+            full_body.metadata.get("source_identity_asset_id"),
+            str(portrait.asset_id),
+        )
+        self.assertTrue(full_body.metadata.get("preserve_identity"))
+
+    def test_canonical_reference_image_wins_over_other_portraits(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            # Generate two portraits; the older one will be promoted to canonical.
+            self._generate("portrait")
+            self._generate("portrait")
+            older_portrait, newer_portrait = list(
+                CharacterAsset.objects.filter(
+                    character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+                ).order_by("version")
+            )
+            self.character.canonical_reference_image = older_portrait
+            self.character.save(update_fields=["canonical_reference_image"])
+
+            from w_craft_back.character_studio.services.character_service import (
+                CharacterService,
+            )
+            picked = CharacterService().get_identity_asset(self.character)
+        self.assertEqual(picked.asset_id, older_portrait.asset_id)
+        self.assertNotEqual(picked.asset_id, newer_portrait.asset_id)
+
+    def test_uploaded_reference_used_when_no_portrait(self):
+        # Simulate a character created via "from-reference" flow: only an
+        # UPLOADED_REFERENCE asset exists, no portraits yet.
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            from pathlib import Path
+
+            from django.conf import settings
+
+            rel = f"character-studio/characters/{self.character.character_id}/source/seed.png"
+            abs_path = Path(settings.MEDIA_ROOT) / rel
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_bytes(base64.b64decode(PNG_1X1_B64))
+            uploaded = CharacterAsset.objects.create(
+                character=self.character,
+                project=self.character.project,
+                user=self.character.user,
+                asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+                image_url=f"/media/{rel}",
+                storage_path=rel,
+                mime_type="image/png",
+                source="uploaded",
+                status=CharacterAssetStatus.READY,
+            )
+
+            response = self._generate("full_body")
+        self.assertEqual(response.status_code, 200, response.content)
+        full_body = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+        ).first()
+        self.assertEqual(
+            full_body.metadata.get("source_identity_asset_id"),
+            str(uploaded.asset_id),
+        )
+
+    def test_portrait_generation_stays_text_only(self):
+        # Portrait IS the identity source — must not require one to already exist
+        # and must go through the text-only pipeline (job_type=initial_variants).
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            response = self._generate("portrait")
+        self.assertEqual(response.status_code, 200, response.content)
+        from w_craft_back.character_studio.models import CharacterGenerationJob
+
+        job = CharacterGenerationJob.objects.filter(
+            character=self.character,
+            request_payload__image_type="portrait",
+        ).first()
+        self.assertIsNotNone(job)
+        self.assertEqual(job.job_type, "initial_variants")
+
+
+class IdentityAnchoredEditTests(CharacterStudioTestCase):
+    """generate_edit_variants must route non-portrait edits through the
+    image-to-image (identity-anchored) pipeline whenever an identity asset
+    exists, and fall back to text-only otherwise."""
+
+    def setUp(self):
+        super().setUp()
+        self.character = self.create_character()
+
+    def _edit(self, image_type, region):
+        return CharacterGenerationService().generate_edit_variants(
+            self.user_key, self.project.id, self.character.character_id,
+            {
+                "region": region, "image_type": image_type,
+                "variant_count": 1, "preserve": {}, "controls": {},
+            },
+        )
+
+    def _seed_portrait(self):
+        # Run a portrait edit; the mock provider persists a real png on disk
+        # so identity-anchored downstream calls can read it back.
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            self._edit("portrait", "face")
+            asset = CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+                status=CharacterAssetStatus.READY,
+            ).first()
+            return asset
+
+    def test_edit_full_body_uses_identity_when_portrait_exists(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            self._edit("portrait", "face")  # seed PORTRAIT identity
+            portrait = CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+                status=CharacterAssetStatus.READY,
+            ).first()
+            self.assertIsNotNone(portrait)
+
+            job = self._edit("full_body", "body")
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(job.job_type, "edit_variants")
+        full_body = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+        ).order_by("-created_at").first()
+        self.assertIsNotNone(full_body)
+        self.assertEqual(
+            full_body.metadata.get("source_identity_asset_id"),
+            str(portrait.asset_id),
+        )
+
+    def test_edit_scene_uses_identity_when_portrait_exists(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            self._edit("portrait", "face")
+            portrait = CharacterAsset.objects.filter(
+                character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+                status=CharacterAssetStatus.READY,
+            ).first()
+
+            job = self._edit("scene", "style")
+        self.assertEqual(job.status, "completed")
+        scene = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.SCENE,
+        ).order_by("-created_at").first()
+        self.assertEqual(
+            scene.metadata.get("source_identity_asset_id"),
+            str(portrait.asset_id),
+        )
+
+    def test_edit_full_body_falls_back_to_text_only_without_identity(self):
+        # No portrait, no uploaded reference — identity-anchored path is skipped
+        # and the legacy text-only edit takes over so the user still gets a
+        # result on a fresh character.
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            job = self._edit("full_body", "body")
+        self.assertEqual(job.status, "completed")
+        full_body = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.FULL_BODY,
+        ).order_by("-created_at").first()
+        self.assertIsNotNone(full_body)
+        # No identity asset existed, so the source linkage isn't set.
+        self.assertIsNone(full_body.metadata.get("source_identity_asset_id"))
+
+    def test_edit_portrait_stays_text_only(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            job = self._edit("portrait", "face")
+        self.assertEqual(job.status, "completed")
+        self.assertEqual(job.job_type, "edit_variants")
+        portrait = CharacterAsset.objects.filter(
+            character=self.character, asset_type=CharacterAssetType.PORTRAIT,
+        ).order_by("-created_at").first()
+        # Portrait edit must never carry a source_identity_asset_id — portrait
+        # IS the identity source.
+        self.assertIsNone(portrait.metadata.get("source_identity_asset_id"))

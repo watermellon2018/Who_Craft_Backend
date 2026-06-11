@@ -11,18 +11,43 @@ MAX_LIMIT = 50
 DEFAULT_LIMIT = 20
 
 
+class _PaginationError(Exception):
+    def __init__(self, detail: str):
+        self.detail = detail
+
+
 def _parse_pagination(request):
+    raw_limit = request.query_params.get('limit')
+    raw_offset = request.query_params.get('offset')
     try:
-        limit = int(request.query_params.get('limit') or DEFAULT_LIMIT)
+        limit = int(raw_limit) if raw_limit not in (None, '') else DEFAULT_LIMIT
     except (TypeError, ValueError):
-        limit = DEFAULT_LIMIT
+        raise _PaginationError('limit must be an integer')
     try:
-        offset = int(request.query_params.get('offset') or 0)
+        offset = int(raw_offset) if raw_offset not in (None, '') else 0
     except (TypeError, ValueError):
-        offset = 0
-    limit = max(1, min(limit, MAX_LIMIT))
-    offset = max(0, offset)
+        raise _PaginationError('offset must be an integer')
+    if limit < 1 or limit > MAX_LIMIT:
+        raise _PaginationError(f'limit must be between 1 and {MAX_LIMIT}')
+    if offset < 0:
+        raise _PaginationError('offset must be >= 0')
     return limit, offset
+
+
+def _pagination_or_400(request):
+    """Return ``(limit, offset, None)`` or ``(None, None, Response400)``."""
+    try:
+        limit, offset = _parse_pagination(request)
+    except _PaginationError as exc:
+        return None, None, Response({'detail': exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+    return limit, offset, None
+
+
+def _parse_user_id(raw) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise _PaginationError('invalid user_id')
 
 
 def _state_to_payload(state: services.SubscriptionState) -> dict:
@@ -41,7 +66,9 @@ class MySubscriptionsView(APIView):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        limit, offset = _parse_pagination(request)
+        limit, offset, err = _pagination_or_400(request)
+        if err:
+            return err
         data = services.list_my_subscriptions(user, limit, offset)
         return Response(data)
 
@@ -54,7 +81,9 @@ class ChannelSearchView(APIView):
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         q = request.query_params.get('q') or ''
-        limit, offset = _parse_pagination(request)
+        limit, offset, err = _pagination_or_400(request)
+        if err:
+            return err
         data = services.search_channels(user, q, limit, offset)
         return Response(data)
 
@@ -96,7 +125,7 @@ class ChannelSubscriptionSettingsView(APIView):
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        body = request.data or {}
+        body = request.data if isinstance(request.data, dict) else {}
         is_favorite = body.get('isFavorite') if 'isFavorite' in body else body.get('is_favorite')
         notifications_enabled = (
             body.get('notificationsEnabled') if 'notificationsEnabled' in body
@@ -127,7 +156,9 @@ class UserSubscribersView(APIView):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        limit, offset = _parse_pagination(request)
+        limit, offset, err = _pagination_or_400(request)
+        if err:
+            return err
         data = services.list_subscribers(int(user_id), limit, offset)
         return Response(data)
 
@@ -139,6 +170,8 @@ class UserSubscriptionsView(APIView):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        limit, offset = _parse_pagination(request)
+        limit, offset, err = _pagination_or_400(request)
+        if err:
+            return err
         data = services.list_user_subscriptions(int(user_id), limit, offset)
         return Response(data)

@@ -65,20 +65,20 @@ class DashboardAccessTests(TestCase):
         self.assertEqual(resp.status_code, 401)
 
     def test_owner_can_read(self):
-        resp = self.client.get(self._url(), {"token_user": self.owner_token})
+        resp = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.owner_token)
         self.assertEqual(resp.status_code, 200)
 
     def test_viewer_can_read(self):
-        resp = self.client.get(self._url(), {"token_user": self.viewer_token})
+        resp = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.viewer_token)
         self.assertEqual(resp.status_code, 200)
 
     def test_outsider_gets_403(self):
-        resp = self.client.get(self._url(), {"token_user": self.outsider_token})
+        resp = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.outsider_token)
         self.assertEqual(resp.status_code, 403)
 
     def test_missing_project_returns_404(self):
         resp = self.client.get(
-            "/api/projects/999999/dashboard/", {"token_user": self.owner_token}
+            "/api/projects/999999/dashboard/", HTTP_X_USER_TOKEN=self.owner_token
         )
         self.assertEqual(resp.status_code, 404)
 
@@ -91,7 +91,7 @@ class DashboardShapeTests(TestCase):
 
     def _get(self):
         url = f"/api/projects/{self.project.id}/dashboard/"
-        return self.client.get(url, {"token_user": self.token}).json()
+        return self.client.get(url, HTTP_X_USER_TOKEN=self.token).json()
 
     def test_top_level_keys(self):
         data = self._get()
@@ -214,9 +214,10 @@ class ProjectCrudTests(TestCase):
 
     def test_create_project_creates_owner_member_and_progress(self):
         resp = self.client.post(
-            f"/api/projects/?token_user={self.token}",
+            "/api/projects/",
             data={"title": "New Movie", "description": "x", "tags": ["Драма"]},
             format="json",
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         project_id = resp.json()["id"]
@@ -233,8 +234,10 @@ class ProjectCrudTests(TestCase):
 
     def test_create_character_records_activity(self):
         project = _make_project(self.owner, title="X")
-        url = f"/api/projects/{project.id}/characters/?token_user={self.token}"
-        resp = self.client.post(url, data={"name": "Лира Вэй"}, format="json")
+        url = f"/api/projects/{project.id}/characters/"
+        resp = self.client.post(
+            url, data={"name": "Лира Вэй"}, format="json", HTTP_X_USER_TOKEN=self.token
+        )
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertTrue(
             ProjectActivity.objects.filter(
@@ -244,8 +247,10 @@ class ProjectCrudTests(TestCase):
 
     def test_create_scene_records_activity(self):
         project = _make_project(self.owner, title="X")
-        url = f"/api/projects/{project.id}/scenes/?token_user={self.token}"
-        resp = self.client.post(url, data={"title": "Opening"}, format="json")
+        url = f"/api/projects/{project.id}/scenes/"
+        resp = self.client.post(
+            url, data={"title": "Opening"}, format="json", HTTP_X_USER_TOKEN=self.token
+        )
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertTrue(
             ProjectActivity.objects.filter(
@@ -255,11 +260,12 @@ class ProjectCrudTests(TestCase):
 
     def test_create_generation_job_queued(self):
         project = _make_project(self.owner, title="X")
-        url = f"/api/projects/{project.id}/generation-jobs/?token_user={self.token}"
+        url = f"/api/projects/{project.id}/generation-jobs/"
         resp = self.client.post(
             url,
             data={"job_type": "scene_image", "prompt": "neon street"},
             format="json",
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         job = ProjectGenerationJob.objects.get(project=project)
@@ -268,8 +274,10 @@ class ProjectCrudTests(TestCase):
     def test_outsider_cannot_create_character(self):
         project = _make_project(self.owner, title="X")
         outsider, outsider_token = _make_user("outsider2")
-        url = f"/api/projects/{project.id}/characters/?token_user={outsider_token}"
-        resp = self.client.post(url, data={"name": "X"}, format="json")
+        url = f"/api/projects/{project.id}/characters/"
+        resp = self.client.post(
+            url, data={"name": "X"}, format="json", HTTP_X_USER_TOKEN=outsider_token
+        )
         self.assertEqual(resp.status_code, 403)
 
     def test_viewer_cannot_create_character(self):
@@ -278,6 +286,8 @@ class ProjectCrudTests(TestCase):
         ProjectMember.objects.create(
             project=project, user=viewer, role=ProjectMemberRole.VIEWER
         )
-        url = f"/api/projects/{project.id}/characters/?token_user={viewer_token}"
-        resp = self.client.post(url, data={"name": "X"}, format="json")
+        url = f"/api/projects/{project.id}/characters/"
+        resp = self.client.post(
+            url, data={"name": "X"}, format="json", HTTP_X_USER_TOKEN=viewer_token
+        )
         self.assertEqual(resp.status_code, 403)

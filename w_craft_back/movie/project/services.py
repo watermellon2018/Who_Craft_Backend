@@ -376,16 +376,21 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
     visual_p = _clamp_progress(getattr(progress, "visual_progress", 0))
     postprod_p = _clamp_progress(getattr(progress, "postproduction_progress", 0))
 
-    storyboard_count = ProjectAsset.objects.filter(
-        project=project, asset_type="storyboard"
-    ).count()
-    reference_count = ProjectAsset.objects.filter(
-        project=project, asset_type="reference"
-    ).count()
-    models3d_count = ProjectAsset.objects.filter(
-        project=project, asset_type="model_3d"
-    ).count()
-    video_count = ProjectAsset.objects.filter(project=project, asset_type="video").count()
+    # Group all four asset-type counts into a single aggregate query (was 4
+    # separate counts firing every dashboard load).
+    asset_counts = (
+        ProjectAsset.objects.filter(
+            project=project,
+            asset_type__in=("storyboard", "reference", "model_3d", "video"),
+        )
+        .values_list("asset_type")
+        .annotate(c=Count("id"))
+    )
+    counts_by_type = {row[0]: row[1] for row in asset_counts}
+    storyboard_count = counts_by_type.get("storyboard", 0)
+    reference_count = counts_by_type.get("reference", 0)
+    models3d_count = counts_by_type.get("model_3d", 0)
+    video_count = counts_by_type.get("video", 0)
 
     def _pluralize_scenes(n):
         return f"{n} {_plural_ru(n, 'сцена', 'сцены', 'сцен')}"
@@ -533,18 +538,39 @@ def build_project_dashboard(project: Project, user: User, request=None) -> dict[
 
 
 def build_project_summary(project: Project, request=None) -> dict[str, Any]:
-    """Compact summary used by GET /api/projects/ list endpoint and PATCH responses."""
+    """Compact summary used by GET /api/projects/ list endpoint and PATCH responses.
 
-    chars_total = StudioCharacter.objects.filter(project=project).count()
-    scenes_total = Scene.objects.filter(project=project).count()
+    For list responses the caller annotates ``_chars_total`` / ``_scenes_total``
+    and prefetches ``tags`` onto each project so this function does zero
+    extra queries per row (no N+1). For one-off calls (PATCH response, etc.)
+    we fall back to direct count/list queries.
+    """
+
+    chars_total = getattr(project, "_chars_total", None)
+    if chars_total is None:
+        chars_total = StudioCharacter.objects.filter(project=project).count()
+
+    scenes_total = getattr(project, "_scenes_total", None)
+    if scenes_total is None:
+        scenes_total = Scene.objects.filter(project=project).count()
+
     cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
         request, project.image
     )
-    tags = list(
-        ProjectTag.objects.filter(project=project)
-        .order_by("created_at")
-        .values_list("name", flat=True)
-    )
+
+    # When the caller did a ``prefetch_related('tags')`` we read the cache
+    # directly; otherwise fall back to a fresh query. Tag ordering matches
+    # the original (by created_at).
+    prefetched = getattr(project, "_prefetched_objects_cache", {}).get("tags")
+    if prefetched is not None:
+        tags = [t.name for t in sorted(prefetched, key=lambda t: t.created_at)]
+    else:
+        tags = list(
+            ProjectTag.objects.filter(project=project)
+            .order_by("created_at")
+            .values_list("name", flat=True)
+        )
+
     return {
         "id": project.id,
         "title": project.title,

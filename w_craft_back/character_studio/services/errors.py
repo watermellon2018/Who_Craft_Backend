@@ -41,3 +41,12 @@ class IdentityLockedError(CharacterStudioError):
     status_code = 409
     message = "This change may alter the locked identity. Create a new version or unlock identity."
 
+
+class IdentityAssetRequiredError(CharacterStudioError):
+    error_code = "IDENTITY_ASSET_REQUIRED"
+    status_code = 400
+    message = (
+        "Сначала выберите портрет персонажа или загрузите референс — "
+        "без identity-источника нельзя сгенерировать этот ракурс."
+    )
+

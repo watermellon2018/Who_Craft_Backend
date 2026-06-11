@@ -255,9 +255,21 @@ class CharacterGenerationService:
         reference_type comes from the UI vocabulary (portrait, full_body,
         three_quarter, profile, back_view, emotions, poses, outfit_details,
         character_sheet) and is mapped to the corresponding CharacterImageType.
+
+        Routing:
+            - portrait → text-only pipeline (the portrait IS the identity source)
+            - everything else → identity-anchored image-to-image pipeline,
+              using ``CharacterService.get_identity_asset()`` as the source.
         """
+        from pathlib import Path
+
+        from django.conf import settings
+
         from w_craft_back.character_studio.services.asset_service import (
             REFERENCE_UI_TO_ASSET_TYPE,
+        )
+        from w_craft_back.character_studio.services.errors import (
+            IdentityAssetRequiredError,
         )
 
         ui_type = (params or {}).get("reference_type")
@@ -288,39 +300,99 @@ class CharacterGenerationService:
             if len(correction_prompt) > 500:
                 raise ValidationError("correction_prompt max length is 500.")
 
-        region = self.IMAGE_TYPE_TO_REGION[image_type]
-        compiled = self.compiler.compile(
-            project_style=params.get("project_style"),
+        # PORTRAIT is the identity source itself — keep the original text-only
+        # pipeline so the user can iterate the canonical portrait look.
+        if image_type == CharacterImageType.PORTRAIT:
+            region = self.IMAGE_TYPE_TO_REGION[image_type]
+            compiled = self.compiler.compile(
+                project_style=params.get("project_style"),
+                character=character,
+                appearance=character.active_appearance,
+                outfit=character.active_outfit,
+                region=region,
+                controls=params.get("controls", {}),
+                text_refinement=params.get("text_refinement", ""),
+                preserve=params.get("preserve", {}),
+                identity_locked=character.identity_locked,
+                reference_images=self._reference_ids(character),
+                image_type=image_type,
+                correction_prompt=correction_prompt,
+                preserve_identity=preserve_identity,
+            )
+            request_payload = {
+                **params,
+                "image_type": image_type,
+                "reference_type": ui_type,
+                "asset_type": asset_type,
+                "activate_image": False,
+                "variant_count": 1,
+                "correction_prompt": correction_prompt,
+                "preserve_identity": preserve_identity,
+            }
+            return self._run_job(
+                character,
+                GenerationJobType.INITIAL_VARIANTS,
+                region,
+                1,
+                request_payload,
+                compiled,
+            )
+
+        # Non-portrait reference: derive from the identity asset (image-to-image).
+        identity_asset = self.characters.get_identity_asset(character)
+        self.logger.info(
+            "generate_reference: character=%s image_type=%s has_identity=%s "
+            "identity_asset=%s preserve=%s",
+            character.character_id,
+            image_type,
+            bool(identity_asset),
+            str(identity_asset.asset_id) if identity_asset else None,
+            preserve_identity,
+        )
+        if identity_asset is None:
+            raise IdentityAssetRequiredError()
+
+        # Load the identity image bytes up front so a missing-file surfaces
+        # before we spin up the job.
+        abs_path = Path(settings.MEDIA_ROOT) / identity_asset.storage_path
+        try:
+            reference_bytes = abs_path.read_bytes()
+        except OSError as exc:
+            raise ValidationError(
+                "Identity reference image file is missing on storage."
+            ) from exc
+        mime_type = identity_asset.mime_type or "image/png"
+
+        compiled = self.compiler.compile_identity_anchored(
             character=character,
             appearance=character.active_appearance,
             outfit=character.active_outfit,
-            region=region,
-            controls=params.get("controls", {}),
-            text_refinement=params.get("text_refinement", ""),
-            preserve=params.get("preserve", {}),
-            identity_locked=character.identity_locked,
-            reference_images=self._reference_ids(character),
             image_type=image_type,
-            correction_prompt=correction_prompt,
-            preserve_identity=preserve_identity,
+            params={
+                "preserve_identity": preserve_identity,
+                "text_refinement": params.get("text_refinement", ""),
+                "correction_prompt": correction_prompt,
+                "visual_style": params.get("visual_style"),
+            },
         )
         request_payload = {
             **params,
             "image_type": image_type,
             "reference_type": ui_type,
             "asset_type": asset_type,
-            "activate_image": False,
             "variant_count": 1,
-            "correction_prompt": correction_prompt,
             "preserve_identity": preserve_identity,
+            "correction_prompt": correction_prompt,
+            "reference_asset_id": str(identity_asset.asset_id),
+            "source_identity_asset_id": str(identity_asset.asset_id),
+            "activate_image": params.get("activate_image", False),
         }
-        return self._run_job(
+        return self._run_job_with_reference(
             character,
-            GenerationJobType.INITIAL_VARIANTS,
-            region,
-            1,
             request_payload,
             compiled,
+            reference_bytes,
+            mime_type,
         )
 
     def generate_missing_references(self, user, project_id, character_id, params):
@@ -435,6 +507,39 @@ class CharacterGenerationService:
         self.characters.assert_identity_change_allowed(character, region, edit_request)
         self.safety.validate_user_text(edit_request.get("text_refinement", ""))
         variant_count = self._validate_variant_count(edit_request.get("variant_count", 4))
+
+        # Identity-anchored generation: when a character has an EXPLICIT
+        # identity source (canonical reference or uploaded photo), every edit
+        # — including portrait — feeds that asset into the model as the
+        # image-to-image input so the face stays the same across runs.
+        #
+        # Why portrait needs anchoring too: without it, every portrait re-edit
+        # was text-only and the provider was free to draw a completely
+        # different person, which then became the new active portrait. The
+        # next full_body/scene edit was anchored on the (correct) canonical,
+        # but the portrait tab kept showing the wrong face. This is what
+        # produced the "asian woman in Portrait, anime girl in Full body,
+        # brunette in Scene" data corruption we saw in the wild.
+        #
+        # Falling back to "latest portrait" is intentionally NOT used here for
+        # portrait edits — that would re-anchor on whatever wrong face the
+        # previous edit produced and never recover. Non-portrait edits keep
+        # the legacy "any identity asset" behaviour so existing characters
+        # without a canonical still get face consistency for full_body/scene.
+        if image_type == CharacterImageType.PORTRAIT:
+            identity_asset = self.characters.get_explicit_identity_asset(character)
+        else:
+            identity_asset = self.characters.get_identity_asset(character)
+        if identity_asset is not None:
+            return self._run_identity_anchored_edit(
+                character=character,
+                image_type=image_type,
+                region=region,
+                identity_asset=identity_asset,
+                variant_count=variant_count,
+                edit_request=edit_request,
+            )
+
         preserve = edit_request.get("preserve", {})
         compiled = self.compiler.compile(
             project_style=edit_request.get("project_style"),
@@ -452,16 +557,307 @@ class CharacterGenerationService:
         edit_request = {**edit_request, "image_type": image_type, "activate_image": edit_request.get("activate_image", True)}
         return self._run_job(character, GenerationJobType.EDIT_VARIANTS, region, variant_count, edit_request, compiled)
 
+    def _run_identity_anchored_edit(
+        self, *, character, image_type, region, identity_asset, variant_count, edit_request
+    ):
+        """Edit a non-portrait view (full_body/scene/...) using identity asset as image input.
+
+        Mirrors the pipeline used by :meth:`generate_reference` but stays under
+        the EDIT_VARIANTS job type so the editor's caller (and its EDIT_DEPENDENCIES
+        cascade) keeps working unchanged.
+        """
+        from pathlib import Path
+
+        from django.conf import settings
+
+        abs_path = Path(settings.MEDIA_ROOT) / identity_asset.storage_path
+        try:
+            reference_bytes = abs_path.read_bytes()
+        except OSError:
+            # Identity file disappeared on disk; fall back to text-only edit so
+            # the user still gets a result instead of a hard failure.
+            self.logger.warning(
+                "Identity asset %s missing on disk; falling back to text-only edit "
+                "for character=%s image_type=%s",
+                identity_asset.asset_id, character.character_id, image_type,
+            )
+            preserve = edit_request.get("preserve", {})
+            compiled = self.compiler.compile(
+                project_style=edit_request.get("project_style"),
+                character=character,
+                appearance=character.active_appearance,
+                outfit=character.active_outfit,
+                region=region,
+                controls=edit_request.get("controls", {}),
+                text_refinement=edit_request.get("text_refinement", ""),
+                preserve=preserve,
+                identity_locked=character.identity_locked,
+                reference_images=self._reference_ids(character),
+                image_type=image_type,
+            )
+            payload = {**edit_request, "image_type": image_type,
+                       "activate_image": edit_request.get("activate_image", True)}
+            return self._run_job(
+                character, GenerationJobType.EDIT_VARIANTS, region, variant_count, payload, compiled,
+            )
+        mime_type = identity_asset.mime_type or "image/png"
+        preserve_identity = bool(edit_request.get("preserve_identity", True))
+        text_refinement = edit_request.get("text_refinement", "") or ""
+
+        compiled = self.compiler.compile_identity_anchored(
+            character=character,
+            appearance=character.active_appearance,
+            outfit=character.active_outfit,
+            image_type=image_type,
+            params={
+                "preserve_identity": preserve_identity,
+                "text_refinement": text_refinement,
+                "visual_style": (edit_request.get("controls") or {}).get("visual_style"),
+            },
+        )
+
+        request_payload = {
+            **edit_request,
+            "image_type": image_type,
+            "variant_count": variant_count,
+            "preserve_identity": preserve_identity,
+            "reference_asset_id": str(identity_asset.asset_id),
+            "source_identity_asset_id": str(identity_asset.asset_id),
+            "activate_image": edit_request.get("activate_image", True),
+        }
+        self.logger.info(
+            "generate_edit_variants identity-anchored: character=%s image_type=%s identity_asset=%s",
+            character.character_id, image_type, identity_asset.asset_id,
+        )
+        return self._run_job_with_reference(
+            character,
+            request_payload,
+            compiled,
+            reference_bytes,
+            mime_type,
+            job_type=GenerationJobType.EDIT_VARIANTS,
+        )
+
     def get_generation_job(self, job_id):
         try:
             return self.jobs.get(job_id=job_id)
         except CharacterGenerationJob.DoesNotExist as exc:
             raise NotFoundError("Generation job not found.") from exc
 
-    def _run_job(self, character, job_type, region, variant_count, request_payload, compiled):
+    def create_reference_variants(self, user, project_id, character_id, reference_asset, params):
+        """Generate variants for a character seeded by a user-uploaded source image.
+
+        Separate pipeline from :meth:`create_initial_variants`: uses a dedicated
+        prompt compiler path and calls ``provider.generate_from_reference`` so the
+        provider receives the actual reference bytes as multimodal input.
+        """
+        from pathlib import Path
+
+        from django.conf import settings
+
+        character = self.characters.get_character(user, project_id, character_id)
+        variant_count = self._validate_variant_count(params.get("variant_count", 4))
+        preserve_identity = bool(params.get("preserve_identity", True))
+
+        compiled = self.compiler.compile_reference_prompt(
+            character=character,
+            appearance=character.active_appearance,
+            outfit=character.active_outfit,
+            params={
+                "preserve_identity": preserve_identity,
+                "visual_style": params.get("visual_style"),
+                "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
+            },
+        )
+
+        # Read reference bytes once before kicking off the job so a missing file
+        # surfaces immediately, not buried in the provider call.
+        storage_path = reference_asset.storage_path
+        abs_path = Path(settings.MEDIA_ROOT) / storage_path
+        try:
+            reference_bytes = abs_path.read_bytes()
+        except OSError as exc:
+            raise ValidationError(
+                "Reference image file is missing on storage."
+            ) from exc
+        mime_type = reference_asset.mime_type or "image/png"
+
+        request_payload = {
+            "variant_count": variant_count,
+            "image_type": CharacterImageType.PORTRAIT,
+            "preserve_identity": preserve_identity,
+            "visual_style": params.get("visual_style"),
+            "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
+            "reference_asset_id": str(reference_asset.asset_id),
+            "activate_image": params.get("activate_image", True),
+        }
+        return self._run_job_with_reference(
+            character,
+            request_payload,
+            compiled,
+            reference_bytes,
+            mime_type,
+        )
+
+    def _run_job_with_reference(
+        self,
+        character,
+        request_payload,
+        compiled,
+        reference_bytes,
+        mime_type,
+        job_type=GenerationJobType.REFERENCE_VARIANTS,
+    ):
         self.safety.validate_generated_prompt(compiled["positive_prompt"])
+        user_pref = ""
+        try:
+            # character.user is a UserKey; UserProfile is attached to the
+            # underlying Django User (UserKey.user.profile).
+            django_user = getattr(character.user, "user", None)
+            profile = getattr(django_user, "profile", None) if django_user else None
+            user_pref = (
+                getattr(profile, "image_generation_model", "") or ""
+            ).strip()
+        except Exception:  # noqa: BLE001
+            user_pref = ""
         provider_name = (
             (request_payload or {}).get("provider")
+            or user_pref
+            or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
+            or "mock"
+        )
+        variant_count = request_payload["variant_count"]
+        image_type = request_payload.get("image_type") or CharacterImageType.PORTRAIT
+        region = self.IMAGE_TYPE_TO_REGION.get(image_type, "full_character")
+
+        job = self.jobs.create(
+            character=character,
+            project=character.project,
+            user=character.user,
+            job_type=job_type,
+            status=GenerationJobStatus.QUEUED,
+            region=region,
+            variant_count=variant_count,
+            request_payload=request_payload,
+            compiled_prompt=compiled["positive_prompt"],
+            negative_prompt=compiled["negative_prompt"],
+            edit_instruction="",
+            preserve_options=compiled["metadata"].get("preserve", {}),
+            provider=provider_name,
+        )
+        job.status = GenerationJobStatus.PROCESSING
+        job.progress = 40
+        job.started_at = timezone.now()
+        job.save()
+        self.logger.info(
+            "_run_job_with_reference: job_id=%s character_id=%s provider=%s reference_asset=%s",
+            job.job_id,
+            character.character_id,
+            provider_name,
+            request_payload.get("reference_asset_id"),
+        )
+
+        provider = get_image_provider(provider_name)
+        try:
+            results = provider.generate_from_reference(
+                job, compiled, reference_bytes, mime_type, variant_count
+            )
+            asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(
+                image_type, CharacterAssetType.INITIAL_VARIANT
+            )
+            first_asset = None
+            for item in results:
+                metadata = {
+                    **(item.get("metadata") or {}),
+                    "image_type": image_type,
+                    "job_type": job_type,
+                    "reference_asset_id": request_payload.get("reference_asset_id"),
+                    "source_identity_asset_id": request_payload.get(
+                        "source_identity_asset_id"
+                    ) or request_payload.get("reference_asset_id"),
+                    "preserve_identity": request_payload.get("preserve_identity", True),
+                }
+                asset_kwargs = dict(
+                    image_url=item["image_url"],
+                    storage_path=item["storage_path"],
+                    width=item["width"],
+                    height=item["height"],
+                    mime_type=item["mime_type"],
+                    source=provider_name,
+                    source_job_id=job.job_id,
+                    generation_prompt=item["prompt"],
+                    negative_prompt=item["negative_prompt"],
+                    model_name=item["model_name"],
+                    model_version=item["model_version"],
+                    seed=item["seed"],
+                    metadata=metadata,
+                    safety_status="passed",
+                )
+                correction = (request_payload.get("correction_prompt") or "").strip()
+                if correction:
+                    asset_kwargs["correction_prompt"] = correction
+                asset = self.assets.save_asset(character, asset_type, **asset_kwargs)
+                first_asset = first_asset or asset
+                variant = self.variants.create(
+                    job=job,
+                    character=character,
+                    asset=asset,
+                    variant_index=item["variant_index"],
+                    region=region,
+                    controls_snapshot=request_payload,
+                    appearance_snapshot=compiled["metadata"],
+                    image_url=item["image_url"],
+                    prompt=item["prompt"],
+                    negative_prompt=item["negative_prompt"],
+                    seed=item["seed"],
+                    model_name=item["model_name"],
+                )
+                asset.source_variant_id = variant.variant_id
+                asset.save(update_fields=["source_variant_id"])
+            if first_asset and request_payload.get("activate_image", True):
+                self._activate_image(character, first_asset, image_type, request_payload)
+            job.status = GenerationJobStatus.COMPLETED
+            job.progress = 100
+            job.model_name = provider.model_name
+            job.model_version = provider.model_version
+            job.completed_at = timezone.now()
+            job.save()
+            self.logger.info(
+                "_run_job_with_reference completed: job_id=%s character_id=%s",
+                job.job_id, character.character_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.exception(
+                "Reference-based character generation failed "
+                "(provider=%s job_id=%s)", provider_name, job.job_id,
+            )
+            job.status = GenerationJobStatus.FAILED
+            job.error_code = getattr(exc, "error_code", "REFERENCE_GENERATION_FAILED")
+            job.error_message = (
+                exc.user_message if isinstance(exc, ProviderUserFacingError) else str(exc)
+            )
+            job.failed_at = timezone.now()
+            job.save()
+        return job
+
+    def _run_job(self, character, job_type, region, variant_count, request_payload, compiled):
+        self.safety.validate_generated_prompt(compiled["positive_prompt"])
+        # Resolution order: explicit override on the request > user's saved
+        # ``UserProfile.image_generation_model`` > env default > "mock".
+        user_pref = ""
+        try:
+            # character.user is a UserKey; UserProfile is attached to the
+            # underlying Django User (UserKey.user.profile).
+            django_user = getattr(character.user, "user", None)
+            profile = getattr(django_user, "profile", None) if django_user else None
+            user_pref = (
+                getattr(profile, "image_generation_model", "") or ""
+            ).strip()
+        except Exception:  # noqa: BLE001 — profile lookup is best-effort
+            user_pref = ""
+        provider_name = (
+            (request_payload or {}).get("provider")
+            or user_pref
             or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
             or "mock"
         )

@@ -184,18 +184,27 @@ def references_payload(character, readiness):
     primary_id = None
     from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetStatus
 
+    missing_types = [
+        REFERENCE_UI_TO_ASSET_TYPE[ui]
+        for ui in REFERENCE_UI_ORDER
+        if latest.get(REFERENCE_UI_TO_ASSET_TYPE[ui]) is None
+    ]
+    fallback_by_type: dict = {}
+    if missing_types:
+        # One query instead of nine: pull every non-ready row for the missing
+        # types and keep the newest per asset_type in Python.
+        qs = (
+            CharacterAsset.objects
+            .filter(character=character, asset_type__in=missing_types)
+            .exclude(status=CharacterAssetStatus.READY)
+            .order_by("asset_type", "-created_at")
+        )
+        for asset in qs:
+            fallback_by_type.setdefault(asset.asset_type, asset)
+
     for ui_type in REFERENCE_UI_ORDER:
         asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
-        chosen = latest.get(asset_type)
-        if chosen is None:
-            # No ready row — surface the most recent generating/failed instead.
-            chosen = (
-                CharacterAsset.objects
-                .filter(character=character, asset_type=asset_type)
-                .exclude(status=CharacterAssetStatus.READY)
-                .order_by("-created_at")
-                .first()
-            )
+        chosen = latest.get(asset_type) or fallback_by_type.get(asset_type)
         rows.append(reference_dict(chosen, ui_type))
         if chosen and chosen.is_primary:
             primary_id = str(chosen.asset_id)

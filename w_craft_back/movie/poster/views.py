@@ -38,13 +38,10 @@ from w_craft_back.movie.poster.prompts import (
 from w_craft_back.views import img2response
 from w_craft_back.views.views import (
     ImageProviderError,
-    _gemini_kind_to_provider_error,
     create_image_from_string,
 )
-from w_craft_back.movie.poster.gemini_image import (
-    GeminiImageError,
-    edit_image_via_gemini,
-)
+from w_craft_back.services.image_generation import resolve_provider_for_user
+from w_craft_back.services.image_generation.errors import map_to_provider_error
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +61,10 @@ def _error_json(
     )
 
 
-def _read_inputs(request) -> tuple[str, str, str, Optional[object]]:
-    """Pull (description, style, format, reference_file) from a request that
-    might be a GET (query string), JSON POST, or multipart POST."""
+def _read_inputs(request) -> tuple[str, str, str, Optional[object], Optional[str]]:
+    """Pull (description, style, format, reference_file, image_model) from a
+    request that might be a GET (query string), JSON POST, or multipart POST.
+    """
     if request.method == "GET":
         params = request.GET
         description = (
@@ -75,6 +73,7 @@ def _read_inputs(request) -> tuple[str, str, str, Optional[object]]:
         style = params.get("style") or DEFAULT_STYLE
         poster_format = params.get("format") or DEFAULT_FORMAT
         reference = None
+        image_model = params.get("image_model") or None
     else:
         data = request.data if hasattr(request, "data") else {}
         description = (
@@ -90,8 +89,26 @@ def _read_inputs(request) -> tuple[str, str, str, Optional[object]]:
             or request.FILES.get("file")
             if hasattr(request, "FILES") else None
         )
+        image_model = data.get("image_model") or None
 
-    return description, style, poster_format, reference
+    return description, style, poster_format, reference, image_model
+
+
+def _get_user_for_request(request):
+    """Best-effort resolution of the calling user without raising for
+    anonymous requests — those keep the legacy behavior of using the
+    env/registry default model.
+    """
+    from w_craft_back.auth.models import UserKey
+    from w_craft_back.auth.utils import extract_user_token
+
+    token = extract_user_token(request)
+    if not token:
+        return None
+    try:
+        return UserKey.objects.select_related('user').get(key=token).user
+    except (UserKey.DoesNotExist, ValueError, TypeError):
+        return None
 
 
 def _validate(description: str, style: str, poster_format: str) -> Optional[Response]:
@@ -136,7 +153,7 @@ def _provider_error_response(exc: ImageProviderError) -> Response:
 @api_view(['GET', 'POST'])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
 def generate_poster(request):
-    description, style, poster_format, reference_file = _read_inputs(request)
+    description, style, poster_format, reference_file, image_model = _read_inputs(request)
 
     err = _validate(description, style, poster_format)
     if err is not None:
@@ -156,14 +173,22 @@ def generate_poster(request):
         reference_present=reference_file is not None,
     )
 
+    user = _get_user_for_request(request)
     logger.info(
-        "Poster generation request: style=%s format=%s desc_len=%s has_reference=%s",
-        style, poster_format, len(description_clean), reference_file is not None,
+        "Poster generation request: style=%s format=%s desc_len=%s has_reference=%s "
+        "has_user=%s image_model=%s",
+        style, poster_format, len(description_clean),
+        reference_file is not None, bool(user), image_model,
     )
     logger.info("Prompt gen poster: %s", prompt_global)
 
     try:
-        image = create_image_from_string(prompt_global, poster_format=poster_format)
+        image = create_image_from_string(
+            prompt_global,
+            poster_format=poster_format,
+            user=user,
+            model_override=image_model,
+        )
     except ImageProviderError as exc:
         logger.error(
             "Poster generation provider error: code=%s provider_status=%s",
@@ -191,6 +216,7 @@ def edite_generative_poster(request):
 
     desc = params.get('correction', '') if isinstance(params, dict) else ''
     img_url = params.get('image', '') if isinstance(params, dict) else ''
+    image_model = params.get('image_model') if isinstance(params, dict) else None
     if not desc or not img_url:
         return _error_json(
             "POSTER_EDIT_PAYLOAD_INVALID",
@@ -205,7 +231,7 @@ def edite_generative_poster(request):
     logger.info("Prompt edit generative poster: %s", prompt_global)
 
     # Strip a possible ``data:image/...;base64,`` prefix and remember the
-    # mime type so Gemini gets it right when we hand the bytes back in.
+    # mime type so the provider gets it right when we hand the bytes back in.
     mime_type = "image/png"
     if img_url.startswith("data:"):
         try:
@@ -223,12 +249,18 @@ def edite_generative_poster(request):
             "Не удалось декодировать изображение для правки.",
         )
 
+    user = _get_user_for_request(request)
     try:
-        edited_bytes = edit_image_via_gemini(
-            img_bytes, prompt_global, mime_type=mime_type
+        provider = resolve_provider_for_user(
+            user, override=image_model, require_edit=True,
         )
-    except GeminiImageError as exc:
-        return _provider_error_response(_gemini_kind_to_provider_error(exc))
+        edited_bytes = provider.edit(
+            img_bytes, prompt_global, mime_type=mime_type,
+        )
+    except ImageProviderError as exc:
+        return _provider_error_response(exc)
+    except Exception as exc:  # noqa: BLE001
+        return _provider_error_response(map_to_provider_error(exc))
 
     logger.info("Image was edited.")
     # ``img2response`` accepts the legacy ``{"b64_json": ...}`` shape and

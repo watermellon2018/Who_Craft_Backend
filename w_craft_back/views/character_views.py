@@ -1,9 +1,13 @@
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import StudioCharacter
+from w_craft_back.character_studio.models import (
+    StudioCharacter,
+    VISIBLE_CHARACTER_STATUSES,
+)
 from w_craft_back.characters.creating.models import Character
 from w_craft_back.models import MenuFolder, ItemFolder
 
 import logging
+import uuid
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import JsonResponse, HttpResponse
@@ -14,6 +18,26 @@ from rest_framework.views import APIView
 from w_craft_back.movie.project.models import Project
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_uuid(value):
+    if not value:
+        return False
+    try:
+        uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _looks_like_int(value):
+    if value in (None, ""):
+        return False
+    try:
+        int(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 @api_view(['POST'])
@@ -155,12 +179,20 @@ class CharacterTree(APIView):
         try:
             logger.info('Удаление персонажа из дерева')
             id_to_delete = request.data.get('id')
-            model_to_delete = MenuFolder.objects.filter(key=id_to_delete).first()
-            if model_to_delete is None:
+
+            # Three lookup keys are tried in order: MenuFolder.key and
+            # ItemFolder.studio_character_id are UUIDs; ItemFolder.hero_id is
+            # a legacy integer FK. Mixing types crashes the ORM (e.g. passing
+            # a UUID into an int FK lookup), so we filter to compatible
+            # candidates before running each query.
+            model_to_delete = None
+            if id_to_delete:
+                model_to_delete = MenuFolder.objects.filter(key=id_to_delete).first()
+            if model_to_delete is None and _looks_like_uuid(id_to_delete):
                 model_to_delete = ItemFolder.objects.filter(
                     studio_character_id=id_to_delete,
                 ).first()
-            if model_to_delete is None:
+            if model_to_delete is None and _looks_like_int(id_to_delete):
                 model_to_delete = ItemFolder.objects.filter(hero_id=id_to_delete).first()
             if model_to_delete is None:
                 return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
@@ -180,6 +212,10 @@ class CharacterTree(APIView):
             return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
 
         except Exception as e:
+            # The previous handler swallowed the traceback, which made
+            # "delete returns 500" bugs invisible in logs. Keep the same
+            # response shape but actually log the exception.
+            logger.exception('Tree delete failed for id=%s', request.data.get('id'))
             return JsonResponse({'error': str(e)}, status=500)
 
     def get(self, request):
@@ -197,9 +233,17 @@ class CharacterTree(APIView):
         items = MenuFolder.objects.filter(cur_project=cur_project).order_by('tree_id', 'lft')
         tree = cache_tree_children(items)
 
+        # Drafts must NEVER appear in the tree — they're unfinished
+        # creation attempts and showing them produced duplicate "name"
+        # entries next to the user's real character.
+        visible_studio_character_ids = set(
+            StudioCharacter.objects
+            .filter(project=cur_project, status__in=VISIBLE_CHARACTER_STATUSES)
+            .values_list('character_id', flat=True)
+        )
+
         # Преобразуем дерево в формат JSON
         def build_tree(node):
-            item = None
             studio_character_id = None
             legacy_hero_id = None
             try:
@@ -217,14 +261,26 @@ class CharacterTree(APIView):
                 'character_id': str(studio_character_id) if studio_character_id else None,
                 'legacy_hero_id': legacy_hero_id,
             }
-            children = [build_tree(child) for child in node.get_children()]
+            raw_children = [build_tree(child) for child in node.get_children()]
+            children = [child for child in raw_children if child is not None]
 
-            if len(children) == 0 and not node.is_folder:
-                return response
+            if not node.is_folder:
+                # Dangling leaf: tree node was created but the user never
+                # finished and didn't link it to anything. Hide it.
+                if not studio_character_id and not legacy_hero_id:
+                    return None
+                # Linked to a studio character that's still a draft (the user
+                # bailed before applying a variant). Hide it too.
+                if studio_character_id and studio_character_id not in visible_studio_character_ids:
+                    return None
+                if not children:
+                    return response
+
             response['children'] = children
             return response
 
         tree_json = [build_tree(node) for node in tree]
+        tree_json = [node for node in tree_json if node is not None]
         logger.info('Дерево персонажей получено')
 
         return JsonResponse(tree_json, safe=False, status=200)
