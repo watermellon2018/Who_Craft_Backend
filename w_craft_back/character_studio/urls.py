@@ -5,6 +5,15 @@ from w_craft_back.character_studio import views
 urlpatterns = [
     path("projects/<int:project_id>/characters", views.characters_collection),
     path("projects/<int:project_id>/characters/", views.characters_collection),
+    path(
+        "projects/<int:project_id>/characters/from-reference",
+        views.create_character_from_reference,
+        name="character-create-from-reference",
+    ),
+    path(
+        "projects/<int:project_id>/characters/from-reference/",
+        views.create_character_from_reference,
+    ),
     path("projects/<int:project_id>/characters/<uuid:character_id>", views.character_detail),
     path("projects/<int:project_id>/characters/<uuid:character_id>/", views.character_detail),
     path(

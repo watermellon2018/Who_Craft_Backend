@@ -25,8 +25,22 @@ class CharacterRole(models.TextChoices):
 
 
 class CharacterStatus(models.TextChoices):
+    # A character that has been started but not yet confirmed by the user.
+    # We persist drafts because generation needs a character_id to attach
+    # variants to, but drafts must NOT show up in the gallery or tree.
+    DRAFT = "draft", "Draft"
+    # A character the user has confirmed (applied a variant or otherwise
+    # explicitly saved). This is the default "visible" state.
     ACTIVE = "active", "Active"
     REFERENCES_LOCKED = "references_locked", "References locked"
+
+
+# Statuses that should appear in normal user-facing lists (gallery + tree).
+# Drafts are intentionally excluded — they're unfinished creation attempts.
+VISIBLE_CHARACTER_STATUSES = (
+    CharacterStatus.ACTIVE,
+    CharacterStatus.REFERENCES_LOCKED,
+)
 
 
 class CharacterAssetType(models.TextChoices):
@@ -66,6 +80,7 @@ class GenerationJobType(models.TextChoices):
     EXPRESSION_VARIANTS = "expression_variants", "Expression variants"
     CHARACTER_SHEET = "character_sheet", "Character sheet"
     REFERENCE_EXTRACTION = "reference_extraction", "Reference extraction"
+    REFERENCE_VARIANTS = "reference_variants", "Reference-based variants"
 
 
 class GenerationJobStatus(models.TextChoices):
@@ -144,7 +159,7 @@ class StudioCharacter(models.Model):
     status = models.CharField(
         max_length=20,
         choices=CharacterStatus.choices,
-        default=CharacterStatus.ACTIVE,
+        default=CharacterStatus.DRAFT,
         db_index=True,
     )
     identity_locked = models.BooleanField(default=False)

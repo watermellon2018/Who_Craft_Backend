@@ -25,17 +25,20 @@ from .services import (
 
 
 def _get_user_from_request(request):
-    token = (
-        request.data.get('token_user')
-        or request.query_params.get('token_user')
-        or request.headers.get('X-User-Token')
-    )
+    """Return the calling ``User`` or ``None``.
+
+    Token is resolved via ``auth.utils.extract_user_token`` which prefers the
+    ``X-User-Token`` header and falls back to the request body. The deprecated
+    query-string fallback was removed to prevent token leakage into logs.
+    """
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from w_craft_back.auth.utils import extract_user_token
+    token = extract_user_token(request)
     if not token:
         return None
     try:
-        user_key = UserKey.objects.select_related('user').get(key=token)
-        return user_key.user
-    except (UserKey.DoesNotExist, Exception):
+        return UserKey.objects.select_related('user').get(key=token).user
+    except (UserKey.DoesNotExist, ValueError, TypeError, DjangoValidationError):
         return None
 
 
@@ -289,3 +292,79 @@ class ProfileAvatarView(_ImageEndpointMixin, APIView):
 class ProfileCoverView(_ImageEndpointMixin, APIView):
     parser_classes = [MultiPartParser, FormParser]
     asset_type = UserAsset.COVER
+
+
+class ImageModelView(APIView):
+    """GET / PATCH the user's preferred image-generation model.
+
+    Body shape for PATCH:
+        {"image_generation_model": "gemini-flash-image"}    # set
+        {"image_generation_model": null}                    # reset to default
+    """
+
+    parser_classes = [JSONParser, FormParser]
+
+    def get(self, request):
+        user = _get_user_from_request(request)
+        if user is None:
+            return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        profile = _get_or_create_profile(user)
+        return Response(self._serialize(profile))
+
+    def patch(self, request):
+        from w_craft_back.services.image_generation import MODEL_REGISTRY
+        from w_craft_back.services.image_generation.errors import CODE_MODEL_UNKNOWN
+
+        user = _get_user_from_request(request)
+        if user is None:
+            return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        if 'image_generation_model' not in request.data:
+            return Response(
+                {'detail': 'validation error',
+                 'errors': {'image_generation_model': ['this field is required']}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw = request.data.get('image_generation_model')
+        if raw is None or raw == '':
+            new_value = ''
+        else:
+            if not isinstance(raw, str):
+                return Response(
+                    {'detail': 'validation error',
+                     'errors': {'image_generation_model': ['must be a string or null']}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            key = raw.strip()
+            if key not in MODEL_REGISTRY:
+                return Response(
+                    {
+                        'detail': 'unknown image model',
+                        'code': CODE_MODEL_UNKNOWN,
+                        'field': 'image_generation_model',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            new_value = key
+
+        profile = _get_or_create_profile(user)
+        profile.image_generation_model = new_value
+        profile.save(update_fields=['image_generation_model', 'updated_at'])
+        return Response(self._serialize(profile))
+
+    @staticmethod
+    def _serialize(profile: UserProfile) -> dict:
+        from w_craft_back.services.image_generation import list_available_models
+        from w_craft_back.services.image_generation.resolver import (
+            resolve_current_for_user,
+        )
+
+        current = resolve_current_for_user(profile.user)
+        return {
+            'current': current['key'],
+            'source': current['source'],
+            'configured': current['configured'],
+            'stored': profile.image_generation_model or None,
+            'available': list_available_models(),
+        }

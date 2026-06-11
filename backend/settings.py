@@ -65,6 +65,14 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Browsers reject "Access-Control-Allow-Origin: *" when credentials are sent,
+# so combining wildcard CORS with credentials is both insecure and broken.
+if CORS_ORIGIN_ALLOW_ALL and CORS_ALLOW_CREDENTIALS and not DEBUG:
+    raise RuntimeError(
+        "Refusing to start: CORS_ALLOW_ALL=true is incompatible with CORS_ALLOW_CREDENTIALS=true "
+        "outside DEBUG. Set explicit CORS_ALLOWED_ORIGINS instead."
+    )
+
 from corsheaders.defaults import default_headers as _cors_default_headers
 CORS_ALLOW_HEADERS = (*_cors_default_headers, "x-user-token")
 
@@ -160,6 +168,13 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+
+# Logging levels are env-driven so we can turn on request-level INFO logs in
+# production without a code change. Defaults preserve the previous behaviour
+# (quiet by default).
+_APP_LOG_LEVEL = os.getenv('CRAFT_LOG_LEVEL', 'DEBUG' if DEBUG else 'INFO').upper()
+_DJANGO_REQUEST_LOG_LEVEL = os.getenv('CRAFT_REQUEST_LOG_LEVEL', 'INFO' if DEBUG else 'WARNING').upper()
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -183,14 +198,26 @@ LOGGING = {
     'loggers': {
         'w_craft_back': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': _APP_LOG_LEVEL,
             'propagate': False,
         },
         'django.request': {
             'handlers': ['console'],
-            'level': 'WARNING',
+            'level': _DJANGO_REQUEST_LOG_LEVEL,
             'propagate': False,
         },
+    },
+}
+
+REST_FRAMEWORK = {
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '600/min',
+        'auth': '10/min',
     },
 }
 

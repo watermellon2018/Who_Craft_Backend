@@ -16,7 +16,7 @@ from typing import Optional
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -66,16 +66,14 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 def _resolve_user(request) -> Optional[User]:
-    token = (
-        request.query_params.get("token_user")
-        or (request.data.get("token_user") if hasattr(request, "data") else None)
-        or request.headers.get("X-User-Token")
-    )
+    """Resolve calling ``User`` via the shared token extractor (header → body → deprecated query string)."""
+    from w_craft_back.auth.utils import extract_user_token
+    token = extract_user_token(request)
     if not token:
         return None
     try:
         return UserKey.objects.select_related("user").get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, Exception):
+    except (UserKey.DoesNotExist, ValueError, TypeError):
         return None
 
 
@@ -343,9 +341,22 @@ class ProjectListCreateView(APIView):
         owner_q = Q(owner_id=user.id)
         member_q = Q(members__user_id=user.id)
 
+        # Annotate counts and prefetch tags so build_project_summary doesn't
+        # fire 3 extra queries per project (was an N+1 hot spot for the
+        # projects list endpoint).
         projects = (
             Project.objects.filter(owner_q | legacy_owner_q | member_q)
             .select_related("progress")
+            .prefetch_related(
+                Prefetch(
+                    "tags",
+                    queryset=ProjectTag.objects.order_by("created_at"),
+                )
+            )
+            .annotate(
+                _chars_total=Count("studio_characters", distinct=True),
+                _scenes_total=Count("scenes", distinct=True),
+            )
             .distinct()
             .order_by("-updated_at", "-created_at", "-id")
         )

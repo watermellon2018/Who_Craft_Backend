@@ -22,15 +22,15 @@ class DashboardViewTest(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_invalid_token_returns_401(self):
-        response = self.client.get(self.url, {'token_user': 'not-a-real-token'})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN='not-a-real-token')
         self.assertEqual(response.status_code, 401)
 
     def test_valid_token_returns_200(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.status_code, 200)
 
     def test_response_contains_required_top_level_keys(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         data = response.json()
         for key in ('user', 'profile_completion', 'stats', 'awards',
                     'interests', 'favorite_genres', 'views_analytics',
@@ -38,11 +38,11 @@ class DashboardViewTest(TestCase):
             self.assertIn(key, data, f'Missing key: {key}')
 
     def test_user_section_contains_correct_username(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['username'], 'craftuser')
 
     def test_profile_completion_structure(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         completion = response.json()['profile_completion']
         self.assertIn('percent', completion)
         self.assertIn('items', completion)
@@ -52,35 +52,35 @@ class DashboardViewTest(TestCase):
         self.assertIn('socials', completion['items'])
 
     def test_stats_section_has_all_fields(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         stats = response.json()['stats']
         for field in ('new_messages', 'subscriptions_count', 'watch_history_count',
                       'total_views', 'recommendations_count', 'completed_lessons'):
             self.assertIn(field, stats)
 
     def test_settings_reflect_profile_defaults(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         settings = response.json()['settings']
         self.assertEqual(settings['language'], 'ru')
         self.assertFalse(settings['private_account'])
         self.assertTrue(settings['notifications_enabled'])
 
     def test_display_name_falls_back_to_username(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['display_name'], 'craftuser')
 
     def test_display_name_uses_profile_value_when_set(self):
         UserProfile.objects.create(user=self.user, display_name='Джеймс Кэмерон')
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['display_name'], 'Джеймс Кэмерон')
 
     def test_analytics_has_30_points(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         points = response.json()['views_analytics']['points']
         self.assertEqual(len(points), 30)
 
     def test_awards_list_is_not_empty(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         awards = response.json()['awards']
         self.assertGreater(len(awards), 0)
         self.assertIn('code', awards[0])
@@ -92,7 +92,7 @@ class DashboardViewTest(TestCase):
 
     def test_creates_profile_automatically_if_missing(self):
         self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
-        self.client.get(self.url, {'token_user': self.token})
+        self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertTrue(UserProfile.objects.filter(user=self.user).exists())
 
     def test_second_user_gets_own_data(self):
@@ -100,7 +100,7 @@ class DashboardViewTest(TestCase):
         other_key = UserKey.objects.create(user=other_user)
         UserProfile.objects.create(user=other_user, display_name='Другой пользователь')
 
-        response = self.client.get(self.url, {'token_user': str(other_key.key)})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=str(other_key.key))
         self.assertEqual(response.json()['user']['username'], 'other')
         self.assertEqual(response.json()['user']['display_name'], 'Другой пользователь')
 
