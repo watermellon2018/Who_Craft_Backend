@@ -29,6 +29,7 @@ from w_craft_back.character_studio.services.upload_validation import (
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import CharacterStudioError, NotFoundError, PermissionDeniedError, ValidationError
 from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
+from w_craft_back.character_studio.services.model3d_service import validate_model3d_params
 from w_craft_back.character_studio.services.permissions import get_owned_project, get_user_from_request
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
 from w_craft_back.character_studio.services.serialization import (
@@ -711,4 +712,44 @@ def references_proceed_to_3d(request, project_id, character_id):
         "next_stage": "3d_model",
         "next_url": f"/project/{project_id}/characters/{character_id}/3d-model",
         "locked_reference_ids": locked_ids,
+    })
+
+
+# ----------------------------------------------------------------------------
+# 3D model stage — parametric editor state
+# ----------------------------------------------------------------------------
+
+
+@api_view(["GET", "PUT"])
+@handle_errors
+def model3d_state(request, project_id, character_id):
+    """Read or replace the character's 3D editor parameters.
+
+    GET returns ``{"params": {...}, "updated_at": ...}``. PUT replaces the
+    whole document (the editor always saves its complete state) after
+    structural validation/clamping and records the change in the existing
+    revision audit log.
+    """
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    if request.method == "GET":
+        return ok({
+            "params": character.model3d_params or {},
+            "updated_at": character.updated_at.isoformat(),
+        })
+
+    data = payload(request)
+    cleaned = validate_model3d_params(data.get("params"))
+    character.model3d_params = cleaned
+    character.save(update_fields=["model3d_params", "updated_at"])
+    CharacterRevisionService().create_revision(
+        character,
+        RevisionChangeType.MANUAL_UPDATE,
+        changed_region="full_character",
+        change_summary="model3d_updated",
+        snapshot={"model3d_params": cleaned, "stage": "3d_model"},
+    )
+    return ok({
+        "params": cleaned,
+        "updated_at": character.updated_at.isoformat(),
     })
