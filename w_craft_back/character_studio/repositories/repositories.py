@@ -22,7 +22,12 @@ class CharacterRepository(BaseRepository):
     model = StudioCharacter
 
     def for_project_user(self, user, project_id):
-        return self.model.objects.filter(project_id=project_id, user=user)
+        # Characters belong to the PROJECT, not the individual member who
+        # created them (team collaboration): scope by project only. Callers
+        # MUST gate project access through the project policy first (the
+        # character service does this via get_owned_project / require_project_edit).
+        # The ``user`` argument is kept for signature back-compat.
+        return self.model.objects.filter(project_id=project_id)
 
     def get_for_project_user(self, user, project_id, character_id):
         return self.for_project_user(user, project_id).get(character_id=character_id)

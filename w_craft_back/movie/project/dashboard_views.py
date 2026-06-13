@@ -346,12 +346,18 @@ class ProjectListCreateView(APIView):
         # projects list endpoint).
         projects = (
             Project.objects.filter(owner_q | legacy_owner_q | member_q)
-            .select_related("progress")
+            .select_related("progress", "owner", "user")
             .prefetch_related(
                 Prefetch(
                     "tags",
                     queryset=ProjectTag.objects.order_by("created_at"),
-                )
+                ),
+                Prefetch(
+                    "members",
+                    queryset=ProjectMember.objects.select_related("user").order_by(
+                        "created_at"
+                    ),
+                ),
             )
             .annotate(
                 _chars_total=Count("studio_characters", distinct=True),
@@ -360,7 +366,7 @@ class ProjectListCreateView(APIView):
             .distinct()
             .order_by("-updated_at", "-created_at", "-id")
         )
-        data = [build_project_summary(p, request) for p in projects]
+        data = [build_project_summary(p, request, user=user) for p in projects]
         return Response({"projects": data})
 
     def post(self, request):
@@ -648,6 +654,8 @@ class ProjectScenesView(_ProjectScopedView):
                 script_text=data.get("script_text", ""),
                 location=location,
                 order=order,
+                created_by=user,
+                updated_by=user,
             )
             record_activity(
                 project,
@@ -682,6 +690,8 @@ class ProjectMusicView(_ProjectScopedView):
                 author=data.get("author", ""),
                 duration_seconds=data.get("duration_seconds", 0),
                 tags=data.get("tags", []),
+                created_by=user,
+                updated_by=user,
             )
             record_activity(
                 project,
@@ -713,6 +723,8 @@ class ProjectLocationsView(_ProjectScopedView):
                 project=project,
                 name=data["name"],
                 description=data.get("description", ""),
+                created_by=user,
+                updated_by=user,
             )
             record_activity(
                 project,
