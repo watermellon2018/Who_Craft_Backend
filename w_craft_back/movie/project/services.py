@@ -170,6 +170,14 @@ def _user_initials(name: str) -> str:
     return name[:1].upper()
 
 
+_ACCESS_ROLE_LABELS = {
+    ProjectMemberRole.OWNER: "Владелец",
+    ProjectMemberRole.ADMIN: "Администратор",
+    ProjectMemberRole.EDITOR: "Редактор",
+    ProjectMemberRole.VIEWER: "Наблюдатель",
+}
+
+
 def _team_member_payload(member: ProjectMember, profile, request) -> dict:
     user = member.user
     display_name = ""
@@ -190,6 +198,10 @@ def _team_member_payload(member: ProjectMember, profile, request) -> dict:
         "avatarUrl": avatar_url,
         "initials": _user_initials(display_name),
         "role": member.role,
+        "roleLabel": _ACCESS_ROLE_LABELS.get(member.role, ""),
+        "teamRole": member.team_role or "",
+        "teamRoleLabel": member.team_role_label(),
+        "isOwner": member.role == ProjectMemberRole.OWNER,
     }
 
 
@@ -223,21 +235,35 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
         .values_list("name", flat=True)
     )
 
-    members = list(
+    all_members = list(
         ProjectMember.objects.filter(project=project)
         .select_related("user")
-        .order_by("created_at")[:5]
+        .order_by("created_at")
     )
+    member_count = len(all_members)
+    members = all_members[:5]
     profiles = _user_profile_map([m.user_id for m in members])
     team_members = [
         _team_member_payload(m, profiles.get(m.user_id), request) for m in members
     ]
+    owner_member = next(
+        (m for m in all_members if m.role == ProjectMemberRole.OWNER), None
+    )
+    owner_name = None
+    if owner_member is not None:
+        owner_payload = _team_member_payload(
+            owner_member, profiles.get(owner_member.user_id), request
+        )
+        owner_name = owner_payload["displayName"]
 
     description = project.description or project.desc or ""
     cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
         request, project.image
     )
 
+    from w_craft_back.movie.project import policy as _policy
+
+    role = _resolve_user_role(project, user)
     return {
         "id": project.id,
         "title": project.title,
@@ -251,7 +277,12 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
         "updatedAtLabel": _format_relative_ru(project.updated_at, prefix="Обновлено "),
         "tags": tags,
         "teamMembers": team_members,
-        "currentUserRole": _resolve_user_role(project, user),
+        "memberCount": member_count,
+        "ownerName": owner_name,
+        "isTeamProject": role != ProjectMemberRole.OWNER,
+        "currentUserRole": role,
+        "currentUserRoleLabel": _ACCESS_ROLE_LABELS.get(role, ""),
+        "permissions": _policy.permission_summary(user, project),
     }
 
 
@@ -537,13 +568,18 @@ def build_project_dashboard(project: Project, user: User, request=None) -> dict[
     }
 
 
-def build_project_summary(project: Project, request=None) -> dict[str, Any]:
+def build_project_summary(project: Project, request=None, user=None) -> dict[str, Any]:
     """Compact summary used by GET /api/projects/ list endpoint and PATCH responses.
 
     For list responses the caller annotates ``_chars_total`` / ``_scenes_total``
-    and prefetches ``tags`` onto each project so this function does zero
-    extra queries per row (no N+1). For one-off calls (PATCH response, etc.)
+    and prefetches ``tags`` + ``members`` onto each project so this function does
+    zero extra queries per row (no N+1). For one-off calls (PATCH response, etc.)
     we fall back to direct count/list queries.
+
+    When ``user`` is supplied the summary also carries the team-collaboration
+    fields the "My Projects" cards need: the current user's role, the member
+    count, a compact avatar list, and whether this is a team project (the user
+    is not the owner).
     """
 
     chars_total = getattr(project, "_chars_total", None)
@@ -571,7 +607,7 @@ def build_project_summary(project: Project, request=None) -> dict[str, Any]:
             .values_list("name", flat=True)
         )
 
-    return {
+    payload = {
         "id": project.id,
         "title": project.title,
         "description": project.description or project.desc or "",
@@ -587,6 +623,45 @@ def build_project_summary(project: Project, request=None) -> dict[str, Any]:
             "scenesTotal": scenes_total,
         },
     }
+
+    # Team-collaboration fields for the "My Projects" cards. Only emitted when a
+    # user is known (the list endpoint passes it; legacy callers may not).
+    if user is not None:
+        # Prefer the prefetched members cache to avoid an N+1 over the list.
+        members_cache = getattr(project, "_prefetched_objects_cache", {}).get("members")
+        if members_cache is not None:
+            members = list(members_cache)
+        else:
+            members = list(
+                ProjectMember.objects.filter(project=project).select_related("user")
+            )
+        member_count = len(members)
+        # Role: owner via FK/legacy, else the matching member row.
+        role = _resolve_user_role(project, user)
+        # Compact avatar list (first few members).
+        ordered = sorted(
+            members, key=lambda m: (m.created_at or m.id)
+        ) if members else []
+        profiles = _user_profile_map([m.user_id for m in ordered[:5]])
+        team_members = [
+            _team_member_payload(m, profiles.get(m.user_id), request)
+            for m in ordered[:5]
+        ]
+        owner_member = next(
+            (m for m in members if m.role == ProjectMemberRole.OWNER), None
+        )
+        payload.update(
+            {
+                "currentUserRole": role,
+                "currentUserRoleLabel": _ACCESS_ROLE_LABELS.get(role, ""),
+                "memberCount": member_count,
+                "teamMembers": team_members,
+                "isTeamProject": role != ProjectMemberRole.OWNER,
+                "ownerUserId": owner_member.user_id if owner_member else None,
+            }
+        )
+
+    return payload
 
 
 def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]:
@@ -626,6 +701,8 @@ def record_activity(
     title: str,
     description: str = "",
     metadata: Optional[dict] = None,
+    target_type: str = "",
+    target_id: str = "",
 ) -> ProjectActivity:
     return ProjectActivity.objects.create(
         project=project,
@@ -634,4 +711,6 @@ def record_activity(
         title=title,
         description=description or "",
         metadata=metadata or {},
+        target_type=target_type or "",
+        target_id=target_id or "",
     )

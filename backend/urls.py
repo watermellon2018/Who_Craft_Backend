@@ -26,6 +26,7 @@ urlpatterns = [
     path('api/auth/', include('w_craft_back.auth.urls')),
     path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
     path('api/projects/', include('w_craft_back.movie.project.urls')),
+    path('api/invitations/', include('w_craft_back.movie.project.team_urls')),
     path('api/', include('w_craft_back.character_studio.urls')),
     path('api/profile/', include('w_craft_back.profile.urls')),
     path('api/', include('w_craft_back.subscriptions.urls')),

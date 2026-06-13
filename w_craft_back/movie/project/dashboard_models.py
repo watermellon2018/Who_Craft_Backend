@@ -17,8 +17,24 @@ from w_craft_back.movie.project.models import Project
 
 class ProjectMemberRole(models.TextChoices):
     OWNER = "owner", "Владелец"
+    ADMIN = "admin", "Администратор"
     EDITOR = "editor", "Редактор"
-    VIEWER = "viewer", "Просмотр"
+    VIEWER = "viewer", "Наблюдатель"
+
+
+class ProjectTeamRole(models.TextChoices):
+    """Optional professional/crew role. Informational only — never affects
+    access permissions (which are governed solely by ProjectMemberRole)."""
+
+    PRODUCER = "producer", "Продюсер"
+    DIRECTOR = "director", "Режиссёр"
+    SCREENWRITER = "screenwriter", "Сценарист"
+    CHARACTER_ARTIST = "character_artist", "Художник персонажей"
+    ENVIRONMENT_ARTIST = "environment_artist", "Художник окружения"
+    CINEMATOGRAPHER = "cinematographer", "Оператор"
+    EDITOR = "editor", "Монтажёр"
+    SOUND_DESIGNER = "sound_designer", "Звукорежиссёр"
+    OTHER = "other", "Другое"
 
 
 class SceneStatus(models.TextChoices):
@@ -51,6 +67,15 @@ class ActivityType(models.TextChoices):
     PROJECT_UPDATED = "project_updated", "Проект обновлён"
     PROJECT_STATUS_CHANGED = "project_status_changed", "Статус проекта изменён"
     PROJECT_ARCHIVED = "project_archived", "Проект архивирован"
+    # Team / membership events.
+    MEMBER_INVITED = "member_invited", "Участник приглашён"
+    INVITATION_ACCEPTED = "invitation_accepted", "Приглашение принято"
+    INVITATION_DECLINED = "invitation_declined", "Приглашение отклонено"
+    INVITATION_CANCELLED = "invitation_cancelled", "Приглашение отменено"
+    MEMBER_ROLE_CHANGED = "member_role_changed", "Роль изменена"
+    MEMBER_REMOVED = "member_removed", "Участник удалён"
+    MEMBER_LEFT = "member_left", "Участник покинул проект"
+    OWNERSHIP_TRANSFERRED = "ownership_transferred", "Владение передано"
 
 
 class GenerationJobType(models.TextChoices):
@@ -105,12 +130,25 @@ class ProjectMember(models.Model):
         on_delete=models.CASCADE,
         related_name="project_memberships",
     )
+    # Access role governs permissions. Historically named ``role``; kept under
+    # that column name for back-compat, exposed as ``access_role`` via property.
     role = models.CharField(
         max_length=20,
         choices=ProjectMemberRole.choices,
         default=ProjectMemberRole.VIEWER,
     )
+    # Professional / crew role — informational only, never affects permissions.
+    team_role = models.CharField(
+        max_length=32,
+        choices=ProjectTeamRole.choices,
+        blank=True,
+        default="",
+    )
+    # Free-form label used when team_role == OTHER.
+    custom_team_role = models.CharField(max_length=64, blank=True, default="")
+    joined_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
         constraints = [
@@ -126,6 +164,24 @@ class ProjectMember(models.Model):
     def __str__(self):
         return f"{self.user_id}@{self.project_id} ({self.role})"
 
+    # ``access_role`` is the task's canonical name for the permission role.
+    # Expose it as a property over the legacy ``role`` column so call sites can
+    # use the clearer name without a disruptive column rename.
+    @property
+    def access_role(self) -> str:
+        return self.role
+
+    @access_role.setter
+    def access_role(self, value: str) -> None:
+        self.role = value
+
+    def team_role_label(self) -> str:
+        if self.team_role == ProjectTeamRole.OTHER:
+            return self.custom_team_role or "Другое"
+        if not self.team_role:
+            return ""
+        return ProjectTeamRole(self.team_role).label
+
 
 class Location(models.Model):
     project = models.ForeignKey(
@@ -137,6 +193,23 @@ class Location(models.Model):
     description = models.TextField(blank=True, default="")
     image = models.ImageField(upload_to="locations/", null=True, blank=True)
     is_created = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_locations",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_locations",
+    )
+    # Optimistic-lock counter — bumped on every save through the team-aware
+    # update path so concurrent edits surface as 409 instead of silent loss.
+    version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -175,6 +248,26 @@ class Scene(models.Model):
     preview_image = models.ImageField(
         upload_to="scenes/previews/", null=True, blank=True
     )
+    # Camera settings live with the scene (the task lists "camera settings" as a
+    # high-risk concurrent-edit target). JSON keeps it provider-agnostic.
+    camera_settings = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_scenes",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_scenes",
+    )
+    # Optimistic-lock counter for the script / scene / camera concurrent-edit
+    # guard (returns 409 on stale writes).
+    version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -230,6 +323,21 @@ class MusicTrack(models.Model):
     )
     duration_seconds = models.PositiveIntegerField(default=0)
     tags = models.JSONField(default=list, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_music_tracks",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_music_tracks",
+    )
+    version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -338,6 +446,11 @@ class ProjectActivity(models.Model):
     activity_type = models.CharField(max_length=40, choices=ActivityType.choices)
     title = models.CharField(max_length=255)
     description = models.CharField(max_length=500, blank=True, default="")
+    # Optional target reference for team / entity events (e.g. the member or
+    # invitation the action acted on). Kept generic (string type + id) so the
+    # audit log can point at any entity without a hard FK.
+    target_type = models.CharField(max_length=40, blank=True, default="")
+    target_id = models.CharField(max_length=64, blank=True, default="")
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -350,6 +463,16 @@ class ProjectActivity(models.Model):
 
     def __str__(self):
         return f"{self.activity_type}: {self.title}"
+
+    # The task names the acting user ``actor``; expose it over the existing
+    # ``user`` FK so audit-log call sites can use the clearer name.
+    @property
+    def actor(self):
+        return self.user
+
+    @actor.setter
+    def actor(self, value):
+        self.user = value
 
 
 class ProjectGenerationJob(models.Model):

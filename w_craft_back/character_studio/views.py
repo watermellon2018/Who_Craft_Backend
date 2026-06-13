@@ -40,6 +40,7 @@ from w_craft_back.character_studio.services.model3d_service import (
 from w_craft_back.character_studio.services.permissions import (
     get_owned_project,
     get_user_from_request,
+    require_project_edit,
 )
 from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
@@ -102,9 +103,9 @@ def handle_errors(func):
 @handle_errors
 def characters_collection(request, project_id):
     user = get_user_from_request(request)
-    project = get_owned_project(user, project_id)
     service = CharacterService()
     if request.method == "GET":
+        project = get_owned_project(user, project_id)
         filters = {
             "role": request.GET.get("role"),
             "search": request.GET.get("search"),
@@ -112,6 +113,8 @@ def characters_collection(request, project_id):
         return ok(
             service.list_project_characters(user, project.id, filters), status=200,
         )
+    # Creating a character requires content-edit permission (viewers rejected).
+    project = require_project_edit(user, project_id)
     logger.info("create_character start: project_id=%s", project_id)
     character = service.create_character(user, project, payload(request))
     logger.info(
@@ -149,7 +152,7 @@ def _form_bool(request, key, default=False):
 @handle_errors
 def create_character_from_reference(request, project_id):
     user = get_user_from_request(request)
-    project = get_owned_project(user, project_id)
+    project = require_project_edit(user, project_id)
     uploaded = request.FILES.get("reference_image")
     if not uploaded:
         raise ValidationError("reference_image is required.")

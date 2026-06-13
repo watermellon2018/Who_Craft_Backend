@@ -26,6 +26,20 @@ from w_craft_back.movie.poster.dashboard_views import (
     ProjectPosterVariantsView,
     ProjectPosterView,
 )
+from w_craft_back.movie.project.team_views import (
+    ProjectInvitationCancelView,
+    ProjectInvitationsView,
+    ProjectLeaveView,
+    ProjectMemberDetailView,
+    ProjectMembersView,
+    ProjectTeamView,
+    ProjectTransferOwnershipView,
+)
+from w_craft_back.movie.project.scene_views import (
+    SceneDetailView,
+    LocationDetailView,
+    MusicTrackDetailView,
+)
 
 urlpatterns = [
     # Legacy endpoints (kept for back-compat).
@@ -45,6 +59,20 @@ urlpatterns = [
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
     path('<int:project_id>/generation-jobs/', ProjectGenerationJobsView.as_view(), name='project-generation-jobs'),
+
+    # Concurrent-edit-guarded entity detail endpoints (GET/PATCH with version).
+    path('<int:project_id>/scenes/<int:scene_id>/', SceneDetailView.as_view(), name='project-scene-detail'),
+    path('<int:project_id>/locations/<int:location_id>/', LocationDetailView.as_view(), name='project-location-detail'),
+    path('<int:project_id>/music/<int:track_id>/', MusicTrackDetailView.as_view(), name='project-music-detail'),
+
+    # Team collaboration.
+    path('<int:project_id>/team/', ProjectTeamView.as_view(), name='project-team'),
+    path('<int:project_id>/team/members/', ProjectMembersView.as_view(), name='project-team-members'),
+    path('<int:project_id>/team/members/<int:member_id>/', ProjectMemberDetailView.as_view(), name='project-team-member-detail'),
+    path('<int:project_id>/team/leave/', ProjectLeaveView.as_view(), name='project-team-leave'),
+    path('<int:project_id>/team/transfer-ownership/', ProjectTransferOwnershipView.as_view(), name='project-team-transfer'),
+    path('<int:project_id>/team/invitations/', ProjectInvitationsView.as_view(), name='project-team-invitations'),
+    path('<int:project_id>/team/invitations/<int:invitation_id>/', ProjectInvitationCancelView.as_view(), name='project-team-invitation-cancel'),
 
     # Poster generation page (/create-project/gen-poster).
     path('<int:project_id>/poster/', ProjectPosterView.as_view(), name='project-poster'),
