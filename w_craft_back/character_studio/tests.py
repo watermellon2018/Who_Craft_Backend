@@ -2124,6 +2124,24 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             self.assertNotIn("eyes", body["params"])
             self.assertIn("eye_color_unavailable", body["warnings"])
 
+    def test_mediapipe_runtime_failure_degrades_to_warning(self):
+        # A detector crash mid-inference must degrade to the same
+        # "landmarks_unavailable" path as a missing dependency, not a 500.
+        media_root = tempfile.mkdtemp()
+        target = (
+            "w_craft_back.character_studio.services."
+            "model3d_autofit_service._mediapipe_landmarks"
+        )
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            with patch(target, side_effect=RuntimeError("graph blew up")):
+                response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertIn("landmarks_unavailable", body["warnings"])
+        # Colors still come back — they don't depend on landmarks.
+        self.assertIn("skin_color", body["params"])
+
     def test_metrics_canonical_face_is_neutral_oval(self):
         metrics = metrics_from_landmarks(self._landmarks())
         self.assertAlmostEqual(metrics["eyes"]["eyeDistance"], 0.0, places=5)

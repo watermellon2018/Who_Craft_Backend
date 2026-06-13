@@ -85,7 +85,14 @@ def compute_autofit(character):
         }
 
     warnings = []
-    landmarks = _mediapipe_landmarks(image)
+    # Belt and suspenders: _mediapipe_landmarks already guards the detector,
+    # but the endpoint is advisory, so even an unexpected failure here must
+    # degrade to "landmarks_unavailable" rather than a 500.
+    try:
+        landmarks = _mediapipe_landmarks(image)
+    except Exception:
+        logger.warning("autofit: landmark extraction failed", exc_info=True)
+        landmarks = None
     face_box = _face_box(image, landmarks)
 
     params = {}
@@ -256,13 +263,22 @@ def _mediapipe_landmarks(image):
     except ImportError:
         return None
 
-    face_mesh = mediapipe.solutions.face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-    )
-    with face_mesh:
-        results = face_mesh.process(numpy.asarray(image))
+    # The native FaceMesh graph can raise at runtime (RuntimeError/ValueError
+    # from the C++ calculators on odd image shapes or internal failures). The
+    # endpoint is advisory, so a detector failure must degrade to the
+    # "landmarks_unavailable" warning, never a 500 — same contract as
+    # _open_asset_image. The `with` block still closes FaceMesh on exception.
+    try:
+        face_mesh = mediapipe.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+        )
+        with face_mesh:
+            results = face_mesh.process(numpy.asarray(image))
+    except Exception:
+        logger.warning("autofit: mediapipe face detection failed", exc_info=True)
+        return None
     if not getattr(results, "multi_face_landmarks", None):
         return None
     return [(lm.x, lm.y) for lm in results.multi_face_landmarks[0].landmark]
