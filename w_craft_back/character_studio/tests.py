@@ -37,8 +37,11 @@ from w_craft_back.character_studio.services.generation_service import (
 from w_craft_back.character_studio.services.model3d_autofit_service import (
     body_metrics_from_pose,
     classify_face_shape,
+    hair_band_box,
     metrics_from_landmarks,
+    point_in_polygon,
     pose_confidence,
+    skin_mask_sample_points,
 )
 from w_craft_back.character_studio.services.prompt_compiler import (
     CharacterPromptCompiler,
@@ -2490,3 +2493,165 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         intruder_key = UserKey.objects.create(user=intruder)
         response = self._post(token=str(intruder_key.key))
         self.assertGreaterEqual(response.status_code, 400)
+
+    # ── Skin-mask geometry (pure, mediapipe-free) ──
+
+    @staticmethod
+    def _face_landmark_list(size=256):
+        """A full 478-point FaceMesh-shaped list describing a frontal face.
+
+        Real ``_mediapipe_landmarks`` returns a position-indexed list of
+        (x, y) tuples, so the mask/iris code indexes it by integer — this
+        builds one whose contour rings form a clean oval with eyes, brows and
+        a mouth inside it, so the skin mask has a real region to sample and
+        the holes have somewhere to exclude. Coordinates are normalized.
+        """
+        import math as _math
+        from w_craft_back.character_studio.services import (
+            model3d_autofit_service as svc,
+        )
+
+        pts = [(0.5, 0.5)] * 478  # default everything to the centre
+
+        def ellipse(ring, cx, cy, rx, ry):
+            n = len(ring)
+            for i, idx in enumerate(ring):
+                a = 2 * _math.pi * i / n
+                pts[idx] = (cx + rx * _math.cos(a), cy + ry * _math.sin(a))
+
+        ellipse(svc.FACE_OVAL_RING, 0.5, 0.5, 0.34, 0.46)
+        ellipse(svc.LEFT_EYE_RING, 0.63, 0.42, 0.07, 0.035)
+        ellipse(svc.RIGHT_EYE_RING, 0.37, 0.42, 0.07, 0.035)
+        ellipse(svc.LEFT_EYEBROW_RING, 0.63, 0.36, 0.08, 0.02)
+        ellipse(svc.RIGHT_EYEBROW_RING, 0.37, 0.36, 0.08, 0.02)
+        ellipse(svc.LIPS_OUTER_RING, 0.5, 0.74, 0.12, 0.05)
+        # Key single points the metrics/hair band read.
+        pts[svc.FOREHEAD] = (0.5, 0.06)
+        pts[svc.CHIN] = (0.5, 0.96)
+        pts[svc.FACE_LEFT] = (0.16, 0.5)
+        pts[svc.FACE_RIGHT] = (0.84, 0.5)
+        pts[svc.LEFT_IRIS_CENTER] = (0.63, 0.42)
+        pts[svc.RIGHT_IRIS_CENTER] = (0.37, 0.42)
+        return pts
+
+    def test_skin_mask_samples_inside_oval_excluding_features(self):
+        from w_craft_back.character_studio.services import (
+            model3d_autofit_service as svc,
+        )
+        pts = self._face_landmark_list()
+        w = h = 256
+        oval = svc._ring_polygon(pts, svc.FACE_OVAL_RING, w, h)
+        samples = skin_mask_sample_points(pts, w, h)
+        self.assertGreater(len(samples), 50)
+        # Every sampled pixel is inside the oval...
+        self.assertTrue(all(point_in_polygon(x, y, oval) for x, y in samples))
+        # ...and none lands inside an eye or the mouth.
+        for ring, cx, cy in (
+            (svc.LEFT_EYE_RING, 0.63, 0.42),
+            (svc.RIGHT_EYE_RING, 0.37, 0.42),
+            (svc.LIPS_OUTER_RING, 0.5, 0.74),
+        ):
+            hole = svc._ring_polygon(pts, ring, w, h)
+            self.assertFalse(
+                any(point_in_polygon(x, y, hole) for x, y in samples),
+                f"samples leaked into hole at ({cx},{cy})",
+            )
+
+    def test_skin_mask_empty_without_oval_ring(self):
+        # No oval contour points → no mask, so the caller falls back to box.
+        self.assertEqual(skin_mask_sample_points({}, 256, 256), [])
+        self.assertEqual(skin_mask_sample_points(None, 256, 256), [])
+
+    def test_point_in_polygon_basic(self):
+        square = [(0, 0), (10, 0), (10, 10), (0, 10)]
+        self.assertTrue(point_in_polygon(5, 5, square))
+        self.assertFalse(point_in_polygon(15, 5, square))
+        self.assertFalse(point_in_polygon(-1, 5, square))
+
+    def test_hair_band_sits_above_forehead_within_skull_width(self):
+        pts = self._face_landmark_list()
+        w = h = 256
+        box = hair_band_box(pts, w, h)
+        self.assertIsNotNone(box)
+        left, top, right, bottom = box
+        forehead_y = pts[10][1] * h
+        # The band is above the forehead and has real area.
+        self.assertLessEqual(top, forehead_y)
+        self.assertAlmostEqual(bottom, forehead_y, delta=1.0)
+        self.assertGreater(right - left, 1.0)
+        # Horizontal extent stays within the skull width (sides 234↔454).
+        self.assertGreaterEqual(left, pts[234][0] * w - 0.5)
+        self.assertLessEqual(right, pts[454][0] * w + 0.5)
+
+    def test_hair_band_none_when_forehead_at_frame_top(self):
+        pts = self._face_landmark_list()
+        pts[10] = (0.5, 0.0)  # forehead pinned to the very top
+        self.assertIsNone(hair_band_box(pts, 256, 256))
+
+    # ── Integration: skin colour comes from the masked region ──
+
+    _LANDMARKS_TARGET = (
+        "w_craft_back.character_studio.services."
+        "model3d_autofit_service._mediapipe_landmarks"
+    )
+
+    def _create_masked_portrait(self, media_root, size=256):
+        """Portrait where the cheek skin and the lips are different colours.
+
+        Skin fills the frame; a red mouth band sits where the lip ring is and
+        a dark brow band where the eyes are. A correct mask samples the skin,
+        NOT the red lips — which the old lower-central box would have caught.
+        """
+        from PIL import Image
+
+        rel_path = f"character-studio/tests/{uuid4().hex}.png"
+        abs_path = Path(media_root) / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.new("RGB", (size, size), self.SKIN_RGB)
+        # Red mouth band around y≈0.74 (matches LIPS ring in the fixture).
+        for y in range(int(0.69 * size), int(0.79 * size)):
+            for x in range(int(0.38 * size), int(0.62 * size)):
+                img.putpixel((x, y), (200, 30, 30))
+        img.save(abs_path)
+        return CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.PORTRAIT,
+            status=CharacterAssetStatus.READY,
+            storage_path=rel_path,
+            image_url=f"/media/{rel_path}",
+        )
+
+    def test_autofit_skin_from_mask_avoids_lips(self):
+        media_root = tempfile.mkdtemp()
+        landmarks = self._face_landmark_list()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_masked_portrait(media_root)
+            with patch(self._LANDMARKS_TARGET, return_value=landmarks):
+                response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        skin = body["params"]["skin_color"]["skinTone"]
+        # The mask excludes the lips, so the skin reads the canvas colour and
+        # is far from the red mouth band.
+        self.assertLess(
+            self._color_distance(skin, self.SKIN_RGB),
+            self._color_distance(skin, (200, 30, 30)),
+        )
+        self.assertNotIn("skin_segmentation_unavailable", body["warnings"])
+
+    def test_autofit_skin_falls_back_to_box_without_landmarks(self):
+        # No landmarks (mediapipe missing/failed) → skin still extracted from
+        # the box, flagged with skin_segmentation_unavailable, no crash.
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            with patch(self._LANDMARKS_TARGET, return_value=None):
+                response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertIn("skin_segmentation_unavailable", body["warnings"])
+        self.assertIn("hair_segmentation_unavailable", body["warnings"])
+        self.assertIn("skin_color", body["params"])
+        self.assertIn("hair", body["params"])
