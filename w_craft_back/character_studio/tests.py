@@ -2049,6 +2049,49 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             image_url=f"/media/{rel_path}",
         )
 
+    def _create_face_portrait(self, media_root, size=256):
+        """Write a frontal cartoon face mediapipe FaceMesh can detect.
+
+        Used by the integration test that only runs when mediapipe is
+        actually installed; primitives like _create_portrait never trip the
+        detector, which is the point of the colors-only fallback test.
+        """
+        from PIL import Image, ImageDraw
+
+        rel_path = f"character-studio/tests/{uuid4().hex}.png"
+        abs_path = Path(media_root) / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.new("RGB", (size, size), (220, 180, 150))
+        d = ImageDraw.Draw(img)
+        d.ellipse([60, 40, 196, 220], fill=(225, 188, 158))
+        d.ellipse([95, 105, 120, 125], fill=(255, 255, 255))
+        d.ellipse([103, 110, 113, 120], fill=(60, 40, 30))
+        d.ellipse([136, 105, 161, 125], fill=(255, 255, 255))
+        d.ellipse([144, 110, 154, 120], fill=(60, 40, 30))
+        d.line([95, 98, 120, 96], fill=(80, 55, 40), width=3)
+        d.line([136, 96, 161, 98], fill=(80, 55, 40), width=3)
+        d.line([128, 120, 128, 150], fill=(190, 150, 120), width=3)
+        d.ellipse([122, 148, 134, 158], fill=(200, 160, 130))
+        d.arc([108, 165, 148, 195], start=10, end=170, fill=(150, 80, 80), width=4)
+        img.save(abs_path)
+        return CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.PORTRAIT,
+            status=CharacterAssetStatus.READY,
+            storage_path=rel_path,
+            image_url=f"/media/{rel_path}",
+        )
+
+    @staticmethod
+    def _mediapipe_available():
+        try:
+            import mediapipe  # noqa: F401
+            return hasattr(mediapipe, "solutions")
+        except ImportError:
+            return False
+
     @staticmethod
     def _rgb(hex_color):
         return tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
@@ -2109,6 +2152,27 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertLess(
             self._color_distance(hair, self.HAIR_RGB),
             self._color_distance(hair, self.SKIN_RGB),
+        )
+
+    def test_face_portrait_with_mediapipe_yields_proportions(self):
+        # When mediapipe is installed and finds a face, autofit must return
+        # real facial-proportion params and NOT the landmarks_unavailable
+        # warning — this is the path the user hits in production.
+        if not self._mediapipe_available():
+            self.skipTest("mediapipe with solutions API not installed")
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_face_portrait(media_root)
+            response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertNotIn("landmarks_unavailable", body["warnings"])
+        # Facial-proportion zones are populated.
+        for zone in ("eyes", "nose", "mouth", "jaw_chin", "face_shape"):
+            self.assertIn(zone, body["params"])
+        self.assertIn(
+            body["params"]["face_shape"]["shape"],
+            ("oval", "round", "square", "heart"),
         )
 
     def test_portrait_without_mediapipe_reports_landmark_warnings(self):
