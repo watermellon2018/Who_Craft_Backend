@@ -1,6 +1,7 @@
 import base64
 import os
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -14,13 +15,39 @@ from requests import HTTPError
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.character_studio.models import CharacterAsset, CharacterAssetStatus, CharacterAssetType, CharacterGenerationJob, CharacterImage, CharacterOutfit, CharacterStatus
+from w_craft_back.character_studio.models import (
+    CharacterAsset,
+    CharacterAssetStatus,
+    CharacterAssetType,
+    CharacterGenerationJob,
+    CharacterImage,
+    CharacterOutfit,
+    CharacterStatus,
+)
 from w_craft_back.character_studio.services.character_service import CharacterService
-from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, SafetyRejectedError, ValidationError
-from w_craft_back.character_studio.services.generation_service import CharacterGenerationService
-from w_craft_back.character_studio.services.prompt_compiler import CharacterPromptCompiler
-from w_craft_back.character_studio.services.providers import GeminiProvider, ProviderContentBlockedError
-from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
+from w_craft_back.character_studio.services.errors import (
+    IdentityLockedError,
+    NotFoundError,
+    SafetyRejectedError,
+    ValidationError,
+)
+from w_craft_back.character_studio.services.generation_service import (
+    CharacterGenerationService,
+)
+from w_craft_back.character_studio.services.model3d_autofit_service import (
+    classify_face_shape,
+    metrics_from_landmarks,
+)
+from w_craft_back.character_studio.services.prompt_compiler import (
+    CharacterPromptCompiler,
+)
+from w_craft_back.character_studio.services.providers import (
+    GeminiProvider,
+    ProviderContentBlockedError,
+)
+from w_craft_back.character_studio.services.revision_service import (
+    CharacterRevisionService,
+)
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.movie.project.models import Project
 
@@ -99,9 +126,13 @@ class CharacterServiceTests(CharacterStudioTestCase):
 
     def test_delete_character_removes_record(self):
         character = self.create_character()
-        self.service.delete_character(self.user_key, self.project.id, character.character_id)
+        self.service.delete_character(
+            self.user_key, self.project.id, character.character_id,
+        )
         with self.assertRaises(NotFoundError):
-            self.service.get_character(self.user_key, self.project.id, character.character_id)
+            self.service.get_character(
+                self.user_key, self.project.id, character.character_id,
+            )
 
     def test_lock_identity(self):
         character = self.create_character()
@@ -116,9 +147,13 @@ class CharacterServiceTests(CharacterStudioTestCase):
 
     def test_create_outfit_and_single_default(self):
         character = self.create_character()
-        first = CharacterOutfit.objects.create(character=character, name="School", is_default=True)
+        first = CharacterOutfit.objects.create(
+            character=character, name="School", is_default=True,
+        )
         second = CharacterOutfit.objects.create(character=character, name="Street")
-        from w_craft_back.character_studio.repositories.repositories import OutfitRepository
+        from w_craft_back.character_studio.repositories.repositories import (
+            OutfitRepository,
+        )
         OutfitRepository().set_default(character, second)
         first.refresh_from_db()
         second.refresh_from_db()
@@ -202,7 +237,9 @@ class RevisionTests(CharacterStudioTestCase):
     def test_create_and_restore_revision(self):
         character = self.create_character()
         revision_service = CharacterRevisionService()
-        revision = revision_service.create_revision(character, "manual_update", change_summary="checkpoint")
+        revision = revision_service.create_revision(
+            character, "manual_update", change_summary="checkpoint",
+        )
         restored = revision_service.restore_revision(character, revision)
         self.assertEqual(restored.change_type, "restore_revision")
         self.assertEqual(character.revisions.count(), 3)
@@ -212,12 +249,18 @@ class GenerationFlowTests(CharacterStudioTestCase):
     def test_full_generation_apply_lock_edit_restore_flow(self):
         character = self.create_character()
         generation = CharacterGenerationService()
-        initial_job = generation.create_initial_variants(self.user_key, self.project.id, character.character_id, {"variant_count": 4})
+        initial_job = generation.create_initial_variants(
+            self.user_key, self.project.id, character.character_id,
+            {"variant_count": 4},
+        )
         self.assertEqual(initial_job.status, "completed")
         self.assertEqual(initial_job.variants.count(), 4)
 
         variant = initial_job.variants.first()
-        CharacterService().apply_variant(self.user_key, self.project.id, character.character_id, variant.variant_id, {"apply_as": "current_reference"})
+        CharacterService().apply_variant(
+            self.user_key, self.project.id, character.character_id,
+            variant.variant_id, {"apply_as": "current_reference"},
+        )
         character.refresh_from_db()
         self.assertIsNotNone(character.current_revision)
 
@@ -225,7 +268,10 @@ class GenerationFlowTests(CharacterStudioTestCase):
             self.user_key,
             self.project.id,
             character.character_id,
-            {"reference_image_id": str(character.canonical_reference_image_id), "confirm": True},
+            {
+                "reference_image_id": str(character.canonical_reference_image_id),
+                "confirm": True,
+            },
         )
         hair_job = generation.generate_edit_variants(
             self.user_key,
@@ -240,7 +286,10 @@ class GenerationFlowTests(CharacterStudioTestCase):
             },
         )
         hair_variant = hair_job.variants.first()
-        CharacterService().apply_variant(self.user_key, self.project.id, character.character_id, hair_variant.variant_id, {"apply_as": "current_reference"})
+        CharacterService().apply_variant(
+            self.user_key, self.project.id, character.character_id,
+            hair_variant.variant_id, {"apply_as": "current_reference"},
+        )
         previous = character.revisions.order_by("revision_number").first()
         restored = CharacterRevisionService().restore_revision(character, previous)
         self.assertEqual(restored.change_type, "restore_revision")
@@ -249,7 +298,10 @@ class GenerationFlowTests(CharacterStudioTestCase):
         character = self.create_character()
         generation = CharacterGenerationService()
         with self.assertRaises(ValidationError):
-            generation.create_initial_variants(self.user_key, self.project.id, character.character_id, {"variant_count": 3})
+            generation.create_initial_variants(
+                self.user_key, self.project.id, character.character_id,
+                {"variant_count": 3},
+            )
         with self.assertRaises(ValidationError):
             generation.generate_edit_variants(
                 self.user_key,
@@ -257,13 +309,20 @@ class GenerationFlowTests(CharacterStudioTestCase):
                 character.character_id,
                 {"region": "hair", "text_refinement": "x" * 501, "variant_count": 4},
             )
-        CharacterService().lock_identity(self.user_key, self.project.id, character.character_id, {"confirm": True})
+        CharacterService().lock_identity(
+            self.user_key, self.project.id, character.character_id,
+            {"confirm": True},
+        )
         with self.assertRaises(IdentityLockedError):
             generation.generate_edit_variants(
                 self.user_key,
                 self.project.id,
                 character.character_id,
-                {"region": "face", "controls": {"face_shape": "square"}, "variant_count": 4},
+                {
+                    "region": "face",
+                    "controls": {"face_shape": "square"},
+                    "variant_count": 4,
+                },
             )
         with self.assertRaises(SafetyRejectedError):
             CharacterSafetyService().validate_user_text("nsfw underage character")
@@ -320,7 +379,9 @@ class GenerationFlowTests(CharacterStudioTestCase):
         self.assertEqual(character.assets.filter(is_primary=True).count(), 1)
         self.assertEqual(character.assets.filter(is_canonical=True).count(), 1)
         self.assertTrue(character.assets.get(asset_id=variants[1].asset_id).is_primary)
-        self.assertTrue(character.assets.get(asset_id=variants[1].asset_id).is_canonical)
+        self.assertTrue(
+            character.assets.get(asset_id=variants[1].asset_id).is_canonical,
+        )
 
     def test_generation_saves_active_images_by_type(self):
         character = self.create_character()
@@ -339,8 +400,12 @@ class GenerationFlowTests(CharacterStudioTestCase):
             {"variant_count": 2, "image_type": "full_body"},
         )
 
-        portrait_image = CharacterImage.objects.get(character=character, image_type="portrait", is_active=True)
-        full_body_image = CharacterImage.objects.get(character=character, image_type="full_body", is_active=True)
+        portrait_image = CharacterImage.objects.get(
+            character=character, image_type="portrait", is_active=True,
+        )
+        full_body_image = CharacterImage.objects.get(
+            character=character, image_type="full_body", is_active=True,
+        )
         self.assertEqual(portrait_image.asset.source_job_id, portrait_job.job_id)
         self.assertEqual(full_body_image.asset.source_job_id, full_body_job.job_id)
         self.assertNotEqual(portrait_image.image_url, full_body_image.image_url)
@@ -359,7 +424,12 @@ class GenerationFlowTests(CharacterStudioTestCase):
             },
         )
 
-        self.assertEqual(CharacterImage.objects.filter(character=character, image_type="portrait", is_active=True).count(), 1)
+        self.assertEqual(
+            CharacterImage.objects.filter(
+                character=character, image_type="portrait", is_active=True,
+            ).count(),
+            1,
+        )
         full_body_image.refresh_from_db()
         self.assertTrue(full_body_image.is_active)
 
@@ -374,9 +444,16 @@ class GenerationFlowTests(CharacterStudioTestCase):
         )
 
         self.assertEqual(len(jobs), 3)
-        self.assertEqual([job.request_payload["image_type"] for job in jobs], ["portrait", "full_body", "scene"])
         self.assertEqual(
-            set(CharacterImage.objects.filter(character=character, is_active=True).values_list("image_type", flat=True)),
+            [job.request_payload["image_type"] for job in jobs],
+            ["portrait", "full_body", "scene"],
+        )
+        self.assertEqual(
+            set(
+                CharacterImage.objects.filter(
+                    character=character, is_active=True,
+                ).values_list("image_type", flat=True)
+            ),
             {"portrait", "full_body", "scene"},
         )
 
@@ -539,7 +616,8 @@ class GeminiProviderTests(TestCase):
                     GeminiProvider().generate_character_variants(
                         SimpleNamespace(job_id=uuid4()),
                         {
-                            "positive_prompt": "Create a clean character design of персонаж",
+                            "positive_prompt":
+                                "Create a clean character design of персонаж",
                             "negative_prompt": "",
                         },
                         4,
@@ -559,27 +637,39 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
     def test_api_flow(self):
         create = self.client.post(
             f"/api/projects/{self.project.id}/characters",
-            {"token_user": self.token, "name": "Mira", "age": 17, "visual_style": "anime"},
+            {
+                "token_user": self.token,
+                "name": "Mira",
+                "age": 17,
+                "visual_style": "anime",
+            },
             format="json",
         )
         self.assertEqual(create.status_code, 201)
         character_id = create.json()["character_id"]
 
         job_response = self.client.post(
-            f"/api/projects/{self.project.id}/characters/{character_id}/generate-initial-variants",
+            f"/api/projects/{self.project.id}/characters/{character_id}"
+            "/generate-initial-variants",
             {"token_user": self.token, "variant_count": 4},
             format="json",
         )
         self.assertEqual(job_response.status_code, 200)
         job_id = job_response.json()["job_id"]
-        job = self.client.get(f"/api/generation-jobs/{job_id}", HTTP_X_USER_TOKEN=self.token)
+        job = self.client.get(
+            f"/api/generation-jobs/{job_id}", HTTP_X_USER_TOKEN=self.token,
+        )
         job_data = job.json()
         self.assertEqual(len(job_data["variants"]), 4)
 
         variant_id = job_data["variants"][0]["variant_id"]
         apply = self.client.post(
             f"/api/projects/{self.project.id}/characters/{character_id}/apply-variant",
-            {"token_user": self.token, "variant_id": variant_id, "apply_as": "current_reference"},
+            {
+                "token_user": self.token,
+                "variant_id": variant_id,
+                "apply_as": "current_reference",
+            },
             format="json",
         )
         self.assertEqual(apply.status_code, 201)
@@ -593,7 +683,10 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
 
     def test_permission_rejected(self):
         other = UserKey.objects.create(user=User.objects.create_user(username="other"))
-        response = self.client.get(f"/api/projects/{self.project.id}/characters", HTTP_X_USER_TOKEN=str(other.key))
+        response = self.client.get(
+            f"/api/projects/{self.project.id}/characters",
+            HTTP_X_USER_TOKEN=str(other.key),
+        )
         self.assertEqual(response.status_code, 403)
 
     def test_empty_character_list_returns_json_array(self):
@@ -609,7 +702,8 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         character = self.create_character()
 
         response = self.client.patch(
-            f"/api/projects/{self.project.id}/characters/{character.character_id}/outfits/{uuid4()}",
+            f"/api/projects/{self.project.id}/characters/"
+            f"{character.character_id}/outfits/{uuid4()}",
             {"token_user": self.token, "name": "Missing"},
             format="json",
         )
@@ -647,7 +741,8 @@ class PortraitSelectionTests(CharacterStudioTestCase):
             CharacterImage.objects.filter(
                 character=character, image_type="portrait", is_active=True
             ).exists(),
-            "No active portrait CharacterImage found after apply_variant with image_type='portrait'",
+            "No active portrait CharacterImage found after apply_variant"
+            " with image_type='portrait'",
         )
 
     def test_character_id_preserved_after_apply_variant(self):
@@ -763,7 +858,8 @@ class EditorSecondaryAssetTests(CharacterStudioTestCase):
                 character=character, image_type="full_body", is_active=True
             ).count(),
             1,
-            "After two generations of full_body there must be exactly 1 active CharacterImage",
+            "After two generations of full_body there must be exactly 1"
+            " active CharacterImage",
         )
 
     def test_secondary_generation_does_not_affect_other_image_types(self):
@@ -867,7 +963,8 @@ class EditorJobPollingApiTests(CharacterStudioTestCase):
 
 class EditorCharacterGetResponseTests(CharacterStudioTestCase):
     """After create_initial_image_set, GET /api/.../characters/<id> must include
-    an 'images' dict with all editor modes so the frontend knows which assets are ready."""
+    an 'images' dict with all editor modes so the frontend knows which assets
+    are ready."""
 
     def setUp(self):
         super().setUp()
@@ -887,7 +984,9 @@ class EditorCharacterGetResponseTests(CharacterStudioTestCase):
         data = response.json()
         images = data.get("images", {})
         for image_type in ("portrait", "full_body", "scene"):
-            self.assertIn(image_type, images, f"'images' dict missing key: {image_type}")
+            self.assertIn(
+                image_type, images, f"'images' dict missing key: {image_type}",
+            )
             self.assertTrue(
                 images[image_type].get("image_url"),
                 f"images.{image_type}.image_url is empty or missing",
@@ -977,7 +1076,8 @@ class EditorRetryTests(CharacterStudioTestCase):
         self.assertEqual(
             total_jobs - jobs_before,
             2,
-            "Exactly 2 new jobs should be created (original + retry), not jobs for other types",
+            "Exactly 2 new jobs should be created (original + retry),"
+            " not jobs for other types",
         )
 
 
@@ -995,7 +1095,9 @@ class CharacterListingTests(CharacterStudioTestCase):
 
     def test_draft_character_is_hidden_from_default_list(self):
         character = self.create_character()
-        result = CharacterService().list_project_characters(self.user_key, self.project.id)
+        result = CharacterService().list_project_characters(
+            self.user_key, self.project.id,
+        )
         ids = [c["character_id"] for c in result]
         self.assertNotIn(str(character.character_id), ids)
 
@@ -1013,7 +1115,8 @@ class CharacterListingTests(CharacterStudioTestCase):
         # in the default gallery list.
         character = self.create_character()
         job = CharacterGenerationService().create_initial_variants(
-            self.user_key, self.project.id, character.character_id, {"variant_count": 1},
+            self.user_key, self.project.id, character.character_id,
+            {"variant_count": 1},
         )
         variant = job.variants.first()
         self.assertIsNotNone(variant)
@@ -1022,11 +1125,17 @@ class CharacterListingTests(CharacterStudioTestCase):
             self.project.id,
             character.character_id,
             variant.variant_id,
-            {"apply_as": "current_reference", "image_type": "portrait", "notes": "test"},
+            {
+                "apply_as": "current_reference",
+                "image_type": "portrait",
+                "notes": "test",
+            },
         )
         character.refresh_from_db()
         self.assertEqual(character.status, CharacterStatus.ACTIVE)
-        result = CharacterService().list_project_characters(self.user_key, self.project.id)
+        result = CharacterService().list_project_characters(
+            self.user_key, self.project.id,
+        )
         ids = [c["character_id"] for c in result]
         self.assertIn(str(character.character_id), ids)
 
@@ -1038,7 +1147,10 @@ class CharacterListingTests(CharacterStudioTestCase):
 
         count_before = StudioCharacter.objects.filter(project=self.project).count()
         character = self.create_character()
-        self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
+        self.assertEqual(
+            StudioCharacter.objects.filter(project=self.project).count(),
+            count_before + 1,
+        )
 
         CharacterService().update_character(
             self.user_key,
@@ -1050,7 +1162,10 @@ class CharacterListingTests(CharacterStudioTestCase):
             self.user_key, self.project.id, character.character_id, {"variant_count": 2}
         )
 
-        self.assertEqual(StudioCharacter.objects.filter(project=self.project).count(), count_before + 1)
+        self.assertEqual(
+            StudioCharacter.objects.filter(project=self.project).count(),
+            count_before + 1,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1103,13 +1218,19 @@ class ReferencesStageTests(CharacterStudioTestCase):
         response = self._generate("portrait")
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
-        portrait = next(r for r in body["references"]["references"] if r["reference_type"] == "portrait")
+        portrait = next(
+            r for r in body["references"]["references"]
+            if r["reference_type"] == "portrait"
+        )
         self.assertEqual(portrait["status"], "ready")
         self.assertEqual(portrait["version"], 1)
         # Regenerate => new version, old asset still exists.
         response2 = self._generate("portrait")
         self.assertEqual(response2.status_code, 200, response2.content)
-        portrait2 = next(r for r in response2.json()["references"]["references"] if r["reference_type"] == "portrait")
+        portrait2 = next(
+            r for r in response2.json()["references"]["references"]
+            if r["reference_type"] == "portrait"
+        )
         self.assertEqual(portrait2["status"], "ready")
         self.assertEqual(portrait2["version"], 2)
         self.assertNotEqual(portrait2["asset_id"], portrait["asset_id"])
@@ -1156,10 +1277,13 @@ class ReferencesStageTests(CharacterStudioTestCase):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         png_bytes = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
+            "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
-            upload = SimpleUploadedFile("photo.png", png_bytes, content_type="image/png")
+            upload = SimpleUploadedFile(
+                "photo.png", png_bytes, content_type="image/png",
+            )
             response = self.client.post(
                 self._url("/upload"),
                 {
@@ -1309,7 +1433,9 @@ class ReferencesStageTests(CharacterStudioTestCase):
         body = response.json()
         created_types = {job["reference_type"] for job in body["created_jobs"]}
         skipped_types = {item["reference_type"] for item in body["skipped"]}
-        self.assertEqual(created_types, {"full_body", "three_quarter", "profile", "back_view"})
+        self.assertEqual(
+            created_types, {"full_body", "three_quarter", "profile", "back_view"},
+        )
         self.assertEqual(skipped_types, {"portrait"})
         # Portrait was NOT regenerated.
         self.assertEqual(
@@ -1347,7 +1473,9 @@ class ReferencesStageTests(CharacterStudioTestCase):
         body = second.json()
         self.assertEqual(body["created_jobs"], [])
         skipped_types = {item["reference_type"] for item in body["skipped"]}
-        self.assertEqual(skipped_types, {"portrait", "full_body", "profile", "back_view"})
+        self.assertEqual(
+            skipped_types, {"portrait", "full_body", "profile", "back_view"},
+        )
         # Each required type still has exactly one CharacterAsset row.
         for asset_type in (
             CharacterAssetType.PORTRAIT,
@@ -1358,7 +1486,9 @@ class ReferencesStageTests(CharacterStudioTestCase):
             count = CharacterAsset.objects.filter(
                 character=self.character, asset_type=asset_type,
             ).count()
-            self.assertEqual(count, 1, f"{asset_type} was duplicated by the second batch call")
+            self.assertEqual(
+                count, 1, f"{asset_type} was duplicated by the second batch call",
+            )
 
     def test_generate_missing_rejects_unknown_reference_type(self):
         response = self.client.post(
@@ -1390,12 +1520,15 @@ class ReferencesStageTests(CharacterStudioTestCase):
         )
         self.assertIn("USER CORRECTION", compiled["positive_prompt"])
         self.assertIn("lift the chin slightly", compiled["positive_prompt"])
-        self.assertEqual(compiled["metadata"]["correction_prompt"], "lift the chin slightly")
+        self.assertEqual(
+            compiled["metadata"]["correction_prompt"], "lift the chin slightly",
+        )
         self.assertTrue(compiled["metadata"]["preserve_identity"])
 
 
 PNG_1X1_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
+    "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
 )
 
 
@@ -1411,7 +1544,9 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
     def _png(self, name="ref.png"):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        return SimpleUploadedFile(name, base64.b64decode(PNG_1X1_B64), content_type="image/png")
+        return SimpleUploadedFile(
+            name, base64.b64decode(PNG_1X1_B64), content_type="image/png",
+        )
 
     def test_happy_path_creates_character_reference_and_job(self):
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
@@ -1436,7 +1571,9 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         self.assertIn("reference", body)
         self.assertIn("generation_job", body)
         self.assertEqual(body["character"]["name"], "Энгри дог")
-        self.assertEqual(body["reference"]["asset_type"], CharacterAssetType.UPLOADED_REFERENCE)
+        self.assertEqual(
+            body["reference"]["asset_type"], CharacterAssetType.UPLOADED_REFERENCE,
+        )
         self.assertEqual(body["reference"]["source"], "uploaded")
         # MockProvider always succeeds.
         self.assertEqual(body["generation_job"]["status"], "completed")
@@ -1573,7 +1710,9 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
     def test_full_body_uses_existing_portrait_as_identity(self):
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             portrait_response = self._generate("portrait")
-            self.assertEqual(portrait_response.status_code, 200, portrait_response.content)
+            self.assertEqual(
+                portrait_response.status_code, 200, portrait_response.content,
+            )
             portrait = CharacterAsset.objects.filter(
                 character=self.character, asset_type=CharacterAssetType.PORTRAIT,
             ).first()
@@ -1620,7 +1759,10 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
 
             from django.conf import settings
 
-            rel = f"character-studio/characters/{self.character.character_id}/source/seed.png"
+            rel = (
+                f"character-studio/characters/{self.character.character_id}"
+                "/source/seed.png"
+            )
             abs_path = Path(settings.MEDIA_ROOT) / rel
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             abs_path.write_bytes(base64.b64decode(PNG_1X1_B64))
@@ -1854,7 +1996,191 @@ class Model3DStageTests(CharacterStudioTestCase):
             self._url(), HTTP_X_USER_TOKEN=str(intruder_key.key),
         )
         self.assertGreaterEqual(get_response.status_code, 400)
-        put_response = self._put({"torso": {"chestWidth": 1}}, token=str(intruder_key.key))
+        put_response = self._put(
+            {"torso": {"chestWidth": 1}}, token=str(intruder_key.key),
+        )
         self.assertGreaterEqual(put_response.status_code, 400)
         self.character.refresh_from_db()
         self.assertEqual(self.character.model3d_params, {})
+
+
+class Model3DAutofitTests(CharacterStudioTestCase):
+    SKIN_RGB = (210, 166, 121)
+    HAIR_RGB = (58, 42, 26)
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.token = str(self.user_key.key)
+        self.character = self.create_character()
+
+    def _url(self):
+        return (
+            f"/api/projects/{self.project.id}/characters/"
+            f"{self.character.character_id}/model3d/autofit"
+        )
+
+    def _post(self, token=None):
+        return self.client.post(
+            self._url(), {"token_user": token or self.token}, format="json",
+        )
+
+    def _create_portrait(self, media_root, size=64):
+        """Write a synthetic portrait: skin canvas with a dark hair band on top.
+
+        The geometry matches the service's heuristic face crop (center of
+        the frame) so the color assertions hold without any face detector.
+        """
+        from PIL import Image
+
+        rel_path = f"character-studio/tests/{uuid4().hex}.png"
+        abs_path = Path(media_root) / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (size, size), self.SKIN_RGB)
+        image.paste(self.HAIR_RGB, (0, 0, size, int(size * 0.3)))
+        image.save(abs_path)
+        return CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.PORTRAIT,
+            status=CharacterAssetStatus.READY,
+            storage_path=rel_path,
+            image_url=f"/media/{rel_path}",
+        )
+
+    @staticmethod
+    def _rgb(hex_color):
+        return tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+
+    @classmethod
+    def _color_distance(cls, hex_color, rgb):
+        return sum((a - b) ** 2 for a, b in zip(cls._rgb(hex_color), rgb))
+
+    @staticmethod
+    def _landmarks(overrides=None):
+        """Canonical synthetic face: every metric sits at its neutral point.
+
+        face_width = 0.8 (234↔454); the other distances are chosen so each
+        ratio equals the service's canonical value, so individual tests
+        only need to perturb the landmarks they care about.
+        """
+        points = {
+            33: (0.232, 0.4), 133: (0.396, 0.4),    # left eye outer/inner
+            362: (0.604, 0.4), 263: (0.768, 0.4),   # right eye inner/outer
+            61: (0.36, 0.75), 291: (0.64, 0.75),    # mouth corners
+            48: (0.42, 0.6), 278: (0.58, 0.6),      # nose wings
+            234: (0.1, 0.5), 454: (0.9, 0.5),       # face sides
+            10: (0.5, 0.0), 152: (0.5, 1.12),       # forehead / chin
+            172: (0.188, 0.75), 397: (0.812, 0.75),  # jaw (gonion)
+        }
+        points.update(overrides or {})
+        return points
+
+    def test_no_references_returns_no_portrait_warning(self):
+        response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertIn("no_portrait", body["warnings"])
+        self.assertEqual(body["params"], {})
+        self.assertIsNone(body["sources"]["portrait"])
+        self.assertIsNone(body["sources"]["full_body"])
+
+    def test_portrait_yields_plausible_skin_and_hair_colors(self):
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            asset = self._create_portrait(media_root)
+            response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertNotIn("no_portrait", body["warnings"])
+        self.assertEqual(body["sources"]["portrait"], str(asset.asset_id))
+        skin = body["params"]["skin_color"]["skinTone"]
+        hair = body["params"]["hair"]["hairColor"]
+        self.assertRegex(skin, r"^#[0-9a-f]{6}$")
+        self.assertRegex(hair, r"^#[0-9a-f]{6}$")
+        # The skin sample must resemble the canvas color, not the hair band
+        # (and vice versa) — that is what "the crop windows are placed
+        # correctly" looks like from the outside.
+        self.assertLess(
+            self._color_distance(skin, self.SKIN_RGB),
+            self._color_distance(skin, self.HAIR_RGB),
+        )
+        self.assertLess(
+            self._color_distance(hair, self.HAIR_RGB),
+            self._color_distance(hair, self.SKIN_RGB),
+        )
+
+    def test_portrait_without_mediapipe_reports_landmark_warnings(self):
+        # mediapipe is an optional dependency and is not installed in CI;
+        # the endpoint must still answer 200 and flag the skipped zones.
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            response = self._post()
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.content)
+        if "landmarks_unavailable" in body["warnings"]:
+            self.assertNotIn("eyes", body["params"])
+            self.assertIn("eye_color_unavailable", body["warnings"])
+
+    def test_metrics_canonical_face_is_neutral_oval(self):
+        metrics = metrics_from_landmarks(self._landmarks())
+        self.assertAlmostEqual(metrics["eyes"]["eyeDistance"], 0.0, places=5)
+        self.assertAlmostEqual(metrics["eyes"]["eyeTilt"], 0.0, places=5)
+        self.assertAlmostEqual(metrics["eyes"]["eyeSize"], 0.0, places=5)
+        self.assertAlmostEqual(metrics["nose"]["noseWidth"], 0.0, places=5)
+        self.assertAlmostEqual(metrics["mouth"]["mouthWidth"], 0.0, places=5)
+        self.assertAlmostEqual(metrics["jaw_chin"]["jawWidth"], 0.0, places=5)
+        self.assertEqual(metrics["face_shape"]["shape"], "oval")
+
+    def test_wide_set_eyes_give_positive_eye_distance(self):
+        metrics = metrics_from_landmarks(
+            self._landmarks({133: (0.356, 0.4), 362: (0.644, 0.4)})
+        )
+        self.assertGreater(metrics["eyes"]["eyeDistance"], 0)
+        self.assertLessEqual(metrics["eyes"]["eyeDistance"], 1.0)
+
+    def test_raised_outer_corners_give_positive_eye_tilt(self):
+        metrics = metrics_from_landmarks(
+            self._landmarks({33: (0.232, 0.36), 263: (0.768, 0.36)})
+        )
+        self.assertGreater(metrics["eyes"]["eyeTilt"], 0)
+
+    def test_short_face_classified_round(self):
+        metrics = metrics_from_landmarks(self._landmarks({152: (0.5, 1.0)}))
+        self.assertEqual(metrics["face_shape"]["shape"], "round")
+
+    def test_long_face_with_narrow_jaw_classified_heart(self):
+        metrics = metrics_from_landmarks(
+            self._landmarks({
+                152: (0.5, 1.3),
+                172: (0.22, 0.75),
+                397: (0.78, 0.75),
+            })
+        )
+        self.assertEqual(metrics["face_shape"]["shape"], "heart")
+
+    def test_wide_jaw_classified_square(self):
+        metrics = metrics_from_landmarks(
+            self._landmarks({172: (0.14, 0.75), 397: (0.86, 0.75)})
+        )
+        self.assertEqual(metrics["face_shape"]["shape"], "square")
+        self.assertGreater(metrics["jaw_chin"]["jawWidth"], 0)
+
+    def test_classify_face_shape_thresholds(self):
+        self.assertEqual(classify_face_shape(1.2, 0.78), "round")
+        self.assertEqual(classify_face_shape(1.6, 0.70), "heart")
+        self.assertEqual(classify_face_shape(1.4, 0.90), "square")
+        self.assertEqual(classify_face_shape(1.4, 0.78), "oval")
+
+    def test_metrics_reject_degenerate_landmarks(self):
+        flat = {index: (0.5, 0.5) for index in self._landmarks()}
+        with self.assertRaises(ValueError):
+            metrics_from_landmarks(flat)
+
+    def test_foreign_user_token_rejected(self):
+        intruder = User.objects.create_user(username="intruder", password="x")
+        intruder_key = UserKey.objects.create(user=intruder)
+        response = self._post(token=str(intruder_key.key))
+        self.assertGreaterEqual(response.status_code, 400)
