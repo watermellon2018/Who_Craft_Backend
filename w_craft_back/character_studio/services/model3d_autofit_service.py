@@ -57,6 +57,39 @@ JAW_RIGHT = 397
 LEFT_IRIS_CENTER = 468
 RIGHT_IRIS_CENTER = 473
 
+# Canonical mediapipe Pose landmark indices (33-point topology). Used to
+# read body proportions from the full-body reference.
+POSE_LEFT_SHOULDER = 11
+POSE_RIGHT_SHOULDER = 12
+POSE_LEFT_ELBOW = 13
+POSE_RIGHT_ELBOW = 14
+POSE_LEFT_WRIST = 15
+POSE_RIGHT_WRIST = 16
+POSE_LEFT_HIP = 23
+POSE_RIGHT_HIP = 24
+POSE_LEFT_KNEE = 25
+POSE_RIGHT_KNEE = 26
+POSE_LEFT_ANKLE = 27
+POSE_RIGHT_ANKLE = 28
+
+# Canonical body-proportion ratios, measured as the mean over frontal,
+# confidently-detected real full-body references. A subject matching these
+# means lands on 0 for every emitted slider (neutral = the model's default).
+CANON_SHOULDER_HIP = 1.81   # shoulder width / hip width
+CANON_LEG_TORSO = 1.45      # leg length / torso height
+CANON_THIGH_CALF = 1.09     # thigh segment / calf segment
+CANON_ARM_TORSO = 0.97      # arm length / torso height (noisy: bent arms)
+CANON_UPPER_FOREARM = 1.15  # upper-arm segment / forearm segment
+
+# Pose confidence gates. Body metrics are emitted only when the detection is
+# trustworthy: key joints visible AND the subject roughly frontal (a turned
+# torso skews the width ratios). Arm length is additionally gated on the
+# elbows being reasonably straight, since a bent arm shortens its apparent
+# length regardless of the real proportions.
+POSE_MIN_VISIBILITY = 0.6
+POSE_MAX_Z_SPREAD = 0.18    # |z| gap of shoulders/hips; larger = turned
+POSE_ARM_GATE_FLOOR = 0.15  # below this elbow-straightness, drop arm length
+
 
 def compute_autofit(character):
     """Return suggested 3D params for ``character``'s reference images.
@@ -65,6 +98,10 @@ def compute_autofit(character):
     ``params`` always passes ``validate_model3d_params`` so the frontend
     can hand it straight to the editor; ``warnings`` are short snake_case
     codes explaining which extractions were skipped and why.
+
+    Face proportions/colors come from the portrait (FaceMesh); body
+    proportions come from the full-body reference (Pose), gated on a
+    confident frontal detection. Both stages degrade independently.
     """
     portrait = _latest_ready_asset(character, CharacterAssetType.PORTRAIT)
     full_body = _latest_ready_asset(character, CharacterAssetType.FULL_BODY)
@@ -121,11 +158,50 @@ def compute_autofit(character):
         else:
             warnings.append("eye_color_unavailable")
 
+    # ── Body proportions from the full-body reference (best effort) ──
+    _apply_body_metrics(full_body, params, warnings)
+
     return {
         "params": validate_model3d_params(params),
         "warnings": warnings,
         "sources": sources,
     }
+
+
+def _apply_body_metrics(full_body, params, warnings):
+    """Fold body-proportion params from the full-body reference into
+    ``params`` in place, recording a short warning when each stage is
+    skipped. Never raises — the editor works fine without these."""
+    if full_body is None:
+        warnings.append("no_full_body")
+        return
+    image = _open_asset_image(full_body)
+    if image is None:
+        warnings.append("full_body_unreadable")
+        return
+    try:
+        pose = _mediapipe_pose(image)
+    except Exception:
+        logger.warning("autofit: pose extraction failed", exc_info=True)
+        pose = None
+    if pose is None:
+        warnings.append("body_pose_unavailable")
+        return
+
+    ok, _z = pose_confidence(pose)
+    if not ok:
+        # Turned torso or low visibility — width ratios would be noise.
+        warnings.append("body_pose_not_frontal")
+        return
+
+    try:
+        body_params, body_warnings = body_metrics_from_pose(pose)
+    except ValueError:
+        warnings.append("body_pose_unavailable")
+        return
+    for zone, values in body_params.items():
+        params.setdefault(zone, {}).update(values)
+    warnings.extend(body_warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +267,132 @@ def classify_face_shape(height_ratio, jaw_ratio):
     if jaw_ratio > 0.84:
         return "square"
     return "oval"
+
+
+def pose_confidence(points):
+    """Return ``(ok, z_spread)`` for the body-pose detection.
+
+    ``ok`` is False when key joints are barely visible or the subject is
+    clearly turned (a non-frontal torso makes the width ratios meaningless).
+    Pure over the landmark mapping so the gate is unit-testable.
+    """
+    needed = (
+        POSE_LEFT_SHOULDER, POSE_RIGHT_SHOULDER,
+        POSE_LEFT_HIP, POSE_RIGHT_HIP,
+    )
+    visibilities = []
+    for idx in needed:
+        p = _point(points, idx)
+        # visibility is the 4th component when present; absent in synthetic
+        # test fixtures, which are treated as fully visible.
+        visibilities.append(p[3] if len(p) > 3 else 1.0)
+    if min(visibilities) < POSE_MIN_VISIBILITY:
+        return False, None
+
+    ls, rs = _point(points, POSE_LEFT_SHOULDER), _point(points, POSE_RIGHT_SHOULDER)
+    lh, rh = _point(points, POSE_LEFT_HIP), _point(points, POSE_RIGHT_HIP)
+    z = lambda p: p[2] if len(p) > 2 else 0.0  # noqa: E731
+    z_spread = max(abs(z(ls) - z(rs)), abs(z(lh) - z(rh)))
+    return z_spread <= POSE_MAX_Z_SPREAD, z_spread
+
+
+def body_metrics_from_pose(points):
+    """Map normalized Pose landmarks to body-proportion zone params.
+
+    Only scale-free landmark-distance RATIOS are used (never pixel-absolute
+    widths), because the photo's crop/distance is unknown. Every ratio is
+    compared to a canonical mean so a typical subject lands on 0. Returns
+    ``({zone: {param: value}}, warnings)``; arm length is dropped (with an
+    ``arm_length_unavailable`` warning) when both elbows are too bent for the
+    apparent arm length to be trustworthy.
+
+    The caller is responsible for the confidence gate (pose_confidence);
+    this function assumes a usable, frontal detection. Raises ``ValueError``
+    on degenerate geometry (zero-length torso/limbs).
+    """
+    warnings = []
+
+    ls = _point(points, POSE_LEFT_SHOULDER)
+    rs = _point(points, POSE_RIGHT_SHOULDER)
+    lh = _point(points, POSE_LEFT_HIP)
+    rh = _point(points, POSE_RIGHT_HIP)
+
+    shoulder_w = _dist(ls, rs)
+    hip_w = _dist(lh, rh)
+    mid_shoulder = ((ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2)
+    mid_hip = ((lh[0] + rh[0]) / 2, (lh[1] + rh[1]) / 2)
+    torso_h = _dist(mid_shoulder, mid_hip)
+    if hip_w < 1e-6 or torso_h < 1e-6 or shoulder_w < 1e-6:
+        raise ValueError("degenerate pose geometry")
+
+    # ── Silhouette: one shoulder/hip deviation fans out to four sliders ──
+    sil = _scaled(shoulder_w / hip_w, CANON_SHOULDER_HIP, 0.5)
+    params = {
+        "shoulders": {"shouldersWidth": _clamp(0.6 * sil)},
+        "hips": {"hipsWidth": _clamp(-0.45 * sil)},
+        "waist": {
+            "waistWidth": _clamp(-0.35 * sil),
+            "torsoCurve": _clamp(-0.5 * sil),
+        },
+    }
+
+    # ── Legs: overall leg/torso length, split by the thigh/calf ratio ──
+    l_thigh = _dist(lh, _point(points, POSE_LEFT_KNEE))
+    l_calf = _dist(_point(points, POSE_LEFT_KNEE), _point(points, POSE_LEFT_ANKLE))
+    if l_thigh > 1e-6 and l_calf > 1e-6:
+        leg_len = (l_thigh + l_calf)
+        leg_sig = _scaled(leg_len / torso_h, CANON_LEG_TORSO, 0.5)
+        seg_dev = (l_thigh / l_calf - CANON_THIGH_CALF) / 0.5
+        params["thigh"] = {"thighLength": _clamp(0.6 * leg_sig + 0.5 * seg_dev)}
+        params["calf"] = {"calfLength": _clamp(0.6 * leg_sig - 0.5 * seg_dev)}
+
+    # ── Arms: gated on elbow straightness (bent arms read short) ──
+    l_upper = _dist(ls, _point(points, POSE_LEFT_ELBOW))
+    l_fore = _dist(_point(points, POSE_LEFT_ELBOW), _point(points, POSE_LEFT_WRIST))
+    g = _arm_straightness(points)
+    if l_upper > 1e-6 and l_fore > 1e-6 and g >= POSE_ARM_GATE_FLOOR:
+        arm_len = (l_upper + l_fore)
+        arm_sig = _scaled(arm_len / torso_h, CANON_ARM_TORSO, 0.7) * g
+        ua_dev = (l_upper / l_fore - CANON_UPPER_FOREARM) / 0.5
+        params["upper_arm"] = {"length": _clamp(0.55 * arm_sig + 0.5 * ua_dev * g)}
+        params["forearm"] = {"length": _clamp(0.55 * arm_sig - 0.5 * ua_dev * g)}
+    else:
+        warnings.append("arm_length_unavailable")
+
+    return params, warnings
+
+
+def _arm_straightness(points):
+    """Mean elbow-straightness gate in [0, 1]: 1 when arms are straight, 0
+    when bent past ~127°. Averaged over both elbows so one bent arm still
+    leaves a usable signal from the other."""
+    gates = []
+    for sh, el, wr in (
+        (POSE_LEFT_SHOULDER, POSE_LEFT_ELBOW, POSE_LEFT_WRIST),
+        (POSE_RIGHT_SHOULDER, POSE_RIGHT_ELBOW, POSE_RIGHT_WRIST),
+    ):
+        try:
+            cos_a = _cos_angle(
+                _point(points, el), _point(points, sh), _point(points, wr),
+            )
+        except ValueError:
+            continue
+        gates.append(max(0.0, min(1.0, (cos_a - 0.6) / 0.4)))
+    return sum(gates) / len(gates) if gates else 0.0
+
+
+def _cos_angle(vertex, a, b):
+    """Cosine of the angle at ``vertex`` between vertex→a and vertex→b. 1 =
+    straight (collinear, a and b on opposite sides), −1 = folded back."""
+    ax, ay = a[0] - vertex[0], a[1] - vertex[1]
+    bx, by = b[0] - vertex[0], b[1] - vertex[1]
+    na = math.hypot(ax, ay)
+    nb = math.hypot(bx, by)
+    if na < 1e-9 or nb < 1e-9:
+        raise ValueError("degenerate angle")
+    # vertex→shoulder and vertex→wrist point in OPPOSITE directions for a
+    # straight arm, so their dot is negative; negate to make straight = +1.
+    return -(ax * bx + ay * by) / (na * nb)
 
 
 def _point(points, index):
@@ -282,6 +484,38 @@ def _mediapipe_landmarks(image):
     if not getattr(results, "multi_face_landmarks", None):
         return None
     return [(lm.x, lm.y) for lm in results.multi_face_landmarks[0].landmark]
+
+
+def _mediapipe_pose(image):
+    """Normalized Pose landmarks ``[(x, y, z, visibility), ...]`` or None.
+
+    Same optional-dependency / degrade-to-None contract as
+    _mediapipe_landmarks. model_complexity=2 (the heavy model) is worth it
+    here: this runs once per character on the first 3D open, and the extra
+    accuracy directly improves the proportion estimate.
+    """
+    try:
+        import mediapipe  # noqa: F401  (optional, see requirements.txt)
+        import numpy
+    except ImportError:
+        return None
+
+    try:
+        pose = mediapipe.solutions.pose.Pose(
+            static_image_mode=True,
+            model_complexity=2,
+        )
+        with pose:
+            results = pose.process(numpy.asarray(image))
+    except Exception:
+        logger.warning("autofit: mediapipe pose detection failed", exc_info=True)
+        return None
+    if not getattr(results, "pose_landmarks", None):
+        return None
+    return [
+        (lm.x, lm.y, lm.z, lm.visibility)
+        for lm in results.pose_landmarks.landmark
+    ]
 
 
 def _face_box(image, landmarks):

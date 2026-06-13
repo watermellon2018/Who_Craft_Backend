@@ -35,8 +35,10 @@ from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
 from w_craft_back.character_studio.services.model3d_autofit_service import (
+    body_metrics_from_pose,
     classify_face_shape,
     metrics_from_landmarks,
+    pose_confidence,
 )
 from w_craft_back.character_studio.services.prompt_compiler import (
     CharacterPromptCompiler,
@@ -2084,6 +2086,26 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             image_url=f"/media/{rel_path}",
         )
 
+    def _create_full_body(self, media_root, size=256):
+        """Write a plain full-body asset. Pose never detects a primitive,
+        so tests that need real landmarks mock _mediapipe_pose; this just
+        gives the pipeline a readable file to open."""
+        from PIL import Image
+
+        rel_path = f"character-studio/tests/{uuid4().hex}.png"
+        abs_path = Path(media_root) / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (size, size * 2), (200, 200, 200)).save(abs_path)
+        return CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.FULL_BODY,
+            status=CharacterAssetStatus.READY,
+            storage_path=rel_path,
+            image_url=f"/media/{rel_path}",
+        )
+
     @staticmethod
     def _mediapipe_available():
         try:
@@ -2305,6 +2327,163 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         flat = {index: (0.5, 0.5) for index in self._landmarks()}
         with self.assertRaises(ValueError):
             metrics_from_landmarks(flat)
+
+    # ── Body proportions from Pose ──
+
+    @staticmethod
+    def _pose(overrides=None):
+        """Canonical frontal standing pose: every ratio equals its canonical
+        mean, so a clean detection yields 0 on every body slider.
+
+        Geometry: hip width 0.10, shoulder width 0.181 (SH/HIP 1.81), torso
+        height 0.25, leg 0.3625 (LEG/TORSO 1.45) split thigh/calf 1.09, arms
+        straight down, length 0.2425 (ARM/TORSO 0.97) split upper/forearm
+        1.15. Tuples are (x, y, z, visibility).
+        """
+        cx = 0.5
+        sh_y, hip_y = 0.30, 0.55          # torso height 0.25
+        sh_hw, hip_hw = 0.0905, 0.05      # half-widths
+        thigh, calf = 0.1890, 0.1735      # sum 0.3625, ratio 1.09
+        upper, fore = 0.1297, 0.1128      # sum 0.2425, ratio 1.15
+        knee_y = hip_y + thigh
+        ankle_y = knee_y + calf
+        elbow_y = sh_y + upper
+        wrist_y = elbow_y + fore
+        points = {
+            11: (cx + sh_hw, sh_y, 0.0, 1.0), 12: (cx - sh_hw, sh_y, 0.0, 1.0),
+            23: (cx + hip_hw, hip_y, 0.0, 1.0), 24: (cx - hip_hw, hip_y, 0.0, 1.0),
+            13: (cx + sh_hw, elbow_y, 0.0, 1.0), 14: (cx - sh_hw, elbow_y, 0.0, 1.0),
+            15: (cx + sh_hw, wrist_y, 0.0, 1.0), 16: (cx - sh_hw, wrist_y, 0.0, 1.0),
+            25: (cx + hip_hw, knee_y, 0.0, 1.0), 26: (cx - hip_hw, knee_y, 0.0, 1.0),
+            27: (cx + hip_hw, ankle_y, 0.0, 1.0), 28: (cx - hip_hw, ankle_y, 0.0, 1.0),
+        }
+        points.update(overrides or {})
+        return points
+
+    def test_canonical_pose_yields_neutral_body(self):
+        params, warnings = body_metrics_from_pose(self._pose())
+        for zone in ("shoulders", "hips", "waist", "thigh", "calf"):
+            for value in params[zone].values():
+                self.assertAlmostEqual(value, 0.0, places=2)
+        # Straight arms → arm length emitted, ~0, no warning.
+        self.assertNotIn("arm_length_unavailable", warnings)
+        self.assertAlmostEqual(params["upper_arm"]["length"], 0.0, places=2)
+
+    def test_broad_shoulders_narrow_hips_read_as_inverted_triangle(self):
+        # Widen shoulders, keep hips → high SH/HIP.
+        pose = self._pose({11: (0.62, 0.30, 0.0, 1.0), 12: (0.38, 0.30, 0.0, 1.0)})
+        params, _ = body_metrics_from_pose(pose)
+        self.assertGreater(params["shoulders"]["shouldersWidth"], 0.1)
+        self.assertLess(params["hips"]["hipsWidth"], 0)
+        # Engine sign: inverted triangle → negative torsoCurve.
+        self.assertLess(params["waist"]["torsoCurve"], 0)
+
+    def test_pear_build_reads_as_positive_torso_curve(self):
+        # Narrow shoulders, wide hips → low SH/HIP (pear).
+        pose = self._pose({23: (0.59, 0.55, 0.0, 1.0), 24: (0.41, 0.55, 0.0, 1.0)})
+        params, _ = body_metrics_from_pose(pose)
+        self.assertLess(params["shoulders"]["shouldersWidth"], 0)
+        self.assertGreater(params["hips"]["hipsWidth"], 0)
+        self.assertGreater(params["waist"]["torsoCurve"], 0)
+
+    def test_long_legs_lengthen_both_segments(self):
+        # Push knees and ankles further down → longer legs.
+        pose = self._pose({
+            25: (0.55, 0.85, 0.0, 1.0), 26: (0.45, 0.85, 0.0, 1.0),
+            27: (0.55, 1.15, 0.0, 1.0), 28: (0.45, 1.15, 0.0, 1.0),
+        })
+        params, _ = body_metrics_from_pose(pose)
+        self.assertGreater(params["thigh"]["thighLength"], 0)
+        self.assertGreater(params["calf"]["calfLength"], 0)
+
+    def test_bent_arms_drop_arm_length_with_warning(self):
+        # Fold both wrists back up near the shoulders → bent elbows.
+        pose = self._pose({
+            15: (0.59, 0.32, 0.0, 1.0), 16: (0.41, 0.32, 0.0, 1.0),
+        })
+        params, warnings = body_metrics_from_pose(pose)
+        self.assertIn("arm_length_unavailable", warnings)
+        self.assertNotIn("upper_arm", params)
+        self.assertNotIn("forearm", params)
+
+    def test_pose_confidence_rejects_low_visibility(self):
+        pose = self._pose({11: (0.59, 0.30, 0.0, 0.2)})  # one shoulder hidden
+        ok, _z = pose_confidence(pose)
+        self.assertFalse(ok)
+
+    def test_pose_confidence_rejects_turned_torso(self):
+        # Large z-spread between shoulders → subject turned.
+        pose = self._pose({
+            11: (0.59, 0.30, 0.3, 1.0), 12: (0.41, 0.30, -0.3, 1.0),
+        })
+        ok, z = pose_confidence(pose)
+        self.assertFalse(ok)
+        self.assertGreater(z, 0.18)
+
+    def test_pose_confidence_accepts_frontal(self):
+        ok, z = pose_confidence(self._pose())
+        self.assertTrue(ok)
+        self.assertLessEqual(z, 0.18)
+
+    def test_body_metrics_reject_degenerate_pose(self):
+        flat = {index: (0.5, 0.5, 0.0, 1.0) for index in self._pose()}
+        with self.assertRaises(ValueError):
+            body_metrics_from_pose(flat)
+
+    @classmethod
+    def _pose_list(cls, overrides=None):
+        """The synthetic pose as a 33-length list, the shape
+        _mediapipe_pose returns, for mocking it in endpoint tests."""
+        points = cls._pose(overrides)
+        return [points.get(i, (0.5, 0.5, 0.0, 1.0)) for i in range(33)]
+
+    _POSE_TARGET = (
+        "w_craft_back.character_studio.services."
+        "model3d_autofit_service._mediapipe_pose"
+    )
+
+    def test_autofit_applies_body_metrics_from_full_body(self):
+        media_root = tempfile.mkdtemp()
+        wide = self._pose_list({
+            11: (0.62, 0.30, 0.0, 1.0), 12: (0.38, 0.30, 0.0, 1.0),
+        })
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            self._create_full_body(media_root)
+            with patch(self._POSE_TARGET, return_value=wide):
+                response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        # Broad-shoulder build seeds the silhouette sliders.
+        self.assertGreater(params["shoulders"]["shouldersWidth"], 0.1)
+        self.assertLess(params["hips"]["hipsWidth"], 0)
+        self.character.refresh_from_db()
+        self.assertIn("shoulders", self.character.model3d_params)
+
+    def test_autofit_without_full_body_warns(self):
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            response = self._post()
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn("no_full_body", body["warnings"])
+        self.assertNotIn("shoulders", body["params"])
+
+    def test_autofit_skips_body_when_pose_not_frontal(self):
+        media_root = tempfile.mkdtemp()
+        turned = self._pose_list({
+            11: (0.59, 0.30, 0.3, 1.0), 12: (0.41, 0.30, -0.3, 1.0),
+        })
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            self._create_full_body(media_root)
+            with patch(self._POSE_TARGET, return_value=turned):
+                response = self._post()
+        body = response.json()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn("body_pose_not_frontal", body["warnings"])
+        self.assertNotIn("shoulders", body["params"])
 
     def test_foreign_user_token_rejected(self):
         intruder = User.objects.create_user(username="intruder", password="x")
