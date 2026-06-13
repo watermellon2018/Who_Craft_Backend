@@ -814,8 +814,11 @@ def model3d_state(request, project_id, character_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
     if request.method == "GET":
+        # `autofit_done` lets the editor decide on open: seed from references
+        # the first time, load the saved state every time after.
         return ok({
             "params": character.model3d_params or {},
+            "autofit_done": character.model3d_autofit_done,
             "updated_at": character.updated_at.isoformat(),
         })
 
@@ -839,13 +842,42 @@ def model3d_state(request, project_id, character_id):
 @api_view(["POST"])
 @handle_errors
 def model3d_autofit(request, project_id, character_id):
-    """Suggest 3D editor parameters extracted from the reference images.
+    """Seed the 3D editor parameters from the reference images.
+
+    Runs automatically the first time the editor opens (the user-facing
+    "fit to references" button was removed). Extracts colors and — when
+    mediapipe is available — facial proportions, persists them as the
+    character's ``model3d_params`` and flips ``model3d_autofit_done`` so it
+    never overwrites later manual edits, even if the user resets to
+    defaults. Idempotent: re-running after the flag is set is a no-op that
+    returns the stored params.
 
     POST (not GET) because the image analysis is expensive enough that it
-    must not run on speculative prefetches. Nothing is persisted: the
-    frontend shows the suggestion and saves the user's choice through the
-    regular ``/model3d`` PUT, keeping a single validated write path.
+    must not run on speculative prefetches.
     """
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
-    return ok(compute_autofit(character))
+
+    if character.model3d_autofit_done:
+        return ok({
+            "params": character.model3d_params or {},
+            "autofit_done": True,
+            "warnings": ["already_autofitted"],
+            "sources": {},
+        })
+
+    result = compute_autofit(character)
+    character.model3d_params = result["params"]
+    character.model3d_autofit_done = True
+    character.save(
+        update_fields=["model3d_params", "model3d_autofit_done", "updated_at"],
+    )
+    CharacterRevisionService().create_revision(
+        character,
+        RevisionChangeType.MANUAL_UPDATE,
+        changed_region="full_character",
+        change_summary="model3d_autofit",
+        snapshot={"model3d_params": result["params"], "stage": "3d_model"},
+    )
+    result["autofit_done"] = True
+    return ok(result)
