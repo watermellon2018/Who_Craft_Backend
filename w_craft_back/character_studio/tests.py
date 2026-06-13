@@ -2206,6 +2206,51 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         # Colors still come back — they don't depend on landmarks.
         self.assertIn("skin_color", body["params"])
 
+    def test_autofit_persists_params_and_sets_flag(self):
+        # Autofit now applies (not just suggests): it saves the extracted
+        # params and flips model3d_autofit_done so it runs exactly once.
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            response = self._post()
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["autofit_done"])
+        self.character.refresh_from_db()
+        self.assertTrue(self.character.model3d_autofit_done)
+        self.assertIn("skin_color", self.character.model3d_params)
+
+    def test_autofit_is_idempotent_after_first_run(self):
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            self._post()
+            # User tweaks the model and saves through the normal PUT path.
+            self.character.refresh_from_db()
+            self.character.model3d_params = {"torso": {"chestWidth": 0.9}}
+            self.character.save(update_fields=["model3d_params"])
+            # A second autofit must NOT overwrite the manual edit.
+            second = self._post()
+        self.assertEqual(second.status_code, 200, second.content)
+        body = second.json()
+        self.assertIn("already_autofitted", body["warnings"])
+        self.assertEqual(body["params"], {"torso": {"chestWidth": 0.9}})
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.model3d_params, {"torso": {"chestWidth": 0.9}})
+
+    def test_model3d_get_reports_autofit_done(self):
+        get_url = (
+            f"/api/projects/{self.project.id}/characters/"
+            f"{self.character.character_id}/model3d"
+        )
+        before = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
+        self.assertFalse(before.json()["autofit_done"])
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            self._post()
+        after = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
+        self.assertTrue(after.json()["autofit_done"])
+
     def test_metrics_canonical_face_is_neutral_oval(self):
         metrics = metrics_from_landmarks(self._landmarks())
         self.assertAlmostEqual(metrics["eyes"]["eyeDistance"], 0.0, places=5)

@@ -218,6 +218,11 @@ class StudioCharacter(models.Model):
     # Leaf values are numbers in [-1, 1], short strings (color hex / preset
     # ids) or booleans — validated in services/model3d_service.py.
     model3d_params = models.JSONField(default=dict, blank=True)
+    # Whether autofit-from-references has already run for the 3D stage. The
+    # editor seeds parameters from the portrait automatically on first open;
+    # this flag stops it from overwriting the user's manual edits on later
+    # opens, even if they reset everything back to defaults.
+    model3d_autofit_done = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
