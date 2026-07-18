@@ -35,10 +35,14 @@ from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
 from w_craft_back.character_studio.services.model3d_autofit_service import (
+    _iris_color,
+    _hair_band_color,
+    _hair_sample_box,
     body_metrics_from_pose,
     classify_face_shape,
     hair_band_box,
     metrics_from_landmarks,
+    profile_metrics_from_landmarks,
     point_in_polygon,
     pose_confidence,
     skin_mask_sample_points,
@@ -2141,20 +2145,117 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             234: (0.1, 0.5), 454: (0.9, 0.5),       # face sides
             10: (0.5, 0.0), 152: (0.5, 1.12),       # forehead / chin
             172: (0.188, 0.75), 397: (0.812, 0.75),  # jaw (gonion)
+            168: (0.5, 0.45), 2: (0.5, 0.65),         # nose bridge / base
+            0: (0.5, 0.70), 13: (0.5, 0.73),        # upper lip
+            14: (0.5, 0.76), 17: (0.5, 0.80),       # lower lip
+            175: (0.52, 1.05),                       # jaw underside
         }
         points.update(overrides or {})
         return points
 
-    def test_no_references_returns_no_portrait_warning(self):
+    def test_autofit_uses_profile_reference_for_depth_controls(self):
+        from PIL import Image
+
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            rel_path = f"character-studio/tests/{uuid4().hex}.png"
+            absolute = Path(media_root) / rel_path
+            absolute.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (320, 480), (210, 180, 160)).save(absolute)
+            profile = CharacterAsset.objects.create(
+                character=self.character,
+                project=self.project,
+                user=self.user_key,
+                asset_type=CharacterAssetType.PROFILE,
+                status=CharacterAssetStatus.READY,
+                storage_path=rel_path,
+                image_url=f"/media/{rel_path}",
+            )
+            profile_points = self._profile_landmarks()
+            profile_points[1] = (0.34, 0.40)
+            with patch(
+                "w_craft_back.character_studio.services.model3d_autofit_service."
+                "_mediapipe_landmarks",
+                side_effect=[self._landmarks(), profile_points],
+            ):
+                response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        body = response.json()
+        self.assertEqual(body["sources"]["profile"], str(profile.asset_id))
+        self.assertEqual(body["sources"]["profile_type"], "profile")
+        self.assertGreater(body["params"]["nose"]["noseTip"], 0.5)
+        self.assertIn("faceDepth", body["params"]["face_shape"])
+
+    def test_no_references_returns_character_authored_shape(self):
         response = self._post()
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
         self.assertIn("no_portrait", body["warnings"])
-        self.assertEqual(body["params"], {})
+        self.assertEqual(body["params"]["hips"]["hipsWidth"], -0.1)
+        self.assertEqual(
+            body["sources"]["appearance"],
+            str(self.character.active_appearance_id),
+        )
         self.assertIsNone(body["sources"]["portrait"])
         self.assertIsNone(body["sources"]["full_body"])
 
+    def test_structured_appearance_and_outfit_seed_matching_3d_params(self):
+        appearance = self.character.active_appearance
+        appearance.face_shape = "heart"
+        appearance.skin_tone = "fair"
+        appearance.eye_color = "light blue"
+        appearance.hair_length = "long"
+        appearance.hair_style = "wavy"
+        appearance.hair_color = "strawberry blonde"
+        appearance.body_type = "slim"
+        appearance.posture = "confident"
+        appearance.save()
+        outfit = CharacterOutfit.objects.create(
+            character=self.character,
+            name="Navy polo",
+            description="navy blue polo shirt",
+            color_palette=["#263a55", "#2d2d33"],
+            is_default=True,
+        )
+        self.character.active_outfit = outfit
+        self.character.save(update_fields=["active_outfit", "updated_at"])
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        self.assertEqual(params["face_shape"]["shape"], "heart")
+        self.assertEqual(params["skin_color"]["skinTone"], "#f0d8c0")
+        self.assertEqual(params["eyes"]["eyeColor"], "#5d9ed1")
+        self.assertEqual(params["hair"]["hairStyle"], "long")
+        self.assertEqual(params["hair"]["hairLength"], 0.9)
+        self.assertEqual(params["hair"]["hairShape"], "wavy")
+        self.assertEqual(params["hair"]["hairColor"], "#c98257")
+        self.assertEqual(params["waist"]["waistWidth"], -0.25)
+        self.assertEqual(params["posture"]["posturePreset"], "confident")
+        self.assertEqual(params["clothing_top"]["color"], "#263a55")
+        self.assertEqual(params["clothing_bottom"]["color"], "#2d2d33")
+
+    def test_structured_hair_color_wins_over_portrait_band_sample(self):
+        appearance = self.character.active_appearance
+        appearance.hair_color = "strawberry blonde"
+        appearance.save(update_fields=["hair_color", "updated_at"])
+        media_root = tempfile.mkdtemp()
+        with override_settings(MEDIA_ROOT=media_root):
+            self._create_portrait(media_root)
+            response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["params"]["hair"]["hairColor"], "#c98257")
+
     def test_portrait_yields_plausible_skin_and_hair_colors(self):
+        appearance = self.character.active_appearance
+        appearance.hair_color = ""
+        appearance.source_description = ""
+        appearance.appearance_prompt = ""
+        appearance.save()
         media_root = tempfile.mkdtemp()
         with override_settings(MEDIA_ROOT=media_root):
             asset = self._create_portrait(media_root)
@@ -2210,7 +2311,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         body = response.json()
         self.assertEqual(response.status_code, 200, response.content)
         if "landmarks_unavailable" in body["warnings"]:
-            self.assertNotIn("eyes", body["params"])
+            self.assertEqual(set(body["params"]["eyes"]), {"eyeColor"})
             self.assertIn("eye_color_unavailable", body["warnings"])
 
     def test_mediapipe_runtime_failure_degrades_to_warning(self):
@@ -2262,6 +2363,118 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.character.refresh_from_db()
         self.assertEqual(self.character.model3d_params, {"torso": {"chestWidth": 0.9}})
 
+    @patch("w_craft_back.character_studio.views.compute_autofit")
+    def test_generating_profile_keeps_autofit_retryable(self, compute):
+        compute.side_effect = [
+            {
+                "params": {"nose": {"noseTip": 0.0}},
+                "warnings": ["no_profile_reference"],
+                "sources": {"profile": None, "profile_pending": True},
+            },
+            {
+                "params": {"nose": {"noseTip": 0.6}},
+                "warnings": [],
+                "sources": {"profile": "profile-id", "profile_pending": False},
+            },
+        ]
+
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(first.json()["autofit_version"], 4)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(second.json()["autofit_version"], 5)
+        self.assertEqual(second.json()["params"]["nose"]["noseTip"], 0.6)
+        self.assertEqual(compute.call_count, 2)
+
+    def test_legacy_autofit_is_upgraded_without_overwriting_saved_values(self):
+        self.character.model3d_params = {"torso": {"chestWidth": 0.9}}
+        self.character.model3d_autofit_done = True
+        self.character.model3d_autofit_version = 0
+        self.character.save(update_fields=[
+            "model3d_params",
+            "model3d_autofit_done",
+            "model3d_autofit_version",
+        ])
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        self.assertEqual(params["torso"]["chestWidth"], 0.9)
+        self.assertEqual(params["hair"]["hairColor"], "#b9653b")
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.model3d_autofit_version, 5)
+
+    @patch("w_craft_back.character_studio.views.compute_autofit")
+    def test_v2_upgrade_replaces_ignored_face_defaults(self, compute):
+        self.character.model3d_params = {
+            "nose": {"noseTip": 0.0, "noseWidth": 0.25},
+            "eyes": {"eyeSize": 0.0},
+            "torso": {"chestWidth": 0.9},
+        }
+        self.character.model3d_autofit_done = True
+        self.character.model3d_autofit_version = 2
+        self.character.save(update_fields=[
+            "model3d_params",
+            "model3d_autofit_done",
+            "model3d_autofit_version",
+        ])
+        compute.return_value = {
+            "params": {
+                "nose": {"noseTip": 0.7, "noseWidth": 0.9},
+                "eyes": {"eyeSize": 0.4},
+            },
+            "warnings": [],
+            "sources": {"profile": "profile-id"},
+        }
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        self.assertEqual(params["nose"]["noseTip"], 0.7)
+        self.assertEqual(params["nose"]["noseWidth"], 0.25)
+        self.assertEqual(params["eyes"]["eyeSize"], 0.4)
+        self.assertEqual(params["torso"]["chestWidth"], 0.9)
+
+    @patch("w_craft_back.character_studio.views.compute_autofit")
+    def test_v3_upgrade_refreshes_sampled_colors_only(self, compute):
+        self.character.model3d_params = {
+            "eyes": {"eyeColor": "#141c2b", "eyeSize": 0.55},
+            "hair": {"hairColor": "#f2cab1", "hairLength": 0.8},
+            "skin_color": {"skinTone": "#e8bea8", "skinSaturation": 0.3},
+        }
+        self.character.model3d_autofit_done = True
+        self.character.model3d_autofit_version = 3
+        self.character.save(update_fields=[
+            "model3d_params",
+            "model3d_autofit_done",
+            "model3d_autofit_version",
+        ])
+        compute.return_value = {
+            "params": {
+                "eyes": {"eyeColor": "#5c6f81", "eyeSize": -0.4},
+                "hair": {"hairColor": "#da9b6f", "hairLength": 0.2},
+                "skin_color": {"skinTone": "#f0c6ad", "skinSaturation": -0.2},
+            },
+            "warnings": [],
+            "sources": {},
+        }
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        self.assertEqual(params["eyes"], {"eyeColor": "#5c6f81", "eyeSize": 0.55})
+        self.assertEqual(params["hair"], {"hairColor": "#da9b6f", "hairLength": 0.8})
+        self.assertEqual(
+            params["skin_color"],
+            {"skinTone": "#f0c6ad", "skinSaturation": 0.3},
+        )
+        self.assertEqual(response.json()["autofit_version"], 5)
+
     def test_model3d_get_reports_autofit_done(self):
         get_url = (
             f"/api/projects/{self.project.id}/characters/"
@@ -2269,12 +2482,14 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         )
         before = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
         self.assertFalse(before.json()["autofit_done"])
+        self.assertEqual(before.json()["autofit_version"], 0)
         media_root = tempfile.mkdtemp()
         with override_settings(MEDIA_ROOT=media_root):
             self._create_portrait(media_root)
             self._post()
         after = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
         self.assertTrue(after.json()["autofit_done"])
+        self.assertEqual(after.json()["autofit_version"], 5)
 
     def test_metrics_canonical_face_is_neutral_oval(self):
         metrics = metrics_from_landmarks(self._landmarks())
@@ -2300,7 +2515,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertGreater(metrics["eyes"]["eyeTilt"], 0)
 
     def test_short_face_classified_round(self):
-        metrics = metrics_from_landmarks(self._landmarks({152: (0.5, 1.0)}))
+        metrics = metrics_from_landmarks(self._landmarks({152: (0.5, 0.45)}))
         self.assertEqual(metrics["face_shape"]["shape"], "round")
 
     def test_long_face_with_narrow_jaw_classified_heart(self):
@@ -2321,10 +2536,42 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertGreater(metrics["jaw_chin"]["jawWidth"], 0)
 
     def test_classify_face_shape_thresholds(self):
-        self.assertEqual(classify_face_shape(1.2, 0.78), "round")
-        self.assertEqual(classify_face_shape(1.6, 0.70), "heart")
-        self.assertEqual(classify_face_shape(1.4, 0.90), "square")
-        self.assertEqual(classify_face_shape(1.4, 0.78), "oval")
+        self.assertEqual(classify_face_shape(0.60, 0.78), "round")
+        self.assertEqual(classify_face_shape(0.80, 0.70), "heart")
+        self.assertEqual(classify_face_shape(0.70, 0.90), "square")
+        self.assertEqual(classify_face_shape(0.70, 0.78), "oval")
+
+    @staticmethod
+    def _profile_landmarks(mirror=False):
+        sign = -1 if mirror else 1
+        return {
+            10: (0.0, 0.0),
+            152: (0.0, 1.0),
+            1: (0.24 * sign, 0.40),
+            168: (0.045 * sign, 0.25),
+            13: (0.075 * sign, 0.55),
+            14: (0.075 * sign, 0.58),
+            234: (-0.50 * sign, 0.50),
+            454: (0.75 * sign, 0.50),
+            175: (0.04 * sign, 1.0),
+        }
+
+    def test_profile_metrics_are_neutral_at_canonical_depth(self):
+        metrics = profile_metrics_from_landmarks(self._profile_landmarks())
+        for zone in metrics.values():
+            for value in zone.values():
+                self.assertAlmostEqual(value, 0.0, delta=0.02)
+
+    def test_profile_metrics_are_mirror_invariant(self):
+        left = profile_metrics_from_landmarks(self._profile_landmarks())
+        right = profile_metrics_from_landmarks(self._profile_landmarks(mirror=True))
+        self.assertEqual(left, right)
+
+    def test_projecting_nose_in_profile_increases_nose_tip(self):
+        points = self._profile_landmarks()
+        points[1] = (0.34, 0.40)
+        metrics = profile_metrics_from_landmarks(points)
+        self.assertGreater(metrics["nose"]["noseTip"], 0.5)
 
     def test_metrics_reject_degenerate_landmarks(self):
         flat = {index: (0.5, 0.5) for index in self._landmarks()}
@@ -2471,7 +2718,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         body = response.json()
         self.assertEqual(response.status_code, 200, response.content)
         self.assertIn("no_full_body", body["warnings"])
-        self.assertNotIn("shoulders", body["params"])
+        self.assertEqual(body["params"]["shoulders"]["shouldersWidth"], -0.08)
 
     def test_autofit_skips_body_when_pose_not_frontal(self):
         media_root = tempfile.mkdtemp()
@@ -2486,7 +2733,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         body = response.json()
         self.assertEqual(response.status_code, 200, response.content)
         self.assertIn("body_pose_not_frontal", body["warnings"])
-        self.assertNotIn("shoulders", body["params"])
+        self.assertEqual(body["params"]["shoulders"]["shouldersWidth"], -0.08)
 
     def test_foreign_user_token_rejected(self):
         intruder = User.objects.create_user(username="intruder", password="x")
@@ -2587,6 +2834,75 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         pts = self._face_landmark_list()
         pts[10] = (0.5, 0.0)  # forehead pinned to the very top
         self.assertIsNone(hair_band_box(pts, 256, 256))
+
+    def test_fallback_hair_box_samples_crown_instead_of_forehead(self):
+        from PIL import Image
+
+        hair = (198, 126, 73)
+        skin = (238, 192, 166)
+        image = Image.new("RGB", (100, 180), skin)
+        image.paste(hair, (30, 9, 70, 29))
+
+        box = _hair_sample_box((30, 45, 70, 135), image.height)
+        color = _hair_band_color(image, box)
+
+        self.assertLess(
+            self._color_distance(color, hair),
+            self._color_distance(color, skin),
+        )
+
+    def test_hair_band_color_rejects_bright_highlights(self):
+        from PIL import Image
+
+        copper = (190, 110, 60)
+        highlight = (242, 202, 177)
+        image = Image.new("RGB", (20, 10), copper)
+        for x in range(10, 20):
+            for y in range(10):
+                image.putpixel((x, y), highlight)
+
+        color = _hair_band_color(image, (0, 0, 20, 10))
+        self.assertLess(
+            self._color_distance(color, copper),
+            self._color_distance(color, highlight),
+        )
+
+    def test_iris_color_ignores_dark_pupil_and_highlight(self):
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (100, 50), (245, 245, 245))
+        draw = ImageDraw.Draw(image)
+        points = [(0.0, 0.0)] * 478
+        for center_index, ring, center_x in (
+            (468, (469, 470, 471, 472), 0.3),
+            (473, (474, 475, 476, 477), 0.7),
+        ):
+            pixel_x = int(center_x * image.width)
+            pixel_y = int(0.5 * image.height)
+            draw.ellipse(
+                (pixel_x - 8, pixel_y - 8, pixel_x + 8, pixel_y + 8),
+                fill=(80, 150, 220),
+            )
+            draw.ellipse(
+                (pixel_x - 3, pixel_y - 3, pixel_x + 3, pixel_y + 3),
+                fill=(8, 8, 12),
+            )
+            draw.ellipse(
+                (pixel_x + 2, pixel_y - 5, pixel_x + 5, pixel_y - 2),
+                fill=(255, 255, 255),
+            )
+            points[center_index] = (center_x, 0.5)
+            points[ring[0]] = (center_x - 0.08, 0.5)
+            points[ring[1]] = (center_x, 0.34)
+            points[ring[2]] = (center_x + 0.08, 0.5)
+            points[ring[3]] = (center_x, 0.66)
+
+        color = _iris_color(image, points)
+        self.assertIsNotNone(color)
+        red, green, blue = self._rgb(color)
+        self.assertGreater(blue, red + 80)
+        self.assertGreater(green, red + 30)
+
 
     # ── Integration: skin colour comes from the masked region ──
 

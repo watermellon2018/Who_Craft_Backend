@@ -223,6 +223,9 @@ class StudioCharacter(models.Model):
     # this flag stops it from overwriting the user's manual edits on later
     # opens, even if they reset everything back to defaults.
     model3d_autofit_done = models.BooleanField(default=False)
+    # Incremented when a new autofit profile has been applied. This lets the
+    # editor upgrade old sparse fits without overwriting manual parameters.
+    model3d_autofit_version = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,11 +1,9 @@
 """Suggest 3D-editor parameters from a character's reference images.
 
-The autofit endpoint is advisory: it reads the latest READY portrait,
-extracts a handful of colors and facial proportions, and returns them in
-the same ``{zone_id: {param_id: value}}`` document the editor saves via
-the regular ``/model3d`` PUT. Nothing is persisted here — the user reviews
-the suggestion in the editor first, so the single existing write path
-keeps doing the clamping and revision bookkeeping.
+The autofit pipeline reads the latest READY portrait, profile (or 3/4), and
+full-body references. The portrait supplies colors and frontal proportions;
+the profile supplies depth-sensitive nose, lip, chin, and face controls. It
+returns the same ``{zone_id: {param_id: value}}`` document the 3D editor saves.
 
 Two quality tiers, decided at runtime:
 
@@ -59,10 +57,20 @@ CHIN = 152
 FOREHEAD = 10
 JAW_LEFT = 172
 JAW_RIGHT = 397
+NOSE_BRIDGE = 168
+NOSE_TIP = 1
+NOSE_BASE = 2
+UPPER_LIP_TOP = 0
+UPPER_LIP_INNER = 13
+LOWER_LIP_INNER = 14
+LOWER_LIP_BOTTOM = 17
+JAW_UNDERSIDE = 175
 # Iris centers only exist when FaceMesh runs with refine_landmarks=True
 # (478-point topology).
 LEFT_IRIS_CENTER = 468
 RIGHT_IRIS_CENTER = 473
+LEFT_IRIS_RING = (469, 470, 471, 472)
+RIGHT_IRIS_RING = (474, 475, 476, 477)
 
 # Ordered FaceMesh contour rings (canonical 468-point topology, stable across
 # mediapipe releases). Hardcoded as plain tuples so the skin-mask geometry is
@@ -123,6 +131,232 @@ CANON_UPPER_FOREARM = 1.15  # upper-arm segment / forearm segment
 POSE_MIN_VISIBILITY = 0.6
 POSE_MAX_Z_SPREAD = 0.18    # |z| gap of shoulders/hips; larger = turned
 POSE_ARM_GATE_FLOOR = 0.15  # below this elbow-straightness, drop arm length
+MODEL3D_AUTOFIT_VERSION = 5
+
+
+HAIR_COLORS = (
+    ("strawberry blonde", "#c98257"),
+    ("copper", "#b9653b"),
+    ("blonde", "#d5ae72"),
+    ("blond", "#d5ae72"),
+    ("auburn", "#8b4a2f"),
+    ("ginger", "#b9653b"),
+    ("red", "#a94f32"),
+    ("brown", "#5b3828"),
+    ("black", "#1e1a18"),
+    ("gray", "#8a8580"),
+    ("white", "#d9d5ce"),
+)
+EYE_COLORS = (
+    ("light blue", "#5d9ed1"),
+    ("blue", "#3a6ca8"),
+    ("green", "#4f7447"),
+    ("hazel", "#7a5b32"),
+    ("brown", "#5b3828"),
+    ("gray", "#7b8791"),
+    ("amber", "#9a6b2f"),
+)
+SKIN_COLORS = (
+    ("very light", "#f0d8c0"),
+    ("fair", "#f0d8c0"),
+    ("light", "#e7c5aa"),
+    ("warm", "#dac0a3"),
+    ("olive", "#b58a6a"),
+    ("tan", "#a87555"),
+    ("dark", "#5a3a2a"),
+)
+CLOTHING_COLORS = (
+    ("navy blue", "#263a55"),
+    ("navy", "#263a55"),
+    ("dark blue", "#2f4663"),
+    ("burgundy", "#6b3b3b"),
+    ("black", "#232329"),
+    ("blue", "#3b5266"),
+    ("green", "#3b5a3b"),
+    ("beige", "#c9b99b"),
+    ("white", "#dedbd2"),
+    ("red", "#8a4542"),
+)
+BODY_PRESETS = {
+    "slim": {
+        "torso": {"chestWidth": -0.2, "chestDepth": -0.15},
+        "waist": {"waistWidth": -0.25},
+        "hips": {"hipsWidth": -0.1},
+        "upper_arm": {"volume": -0.2},
+        "thigh": {"thighVolume": -0.15},
+    },
+    "athletic": {
+        "shoulders": {"shouldersWidth": 0.25},
+        "torso": {"chestWidth": 0.15},
+        "waist": {"waistWidth": -0.1},
+        "upper_arm": {"volume": 0.2, "definition": 0.35},
+        "thigh": {"thighVolume": 0.15},
+    },
+    "muscular": {
+        "shoulders": {"shouldersWidth": 0.45},
+        "torso": {"chestWidth": 0.35, "chestDepth": 0.3},
+        "upper_arm": {"volume": 0.45, "definition": 0.55},
+        "thigh": {"thighVolume": 0.35},
+    },
+    "heavy": {
+        "torso": {"chestWidth": 0.3, "chestDepth": 0.35},
+        "waist": {"waistWidth": 0.45},
+        "hips": {"hipsWidth": 0.35},
+        "upper_arm": {"volume": 0.25},
+        "thigh": {"thighVolume": 0.3},
+    },
+}
+
+
+def _merge_missing(params, suggestions):
+    """Merge character-authored suggestions without replacing existing values."""
+    for zone_id, values in suggestions.items():
+        zone = params.setdefault(zone_id, {})
+        for param_id, value in values.items():
+            zone.setdefault(param_id, value)
+
+
+def _hex_or_named_color(value, palette):
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    is_hex = len(normalized) == 7 and (
+        normalized.startswith("#")
+        and all(char in "0123456789abcdef" for char in normalized[1:])
+    )
+    if is_hex:
+        return normalized
+    return next(
+        (color for keyword, color in palette if keyword in normalized),
+        None,
+    )
+
+
+def _character_authored_params(character):
+    """Translate the open character's structured appearance into 3D zones."""
+    appearance = getattr(character, "active_appearance", None)
+    descriptions = (
+        str(getattr(appearance, "source_description", "") or ""),
+        str(getattr(appearance, "appearance_prompt", "") or ""),
+        str(getattr(character, "short_description", "") or ""),
+        str(getattr(character, "clothing_description", "") or ""),
+    )
+    text = " ".join(filter(None, descriptions)).lower()
+    params = {}
+
+    face_shape = str(getattr(appearance, "face_shape", "") or "").lower()
+    if face_shape in {"oval", "round", "square", "heart"}:
+        params["face_shape"] = {"shape": face_shape}
+    for field, palette, zone, param_id in (
+        ("skin_tone", SKIN_COLORS, "skin_color", "skinTone"),
+        ("eye_color", EYE_COLORS, "eyes", "eyeColor"),
+        ("hair_color", HAIR_COLORS, "hair", "hairColor"),
+    ):
+        authored_value = getattr(appearance, field, "") or text
+        color = _hex_or_named_color(authored_value, palette)
+        if color:
+            params.setdefault(zone, {})[param_id] = color
+
+    hair_length = str(getattr(appearance, "hair_length", "") or "").lower()
+    if not hair_length:
+        lengths = ("bald", "very_long", "long", "medium", "short")
+        hair_length = next(
+            (value for value in lengths if value.replace("_", " ") in text),
+            "",
+        )
+    length_profile = {
+        "bald": ("none", 0.0),
+        "buzz": ("default", 0.05),
+        "short": ("default", 0.2),
+        "bob": ("bob", 0.45),
+        "medium": ("bob", 0.6),
+        "shoulder_length": ("long", 0.72),
+        "long": ("long", 0.9),
+        "very_long": ("long", 1.0),
+    }.get(hair_length)
+    if length_profile:
+        hair = params.setdefault("hair", {})
+        hair["hairStyle"], hair["hairLength"] = length_profile
+    style_text = f"{getattr(appearance, 'hair_style', '')} {text}".lower()
+    for keyword, style in (
+        ("ponytail", "ponytail"),
+        ("bun", "bun"),
+        ("afro", "afro"),
+        ("bob", "bob"),
+    ):
+        if keyword in style_text:
+            params.setdefault("hair", {})["hairStyle"] = style
+            break
+    for keyword in ("curly", "wavy", "straight"):
+        if keyword in style_text:
+            params.setdefault("hair", {})["hairShape"] = keyword
+            break
+
+    body_type = str(getattr(appearance, "body_type", "") or "").lower()
+    if not body_type:
+        body_type = next((key for key in BODY_PRESETS if key in text), "")
+    _merge_missing(params, BODY_PRESETS.get(body_type, {}))
+    gender = str(getattr(character, "gender", "") or "").lower()
+    if gender in {"female", "girl", "woman"}:
+        _merge_missing(
+            params,
+            {
+                "shoulders": {"shouldersWidth": -0.08},
+                "hips": {"hipsWidth": 0.12},
+            },
+        )
+    elif gender in {"male", "boy", "man"}:
+        _merge_missing(
+            params,
+            {
+                "shoulders": {"shouldersWidth": 0.12},
+                "hips": {"hipsWidth": -0.12},
+            },
+        )
+
+    posture = str(getattr(appearance, "posture", "") or "").lower()
+    posture_profile = {
+        "slouched": {
+            "posturePreset": "slouched",
+            "postureStraightness": -0.45,
+        },
+        "confident": {
+            "posturePreset": "confident",
+            "postureStraightness": 0.35,
+        },
+        "elegant": {
+            "posturePreset": "elegant",
+            "postureStraightness": 0.2,
+        },
+        "relaxed": {
+            "posturePreset": "neutral",
+            "postureStraightness": -0.08,
+        },
+    }.get(posture)
+    if posture_profile:
+        params["posture"] = posture_profile
+
+    outfit = getattr(character, "active_outfit", None)
+    palette = getattr(outfit, "color_palette", None) or []
+    colors = [
+        color
+        for color in palette
+        if _hex_or_named_color(color, CLOTHING_COLORS)
+    ]
+    clothing_text = (
+        f"{getattr(character, 'clothing_description', '')} "
+        f"{getattr(outfit, 'description', '')}"
+    )
+    top_source = colors[0] if colors else clothing_text
+    top_color = _hex_or_named_color(top_source, CLOTHING_COLORS)
+    if top_color:
+        params["clothing_top"] = {"enabled": True, "color": top_color}
+    if len(colors) > 1:
+        params["clothing_bottom"] = {
+            "enabled": True,
+            "color": _hex_or_named_color(colors[1], CLOTHING_COLORS),
+        }
+    return params
 
 
 def compute_autofit(character):
@@ -133,24 +367,47 @@ def compute_autofit(character):
     can hand it straight to the editor; ``warnings`` are short snake_case
     codes explaining which extractions were skipped and why.
 
-    Face proportions/colors come from the portrait (FaceMesh); body
-    proportions come from the full-body reference (Pose), gated on a
-    confident frontal detection. Both stages degrade independently.
+    Face widths and colors come from the portrait (FaceMesh); depth-sensitive
+    controls come from the profile or three-quarter view; body proportions
+    come from the full-body reference (Pose). Stages degrade independently.
     """
     portrait = _latest_ready_asset(character, CharacterAssetType.PORTRAIT)
+    profile = _latest_ready_asset(character, CharacterAssetType.PROFILE)
+    profile_type = CharacterAssetType.PROFILE
+    if profile is None:
+        profile = _latest_ready_asset(character, CharacterAssetType.THREE_QUARTER)
+        profile_type = CharacterAssetType.THREE_QUARTER
     full_body = _latest_ready_asset(character, CharacterAssetType.FULL_BODY)
+    appearance = getattr(character, "active_appearance", None)
+    outfit = getattr(character, "active_outfit", None)
     sources = {
         "portrait": str(portrait.asset_id) if portrait else None,
+        "profile": str(profile.asset_id) if profile else None,
+        "profile_type": profile_type if profile else None,
+        "profile_pending": profile is None and character.assets.filter(
+            asset_type__in=(
+                CharacterAssetType.PROFILE,
+                CharacterAssetType.THREE_QUARTER,
+            ),
+            status=CharacterAssetStatus.GENERATING,
+        ).exists(),
         "full_body": str(full_body.asset_id) if full_body else None,
+        "appearance": str(appearance.appearance_id) if appearance else None,
+        "outfit": str(outfit.outfit_id) if outfit else None,
     }
+    params = _character_authored_params(character)
 
     if portrait is None:
-        return {"params": {}, "warnings": ["no_portrait"], "sources": sources}
+        return {
+            "params": validate_model3d_params(params),
+            "warnings": ["no_portrait"],
+            "sources": sources,
+        }
 
     image = _open_asset_image(portrait)
     if image is None:
         return {
-            "params": {},
+            "params": validate_model3d_params(params),
             "warnings": ["portrait_unreadable"],
             "sources": sources,
         }
@@ -166,8 +423,6 @@ def compute_autofit(character):
         landmarks = None
     face_box = _face_box(image, landmarks)
 
-    params = {}
-
     # ── Skin colour ──
     # Prefer the landmark mask (face oval minus eyes/brows/mouth): it samples
     # real skin, where the old lower-central box caught lips/shadow/beard.
@@ -178,7 +433,7 @@ def compute_autofit(character):
         warnings.append("skin_segmentation_unavailable")
         skin = _median_color(image, _skin_sample_box(face_box))
     if skin:
-        params["skin_color"] = {"skinTone": skin}
+        params.setdefault("skin_color", {})["skinTone"] = skin
 
     # ── Hair colour ──
     # Hair has no real segmentation under the mediapipe pin (would need a
@@ -192,9 +447,9 @@ def compute_autofit(character):
     if hair_box is None:
         warnings.append("hair_segmentation_unavailable")
         hair_box = _hair_sample_box(face_box, image.height)
-    hair = _median_color(image, hair_box)
+    hair = _hair_band_color(image, hair_box)
     if hair:
-        params["hair"] = {"hairColor": hair}
+        params.setdefault("hair", {}).setdefault("hairColor", hair)
 
     if landmarks is None:
         warnings.append("landmarks_unavailable")
@@ -207,21 +462,51 @@ def compute_autofit(character):
             # edge) — proportions would be noise, better to leave sliders.
             metrics = {}
             warnings.append("landmarks_unavailable")
-        params.update(metrics)
+        for zone_id, values in metrics.items():
+            params.setdefault(zone_id, {}).update(values)
         eye_color = _iris_color(image, landmarks)
         if eye_color:
             params.setdefault("eyes", {})["eyeColor"] = eye_color
         else:
             warnings.append("eye_color_unavailable")
 
+    # ── Profile depth from the dedicated side/three-quarter reference ──
+    _apply_profile_metrics(profile, profile_type, params, warnings)
+
     # ── Body proportions from the full-body reference (best effort) ──
     _apply_body_metrics(full_body, params, warnings)
-
     return {
         "params": validate_model3d_params(params),
         "warnings": warnings,
         "sources": sources,
     }
+
+
+def _apply_profile_metrics(profile, profile_type, params, warnings):
+    """Fold depth-sensitive controls from profile or three-quarter landmarks."""
+    if profile is None:
+        warnings.append("no_profile_reference")
+        return
+    image = _open_asset_image(profile)
+    if image is None:
+        warnings.append("profile_unreadable")
+        return
+    try:
+        landmarks = _mediapipe_landmarks(image)
+    except Exception:
+        logger.warning("autofit: profile landmark extraction failed", exc_info=True)
+        landmarks = None
+    if landmarks is None:
+        warnings.append("profile_landmarks_unavailable")
+        return
+    try:
+        scale = 1.8 if profile_type == CharacterAssetType.THREE_QUARTER else 1.0
+        metrics = profile_metrics_from_landmarks(landmarks, projection_scale=scale)
+    except ValueError:
+        warnings.append("profile_landmarks_unavailable")
+        return
+    for zone_id, values in metrics.items():
+        params.setdefault(zone_id, {}).update(values)
 
 
 def _apply_body_metrics(full_body, params, warnings):
@@ -266,15 +551,7 @@ def _apply_body_metrics(full_body, params, warnings):
 
 
 def metrics_from_landmarks(points):
-    """Map normalized FaceMesh points to facial-proportion zone params.
-
-    ``points`` is a sequence or mapping of landmark index → ``(x, y)`` in
-    normalized image coordinates (y grows downward, as mediapipe emits
-    them). Each ratio is compared against a canonical human proportion and
-    scaled so that "one scale unit" of deviation fills the editor's
-    [-1, 1] slider range. Raises ``ValueError`` when the required points
-    are missing or the face box degenerates to a line.
-    """
+    """Map a frontal FaceMesh detection to the editor's face controls."""
     face_width = _dist(_point(points, FACE_LEFT), _point(points, FACE_RIGHT))
     face_height = _dist(_point(points, FOREHEAD), _point(points, CHIN))
     if face_width < 1e-6 or face_height < 1e-6:
@@ -283,8 +560,12 @@ def metrics_from_landmarks(points):
     eye_gap = _dist(_point(points, LEFT_EYE_INNER), _point(points, RIGHT_EYE_INNER))
     left_eye = _dist(_point(points, LEFT_EYE_OUTER), _point(points, LEFT_EYE_INNER))
     right_eye = _dist(_point(points, RIGHT_EYE_INNER), _point(points, RIGHT_EYE_OUTER))
-    nose = _dist(_point(points, NOSE_WING_LEFT), _point(points, NOSE_WING_RIGHT))
-    mouth = _dist(_point(points, MOUTH_LEFT), _point(points, MOUTH_RIGHT))
+    nose_width = _dist(_point(points, NOSE_WING_LEFT), _point(points, NOSE_WING_RIGHT))
+    nose_length = _dist(_point(points, NOSE_BRIDGE), _point(points, NOSE_BASE))
+    mouth_width = _dist(_point(points, MOUTH_LEFT), _point(points, MOUTH_RIGHT))
+    upper_lip = _dist(_point(points, UPPER_LIP_TOP), _point(points, UPPER_LIP_INNER))
+    lower_lip = _dist(_point(points, LOWER_LIP_INNER), _point(points, LOWER_LIP_BOTTOM))
+    chin_length = _dist(_point(points, LOWER_LIP_BOTTOM), _point(points, CHIN))
     jaw = _dist(_point(points, JAW_LEFT), _point(points, JAW_RIGHT))
 
     tilt = statistics.mean((
@@ -293,6 +574,15 @@ def metrics_from_landmarks(points):
     ))
     eye_size = statistics.mean((left_eye, right_eye)) / face_width
     jaw_ratio = jaw / face_width
+    mouth_center_y = statistics.mean((
+        _point(points, UPPER_LIP_INNER)[1],
+        _point(points, LOWER_LIP_INNER)[1],
+    ))
+    corner_y = statistics.mean((
+        _point(points, MOUTH_LEFT)[1],
+        _point(points, MOUTH_RIGHT)[1],
+    ))
+    corner_lift = (mouth_center_y - corner_y) / max(mouth_width, 1e-6)
 
     return {
         "eyes": {
@@ -300,25 +590,92 @@ def metrics_from_landmarks(points):
             "eyeTilt": _clamp(tilt / 0.20),
             "eyeSize": _scaled(eye_size, 0.205, 0.06),
         },
-        "nose": {"noseWidth": _scaled(nose / face_width, 0.20, 0.07)},
-        "mouth": {"mouthWidth": _scaled(mouth / face_width, 0.35, 0.10)},
-        "jaw_chin": {"jawWidth": _scaled(jaw_ratio, 0.78, 0.12)},
+        "nose": {
+            "noseLength": _scaled(nose_length / face_height, 0.32, 0.08),
+            "noseWidth": _scaled(nose_width / face_width, 0.20, 0.07),
+        },
+        "mouth": {
+            "mouthWidth": _scaled(mouth_width / face_width, 0.35, 0.10),
+            "upperLip": _scaled(upper_lip / face_height, 0.025, 0.018),
+            "lowerLip": _scaled(lower_lip / face_height, 0.040, 0.022),
+            "cornerLift": _scaled(corner_lift, 0.02, 0.10),
+        },
+        "jaw_chin": {
+            "jawWidth": _scaled(jaw_ratio, 0.78, 0.12),
+            "chinLength": _scaled(chin_length / face_height, 0.19, 0.06),
+        },
         "face_shape": {
             "shape": classify_face_shape(face_height / face_width, jaw_ratio),
         },
     }
 
 
-def classify_face_shape(height_ratio, jaw_ratio):
-    """Bucket face proportions into the editor's shape presets.
+def _signed_line_projection(point, line_start, line_end):
+    """Perpendicular distance to a 2D line, normalized by line length."""
+    dx = line_end[0] - line_start[0]
+    dy = line_end[1] - line_start[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        raise ValueError("degenerate profile landmarks")
+    return (
+        (point[0] - line_start[0]) * (-dy)
+        + (point[1] - line_start[1]) * dx
+    ) / (length * length)
 
-    ``height_ratio`` is face_height/face_width, ``jaw_ratio`` is
-    jaw_width/face_width. Thresholds are coarse on purpose: the preset
-    only seeds the morph, the user fine-tunes from there.
+
+def profile_metrics_from_landmarks(points, projection_scale=1.0):
+    """Map profile/three-quarter landmarks to depth-sensitive face controls.
+
+    The sign is deliberately discarded: generated references may face left or
+    right. ``projection_scale`` compensates a known 30-degree three-quarter
+    view; an exact profile uses the default 1.0.
     """
-    if height_ratio < 1.32:
+    forehead = _point(points, FOREHEAD)
+    chin = _point(points, CHIN)
+    face_height = _dist(forehead, chin)
+    if face_height < 1e-6:
+        raise ValueError("degenerate profile landmarks")
+
+    def projection(index):
+        value = _signed_line_projection(_point(points, index), forehead, chin)
+        return abs(value) * projection_scale
+
+    nose_projection = projection(NOSE_TIP)
+    bridge_projection = projection(NOSE_BRIDGE)
+    upper_lip_projection = projection(UPPER_LIP_INNER)
+    lower_lip_projection = projection(LOWER_LIP_INNER)
+    side_a = _signed_line_projection(_point(points, FACE_LEFT), forehead, chin)
+    side_b = _signed_line_projection(_point(points, FACE_RIGHT), forehead, chin)
+    nose_signed = _signed_line_projection(_point(points, NOSE_TIP), forehead, chin)
+    profile_span = max(side_a, side_b, nose_signed) - min(
+        side_a, side_b, nose_signed,
+    )
+    face_depth = profile_span * projection_scale
+    chin_projection = abs(_signed_line_projection(
+        _point(points, CHIN),
+        forehead,
+        _point(points, JAW_UNDERSIDE),
+    )) * projection_scale
+
+    return {
+        "face_shape": {"faceDepth": _scaled(face_depth, 1.25, 0.30)},
+        "nose": {
+            "noseTip": _scaled(nose_projection, 0.24, 0.10),
+            "bridgeHeight": _scaled(bridge_projection, 0.045, 0.030),
+        },
+        "mouth": {
+            "upperLip": _scaled(upper_lip_projection, 0.075, 0.050),
+            "lowerLip": _scaled(lower_lip_projection, 0.075, 0.050),
+        },
+        "jaw_chin": {"chinShape": _scaled(chin_projection, 0.040, 0.030)},
+    }
+
+
+def classify_face_shape(height_ratio, jaw_ratio):
+    """Bucket real FaceMesh height/width and jaw/width ratios."""
+    if height_ratio < 0.64:
         return "round"
-    if height_ratio > 1.5 and jaw_ratio < 0.74:
+    if height_ratio > 0.76 and jaw_ratio < 0.74:
         return "heart"
     if jaw_ratio > 0.84:
         return "square"
@@ -691,8 +1048,10 @@ def _mediapipe_pose(image):
 def _face_box(image, landmarks):
     """Pixel-space face box from landmarks, else a heuristic central crop."""
     if landmarks:
-        xs = [p[0] for p in landmarks]
-        ys = [p[1] for p in landmarks]
+        values = landmarks.values() if hasattr(landmarks, "values") else landmarks
+        values = list(values)
+        xs = [point[0] for point in values]
+        ys = [point[1] for point in values]
         return (
             min(xs) * image.width,
             min(ys) * image.height,
@@ -723,13 +1082,15 @@ def _skin_sample_box(face_box):
 
 
 def _hair_sample_box(face_box, image_height):
-    """Horizontal band just above the face box; top of frame as fallback."""
+    """Sample the crown above the forehead; use the frame top as fallback."""
     left, top, right, bottom = face_box
-    band_top = max(0.0, top - 0.25 * (bottom - top))
-    if top - band_top < 1.0:
+    face_height = bottom - top
+    band_top = max(0.0, top - 0.40 * face_height)
+    band_bottom = max(0.0, top - 0.14 * face_height)
+    if band_bottom - band_top < 1.0:
         # Face box touches the frame edge — sample the top of the image.
         return (left, 0.0, right, 0.12 * image_height)
-    return (left, band_top, right, top)
+    return (left, band_top, right, band_bottom)
 
 
 def hair_band_box(points, width, height):
@@ -787,18 +1148,74 @@ def hair_band_box(points, width, height):
 
 
 def _iris_color(image, landmarks):
-    """Median color around the iris centers, or None without refined points."""
-    if landmarks is None or len(landmarks) <= RIGHT_IRIS_CENTER:
+    """Median iris color with the dark pupil and bright highlights excluded."""
+    iris_specs = (
+        (LEFT_IRIS_CENTER, LEFT_IRIS_RING),
+        (RIGHT_IRIS_CENTER, RIGHT_IRIS_RING),
+    )
+    last_index = max(index for _, ring in iris_specs for index in ring)
+    if landmarks is None or len(landmarks) <= last_index:
         return None
-    radius = max(2.0, 0.01 * min(image.width, image.height))
+
     pixels = []
-    for index in (LEFT_IRIS_CENTER, RIGHT_IRIS_CENTER):
-        x = landmarks[index][0] * image.width
-        y = landmarks[index][1] * image.height
-        pixels.extend(
-            _region_pixels(image, (x - radius, y - radius, x + radius, y + radius))
+    for center_index, ring in iris_specs:
+        center_x = landmarks[center_index][0] * image.width
+        center_y = landmarks[center_index][1] * image.height
+        radius_x = max(
+            abs(landmarks[index][0] * image.width - center_x)
+            for index in ring
         )
-    return _median_hex(pixels)
+        radius_y = max(
+            abs(landmarks[index][1] * image.height - center_y)
+            for index in ring
+        )
+        if radius_x < 1.0 or radius_y < 1.0:
+            continue
+
+        left = max(0, int(center_x - radius_x))
+        right = min(image.width, int(center_x + radius_x) + 1)
+        top = max(0, int(center_y - radius_y))
+        bottom = min(image.height, int(center_y + radius_y) + 1)
+        for y in range(top, bottom):
+            for x in range(left, right):
+                normalized_radius = (
+                    ((x - center_x) / radius_x) ** 2
+                    + ((y - center_y) / radius_y) ** 2
+                )
+                if 0.18 <= normalized_radius <= 0.92:
+                    pixels.append(image.getpixel((x, y)))
+
+    if not pixels:
+        return None
+
+    # Stylized portraits often devote most center pixels to a near-black pupil.
+    # Keep the middle-brightness part of the iris annulus so pupil/eyelashes and
+    # sclera/highlights cannot dominate the median.
+    ranked = sorted((
+        0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2],
+        pixel,
+    ) for pixel in pixels)
+    low = ranked[int((len(ranked) - 1) * 0.45)][0]
+    high = ranked[int((len(ranked) - 1) * 0.85)][0]
+    return _median_hex([
+        pixel for luminance, pixel in ranked if low <= luminance <= high
+    ])
+
+
+def _hair_band_color(image, box):
+    """Hair color from the darker middle of a highlight-heavy crown band."""
+    pixels = _region_pixels(image, box)
+    if not pixels:
+        return None
+    ranked = sorted((
+        0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2],
+        pixel,
+    ) for pixel in pixels)
+    low = ranked[int((len(ranked) - 1) * 0.10)][0]
+    high = ranked[int((len(ranked) - 1) * 0.60)][0]
+    return _median_hex([
+        pixel for luminance, pixel in ranked if low <= luminance <= high
+    ])
 
 
 def _median_color(image, box):
