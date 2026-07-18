@@ -32,6 +32,7 @@ from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
 from w_craft_back.character_studio.services.model3d_autofit_service import (
+    MODEL3D_AUTOFIT_VERSION,
     compute_autofit,
 )
 from w_craft_back.character_studio.services.model3d_service import (
@@ -822,6 +823,7 @@ def model3d_state(request, project_id, character_id):
         return ok({
             "params": character.model3d_params or {},
             "autofit_done": character.model3d_autofit_done,
+            "autofit_version": character.model3d_autofit_version,
             "updated_at": character.updated_at.isoformat(),
         })
 
@@ -861,19 +863,103 @@ def model3d_autofit(request, project_id, character_id):
     user = get_user_from_request(request)
     character = CharacterService().get_character(user, project_id, character_id)
 
-    if character.model3d_autofit_done:
+    if character.model3d_autofit_done and (
+        character.model3d_autofit_version >= MODEL3D_AUTOFIT_VERSION
+    ):
         return ok({
             "params": character.model3d_params or {},
             "autofit_done": True,
+            "autofit_version": character.model3d_autofit_version,
             "warnings": ["already_autofitted"],
             "sources": {},
         })
 
     result = compute_autofit(character)
+    if character.model3d_autofit_done:
+        # Upgrade a legacy sparse fit. Preserve non-default values as manual
+        # edits; refresh untouched defaults with the newly active face controls.
+        upgraded = result["params"]
+        legacy_face_defaults = {
+            "face_shape": {"shape": "oval", "cheekbones": 0.0},
+            "eyes": {
+                "eyeSize": 0.0, "eyeDistance": 0.0, "eyeTilt": 0.0,
+                "eyeColor": "#3a6ca8",
+            },
+            "nose": {
+                "noseLength": 0.0, "noseWidth": 0.0, "noseTip": 0.0,
+                "bridgeHeight": 0.0,
+            },
+            "mouth": {
+                "mouthWidth": 0.0, "upperLip": 0.0, "lowerLip": 0.0,
+                "cornerLift": 0.0,
+            },
+            "jaw_chin": {
+                "jawWidth": 0.0, "chinLength": 0.0, "chinShape": 0.0,
+            },
+            "skin_color": {"skinTone": "#dac0a3", "skinSaturation": 0.0},
+            "hair": {
+                "hairStyle": "default", "hairColor": "#1E1A18",
+                "hairLength": 0.5, "hairVolume": 0.0, "hairShape": "wavy",
+            },
+        }
+        sampled_color_params = {
+            "eyes": "eyeColor",
+            "hair": "hairColor",
+            "skin_color": "skinTone",
+        }
+        for zone_id, values in (character.model3d_params or {}).items():
+            if (
+                character.model3d_autofit_version < MODEL3D_AUTOFIT_VERSION
+                and zone_id in legacy_face_defaults
+            ):
+                # Older fits persisted neutral geometry and sampled colors from
+                # less accurate extractors. Upgrade untouched defaults while
+                # preserving deliberate numeric edits.
+                merged = dict(values)
+                for param_id, suggestion in upgraded.get(zone_id, {}).items():
+                    default = legacy_face_defaults[zone_id].get(param_id)
+                    refresh_sampled_color = (
+                        character.model3d_autofit_version >= 3
+                        and param_id == sampled_color_params.get(zone_id)
+                    )
+                    if (
+                        refresh_sampled_color
+                        or param_id not in values
+                        or values[param_id] == default
+                    ):
+                        merged[param_id] = suggestion
+                upgraded[zone_id] = merged
+            else:
+                upgraded.setdefault(zone_id, {}).update(values)
+        result["params"] = validate_model3d_params(upgraded)
+
+    retryable_profile_warnings = {
+        "profile_unreadable",
+        "profile_landmarks_unavailable",
+    }
+    profile_needs_retry = (
+        result.get("sources", {}).get("profile_pending", False)
+        or (
+            result.get("sources", {}).get("profile")
+            and retryable_profile_warnings.intersection(result.get("warnings", []))
+        )
+    )
+    saved_autofit_version = (
+        MODEL3D_AUTOFIT_VERSION - 1
+        if profile_needs_retry
+        else MODEL3D_AUTOFIT_VERSION
+    )
+
     character.model3d_params = result["params"]
     character.model3d_autofit_done = True
+    character.model3d_autofit_version = saved_autofit_version
     character.save(
-        update_fields=["model3d_params", "model3d_autofit_done", "updated_at"],
+        update_fields=[
+            "model3d_params",
+            "model3d_autofit_done",
+            "model3d_autofit_version",
+            "updated_at",
+        ],
     )
     CharacterRevisionService().create_revision(
         character,
@@ -883,4 +969,5 @@ def model3d_autofit(request, project_id, character_id):
         snapshot={"model3d_params": result["params"], "stage": "3d_model"},
     )
     result["autofit_done"] = True
+    result["autofit_version"] = saved_autofit_version
     return ok(result)
