@@ -65,6 +65,7 @@ class CharacterAssetType(models.TextChoices):
     OUTFIT_REFERENCE = "outfit_reference", "Outfit reference"
     CLOTHING_REFERENCE = "clothing_reference", "Clothing reference"
     THUMBNAIL = "thumbnail", "Thumbnail"
+    MODEL_3D = "model_3d", "3D model"
 
 
 class CharacterAssetStatus(models.TextChoices):
@@ -81,6 +82,7 @@ class GenerationJobType(models.TextChoices):
     CHARACTER_SHEET = "character_sheet", "Character sheet"
     REFERENCE_EXTRACTION = "reference_extraction", "Reference extraction"
     REFERENCE_VARIANTS = "reference_variants", "Reference-based variants"
+    MODEL3D_RECONSTRUCTION = "model3d_reconstruction", "3D reconstruction"
 
 
 class GenerationJobStatus(models.TextChoices):

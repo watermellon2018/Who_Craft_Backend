@@ -225,3 +225,22 @@ MEDIA_URL = '/media/'
 STATIC_ROOT = BASE_DIR
 MEDIA_ROOT = BASE_DIR / "static" / "media"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
+
+# Per-character 3D reconstruction. The web process stays in the lightweight
+# ``backend`` environment; the detached worker invokes these tools through the
+# CUDA-enabled ``basic`` conda environment.
+MODEL3D_CONDA_EXE = os.getenv("MODEL3D_CONDA_EXE", os.getenv("CONDA_EXE", ""))
+MODEL3D_CONDA_ENV = os.getenv("MODEL3D_CONDA_ENV", "basic")
+MODEL3D_RECONSTRUCTION_PYTHON = os.getenv("MODEL3D_RECONSTRUCTION_PYTHON", "")
+MODEL3D_RECONSTRUCTION_TOOLS_ROOT = os.getenv(
+    "MODEL3D_RECONSTRUCTION_TOOLS_ROOT",
+    str(BASE_DIR.parent / "who_craft" / "tools" / "reconstruction"),
+)
+MODEL3D_HUNYUAN_ROOT = os.getenv(
+    "MODEL3D_HUNYUAN_ROOT",
+    str(BASE_DIR.parent / "external" / "Hunyuan3D-2"),
+)
+MODEL3D_MODEL_ROOT = os.getenv(
+    "MODEL3D_MODEL_ROOT",
+    str(BASE_DIR.parent / "external" / "Hunyuan3D-2" / "models"),
+)
