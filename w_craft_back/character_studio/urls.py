@@ -144,6 +144,11 @@ urlpatterns = [
         views.model3d_state,
     ),
     path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/model3d/reconstruction",
+        views.model3d_reconstruction_retry,
+    ),
+    path(
         "projects/<int:project_id>/characters/<uuid:character_id>/model3d/autofit",
         views.model3d_autofit,
     ),

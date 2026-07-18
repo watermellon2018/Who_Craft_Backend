@@ -38,6 +38,11 @@ from w_craft_back.character_studio.services.model3d_autofit_service import (
 from w_craft_back.character_studio.services.model3d_service import (
     validate_model3d_params,
 )
+from w_craft_back.character_studio.services.model3d_reconstruction_service import (
+    ensure_reconstruction,
+    reconstruction_state,
+    retry_reconstruction,
+)
 from w_craft_back.character_studio.services.permissions import (
     get_owned_project,
     get_user_from_request,
@@ -792,11 +797,13 @@ def references_proceed_to_3d(request, project_id, character_id):
         change_summary="references_locked",
         snapshot={"references": locked_ids, "stage": "references_locked"},
     )
+    reconstruction = ensure_reconstruction(character)
     return ok({
         "can_proceed": True,
         "next_stage": "3d_model",
         "next_url": f"/project/{project_id}/characters/{character_id}/3d-model",
         "locked_reference_ids": locked_ids,
+        "reconstruction": reconstruction,
     })
 
 
@@ -822,6 +829,7 @@ def model3d_state(request, project_id, character_id):
         # the first time, load the saved state every time after.
         return ok({
             "params": character.model3d_params or {},
+            "reconstruction": reconstruction_state(character, ensure=True),
             "autofit_done": character.model3d_autofit_done,
             "autofit_version": character.model3d_autofit_version,
             "updated_at": character.updated_at.isoformat(),
@@ -842,6 +850,17 @@ def model3d_state(request, project_id, character_id):
         "params": cleaned,
         "updated_at": character.updated_at.isoformat(),
     })
+
+
+@api_view(["POST"])
+@handle_errors
+def model3d_reconstruction_retry(request, project_id, character_id):
+    """Retry a failed personalized GLB reconstruction for locked references."""
+    user = get_user_from_request(request)
+    character = CharacterService().get_character(user, project_id, character_id)
+    if character.status != CharacterStatus.REFERENCES_LOCKED:
+        raise ValidationError("References must be locked before 3D reconstruction.")
+    return ok({"reconstruction": retry_reconstruction(character)}, status=202)
 
 
 @api_view(["POST"])
