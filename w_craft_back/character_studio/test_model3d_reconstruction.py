@@ -19,6 +19,9 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.model3d_reconstruction_service import (
+    SIDE_REFERENCE_TYPES,
+    _execute_pipeline,
+    _selected_references,
     ensure_reconstruction,
     reconstruction_state,
     retry_reconstruction,
@@ -60,13 +63,14 @@ class Model3DReconstructionTests(TestCase):
         )
         self.character.status = CharacterStatus.REFERENCES_LOCKED
         self.character.save(update_fields=("status", "updated_at"))
+        self.reference_assets = {}
         for asset_type in (
             CharacterAssetType.PORTRAIT,
             CharacterAssetType.FULL_BODY,
             CharacterAssetType.PROFILE,
             CharacterAssetType.BACK_VIEW,
         ):
-            CharacterAsset.objects.create(
+            asset = CharacterAsset.objects.create(
                 character=self.character,
                 project=self.project,
                 user=self.user_key,
@@ -78,12 +82,95 @@ class Model3DReconstructionTests(TestCase):
                 status=CharacterAssetStatus.READY,
                 metadata={"sha256": f"hash-{asset_type}"},
             )
+            self.reference_assets[asset_type] = asset
 
     def _ensure_and_dispatch(self):
         with patch(DISPATCH) as dispatch:
             with self.captureOnCommitCallbacks(execute=True):
                 state = ensure_reconstruction(self.character)
         return state, dispatch
+
+    def _add_reference(self, asset_type: str) -> CharacterAsset:
+        asset = CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=asset_type,
+            image_url=f"/media/{asset_type}.png",
+            storage_path=f"tests/{asset_type}.png",
+            mime_type="image/png",
+            source="test",
+            status=CharacterAssetStatus.READY,
+            metadata={"sha256": f"hash-{asset_type}"},
+        )
+        self.reference_assets[asset_type] = asset
+        return asset
+
+    def _capture_pipeline_commands(
+        self,
+        reference_contents: dict[str, bytes] | None = None,
+    ) -> tuple[list[list[str]], dict]:
+        state, _ = self._ensure_and_dispatch()
+        job = CharacterGenerationJob.objects.get(job_id=state["job_id"])
+        references = _selected_references(self.character)
+        commands: list[list[str]] = []
+        reference_contents = reference_contents or {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media_root = root / "media"
+            tools_root = root / "tools"
+            tools_root.mkdir()
+            for script_name in (
+                "prepare_hunyuan_views.py",
+                "run_hunyuan_multiview.py",
+                "postprocess_hunyuan_mesh.py",
+            ):
+                (tools_root / script_name).write_text("", encoding="utf-8")
+
+            for asset_type in (CharacterAssetType.PORTRAIT, *SIDE_REFERENCE_TYPES):
+                asset = references.get(asset_type)
+                if asset is None:
+                    continue
+                path = media_root / asset.storage_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(
+                    reference_contents.get(
+                        asset_type,
+                        f"unique-{asset_type}".encode("utf-8"),
+                    )
+                )
+
+            def capture(command: list[str], _cwd: Path) -> None:
+                commands.append(command)
+
+            with override_settings(
+                MEDIA_ROOT=media_root,
+                MODEL3D_RECONSTRUCTION_PYTHON="python",
+                MODEL3D_RECONSTRUCTION_TOOLS_ROOT=tools_root,
+                MODEL3D_HUNYUAN_ROOT=root / "hunyuan",
+                MODEL3D_MODEL_ROOT=root / "models",
+            ):
+                metadata = _execute_pipeline(
+                    job,
+                    references,
+                    root / "head.glb",
+                    root / "work",
+                    capture,
+                )
+        return commands, metadata
+
+    @staticmethod
+    def _view_args(command: list[str]) -> list[tuple[str, str]]:
+        result = []
+        for index, argument in enumerate(command[:-1]):
+            if argument in ("--front", "--left", "--right"):
+                result.append((argument, Path(command[index + 1]).name))
+        return result
+
+    @staticmethod
+    def _argument_value(command: list[str], name: str) -> str:
+        return command[command.index(name) + 1]
 
     def test_ensure_creates_one_idempotent_job_and_asset(self):
         state, dispatch = self._ensure_and_dispatch()
@@ -105,6 +192,137 @@ class Model3DReconstructionTests(TestCase):
                 second = ensure_reconstruction(self.character)
         self.assertEqual(second["job_id"], state["job_id"])
         second_dispatch.assert_not_called()
+
+    def test_pipeline_passes_profile_and_three_quarter_in_order(self):
+        self._add_reference(CharacterAssetType.THREE_QUARTER)
+
+        selected = _selected_references(self.character)
+        self.assertEqual(
+            list(selected),
+            [
+                CharacterAssetType.PORTRAIT,
+                CharacterAssetType.FULL_BODY,
+                CharacterAssetType.BACK_VIEW,
+                CharacterAssetType.PROFILE,
+                CharacterAssetType.THREE_QUARTER,
+            ],
+        )
+
+        commands, metadata = self._capture_pipeline_commands()
+
+        expected_source_views = [
+            ("--front", "portrait.png"),
+            ("--left", "profile.png"),
+            ("--right", "three_quarter.png"),
+        ]
+        expected_prepared_views = [
+            ("--front", "front.png"),
+            ("--left", "left.png"),
+            ("--right", "right.png"),
+        ]
+        self.assertEqual(self._view_args(commands[0]), expected_source_views)
+        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
+        self.assertEqual(
+            self._argument_value(commands[0], "--left-reference-type"),
+            CharacterAssetType.PROFILE,
+        )
+        self.assertEqual(
+            self._argument_value(commands[0], "--right-reference-type"),
+            CharacterAssetType.THREE_QUARTER,
+        )
+        self.assertEqual(
+            [item["cardinal_slot_is_approximation"] for item in metadata["reference_views"]],
+            [False, True, True],
+        )
+
+        self.assertEqual(
+            [item["reference_type"] for item in metadata["reference_views"]],
+            [
+                CharacterAssetType.PORTRAIT,
+                CharacterAssetType.PROFILE,
+                CharacterAssetType.THREE_QUARTER,
+            ],
+        )
+        job = CharacterGenerationJob.objects.latest("created_at")
+        self.assertEqual(job.request_payload["pipeline_version"], 3)
+        self.assertSetEqual(
+            set(job.request_payload["reference_asset_ids"]),
+            {
+                CharacterAssetType.PORTRAIT,
+                CharacterAssetType.FULL_BODY,
+                CharacterAssetType.BACK_VIEW,
+                CharacterAssetType.PROFILE,
+                CharacterAssetType.THREE_QUARTER,
+            },
+        )
+
+    def test_pipeline_keeps_legacy_front_and_profile_arguments(self):
+        commands, metadata = self._capture_pipeline_commands()
+
+        expected_source_views = [
+            ("--front", "portrait.png"),
+            ("--left", "profile.png"),
+        ]
+        expected_prepared_views = [
+            ("--front", "front.png"),
+            ("--left", "left.png"),
+        ]
+        self.assertEqual(self._view_args(commands[0]), expected_source_views)
+        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
+        self.assertEqual(metadata["skipped_duplicate_reference_types"], [])
+
+    def test_pipeline_skips_duplicate_three_quarter_content(self):
+        self._add_reference(CharacterAssetType.THREE_QUARTER)
+        commands, metadata = self._capture_pipeline_commands(
+            {
+                CharacterAssetType.PROFILE: b"same-side",
+                CharacterAssetType.THREE_QUARTER: b"same-side",
+            }
+        )
+
+        expected_source_views = [
+            ("--front", "portrait.png"),
+            ("--left", "profile.png"),
+        ]
+        expected_prepared_views = [
+            ("--front", "front.png"),
+            ("--left", "left.png"),
+        ]
+        self.assertEqual(self._view_args(commands[0]), expected_source_views)
+        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
+        self.assertEqual(
+            metadata["skipped_duplicate_reference_types"],
+            [CharacterAssetType.THREE_QUARTER],
+        )
+
+    def test_three_quarter_falls_back_to_left_when_profile_is_missing(self):
+        self.reference_assets.pop(CharacterAssetType.PROFILE).delete()
+        self._add_reference(CharacterAssetType.THREE_QUARTER)
+
+        commands, _ = self._capture_pipeline_commands()
+
+        expected_source_views = [
+            ("--front", "portrait.png"),
+            ("--left", "three_quarter.png"),
+        ]
+        expected_prepared_views = [
+            ("--front", "front.png"),
+            ("--left", "left.png"),
+        ]
+        self.assertEqual(self._view_args(commands[0]), expected_source_views)
+        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
+        self.assertEqual(
+            self._argument_value(commands[0], "--left-reference-type"),
+            CharacterAssetType.THREE_QUARTER,
+        )
+
+    def test_missing_all_side_references_does_not_create_job(self):
+        self.reference_assets.pop(CharacterAssetType.PROFILE).delete()
+
+        state, dispatch = self._ensure_and_dispatch()
+
+        self.assertEqual(state["status"], "missing")
+        dispatch.assert_not_called()
 
     def test_worker_success_publishes_personal_glb(self):
         with tempfile.TemporaryDirectory() as media_root:
