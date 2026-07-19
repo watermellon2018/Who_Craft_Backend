@@ -38,7 +38,7 @@ from w_craft_back.character_studio.services.serialization import public_url
 
 logger = logging.getLogger(__name__)
 
-PIPELINE_VERSION = 3
+PIPELINE_VERSION = 5
 RECONSTRUCTION_PROVIDER = "local_hunyuan3d"
 REQUIRED_REFERENCE_TYPES = (
     CharacterAssetType.PORTRAIT,
@@ -54,17 +54,47 @@ CommandRunner = Callable[[list[str], Path], None]
 ReferenceView = tuple[str, str, CharacterAsset, Path]
 
 
+def _identity_source_ids(references: dict[str, CharacterAsset]) -> set[str]:
+    """Return explicit identity anchors recorded by generated references."""
+    source_ids = set()
+    for asset in references.values():
+        metadata = asset.metadata if isinstance(asset.metadata, dict) else {}
+        source_id = metadata.get("source_identity_asset_id")
+        if source_id:
+            source_ids.add(str(source_id))
+    return source_ids
+
+
+def _references_share_portrait_identity(
+    references: dict[str, CharacterAsset],
+) -> bool:
+    """Reject derived views anchored to a portrait other than the selected one."""
+    portrait = references.get(CharacterAssetType.PORTRAIT)
+    if portrait is None:
+        return False
+    portrait_id = str(portrait.asset_id)
+    return all(
+        source_id == portrait_id
+        for source_id in _identity_source_ids(references)
+    )
+
+
 def _selected_references(character: StudioCharacter) -> dict[str, CharacterAsset]:
     """Select the current stable reference set used by the head pipeline."""
     latest = CharacterAssetService().latest_ready_by_reference_type(character)
     if any(asset_type not in latest for asset_type in REQUIRED_REFERENCE_TYPES):
         return {}
-    if not any(asset_type in latest for asset_type in SIDE_REFERENCE_TYPES):
+    if any(asset_type not in latest for asset_type in SIDE_REFERENCE_TYPES):
         return {}
-    selected = {asset_type: latest[asset_type] for asset_type in REQUIRED_REFERENCE_TYPES}
+    selected = {
+        asset_type: latest[asset_type]
+        for asset_type in REQUIRED_REFERENCE_TYPES
+    }
     for asset_type in SIDE_REFERENCE_TYPES:
         if asset_type in latest:
             selected[asset_type] = latest[asset_type]
+    if not _references_share_portrait_identity(selected):
+        return {}
     return selected
 
 
@@ -93,7 +123,9 @@ def _jobs_for_fingerprint(character: StudioCharacter, fingerprint: str):
     for job in character.generation_jobs.filter(
         job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
     ).order_by("-created_at"):
-        request_payload = job.request_payload if isinstance(job.request_payload, dict) else {}
+        request_payload = (
+            job.request_payload if isinstance(job.request_payload, dict) else {}
+        )
         if request_payload.get("reference_fingerprint") == fingerprint:
             yield job
 
@@ -113,22 +145,50 @@ def _state(
     references: dict[str, CharacterAsset] | None = None,
 ) -> dict:
     """Serialize the latest reconstruction state for the editor."""
-    references = references if references is not None else _selected_references(character)
+    references = (
+        references
+        if references is not None
+        else _selected_references(character)
+    )
     base = {
         "status": "missing",
         "progress": 0,
         "job_id": None,
         "asset_id": None,
         "model_url": None,
+        "hair_url": None,
+        "assets": {"head": None, "hair": None},
+        "pipeline_version": PIPELINE_VERSION,
         "error_message": "",
     }
     if not references:
-        base["error_message"] = "Required references are not ready."
+        latest = CharacterAssetService().latest_ready_by_reference_type(character)
+        candidate_types = (
+            *REQUIRED_REFERENCE_TYPES,
+            *SIDE_REFERENCE_TYPES,
+        )
+        candidates = {
+            asset_type: latest[asset_type]
+            for asset_type in candidate_types
+            if asset_type in latest
+        }
+        base["error_message"] = (
+            "Reference views use different identity sources."
+            if not _references_share_portrait_identity(candidates)
+            and CharacterAssetType.PORTRAIT in candidates
+            else "Required references are not ready."
+        )
         return base
 
     fingerprint = _reference_fingerprint(references)
     job = next(_jobs_for_fingerprint(character, fingerprint), None)
     asset = _asset_for_job(job)
+    asset_metadata = (
+        asset.metadata if asset and isinstance(asset.metadata, dict) else {}
+    )
+    hair_metadata = asset_metadata.get("hair_asset", {})
+    hair_url = public_url(hair_metadata.get("model_url")) \
+        if isinstance(hair_metadata, dict) else None
     if job is None:
         return base
 
@@ -137,17 +197,36 @@ def _state(
             "progress": int(job.progress or 0),
             "job_id": str(job.job_id),
             "asset_id": str(asset.asset_id) if asset else None,
-            "error_message": job.error_message or (asset.error_message if asset else ""),
+            "error_message": (
+                job.error_message or (asset.error_message if asset else "")
+            ),
         }
     )
     if asset and asset.status == CharacterAssetStatus.READY and asset.image_url:
-        base.update(
-            {
-                "status": "ready",
-                "progress": 100,
-                "model_url": public_url(asset.image_url),
-            }
-        )
+        head_url = public_url(asset.image_url)
+        if hair_url:
+            base.update(
+                {
+                    "status": "ready",
+                    "progress": 100,
+                    "model_url": head_url,
+                    "hair_url": hair_url,
+                    "assets": {
+                        "head": {
+                            "asset_id": str(asset.asset_id),
+                            "model_url": head_url,
+                            "source": "generated",
+                        },
+                        "hair": {
+                            **hair_metadata,
+                            "model_url": hair_url,
+                        },
+                    },
+                }
+            )
+        else:
+            base["status"] = "failed"
+            base["error_message"] = "Generated hair asset was not produced."
     elif job.status == GenerationJobStatus.PROCESSING:
         base["status"] = "processing"
     elif job.status == GenerationJobStatus.QUEUED:
@@ -186,7 +265,24 @@ def ensure_reconstruction(
 
     for existing in _jobs_for_fingerprint(locked_character, fingerprint):
         asset = _asset_for_job(existing)
-        is_ready = bool(asset and asset.status == CharacterAssetStatus.READY)
+        asset_metadata = (
+            asset.metadata if asset and isinstance(asset.metadata, dict) else {}
+        )
+        hair_metadata = asset_metadata.get("hair_asset", {})
+        has_hair_asset = bool(
+            isinstance(hair_metadata, dict)
+            and hair_metadata.get("model_url")
+        )
+        is_ready = bool(
+            asset
+            and asset.status == CharacterAssetStatus.READY
+            and has_hair_asset
+        )
+        is_broken_ready = bool(
+            asset
+            and asset.status == CharacterAssetStatus.READY
+            and not has_hair_asset
+        )
         is_active = existing.status in (
             GenerationJobStatus.QUEUED,
             GenerationJobStatus.PROCESSING,
@@ -195,7 +291,12 @@ def ensure_reconstruction(
             GenerationJobStatus.FAILED,
             GenerationJobStatus.CANCELLED,
         )
-        if is_ready or is_active or (is_failed and not force_retry):
+        if (
+            is_ready
+            or is_active
+            or (is_broken_ready and not force_retry)
+            or (is_failed and not force_retry)
+        ):
             return _state(locked_character, references)
 
     reference_ids = {
@@ -222,6 +323,9 @@ def ensure_reconstruction(
         f"character-studio/model3d/{locked_character.character_id}/"
         f"{fingerprint}/head.glb"
     )
+    hair_relative_path = str(
+        Path(relative_path).with_name("hair.glb")
+    ).replace("\\", "/")
     media_url = str(getattr(settings, "MEDIA_URL", "/media/"))
     if not media_url.endswith("/"):
         media_url += "/"
@@ -242,6 +346,14 @@ def ensure_reconstruction(
             "pipeline_version": PIPELINE_VERSION,
             "reference_fingerprint": fingerprint,
             "reference_asset_ids": reference_ids,
+            "source_identity_asset_id": str(
+                references[CharacterAssetType.PORTRAIT].asset_id
+            ),
+            "hair_asset": {
+                "storage_path": hair_relative_path,
+                "model_url": f"{media_url}{hair_relative_path}",
+                "source": "generated",
+            },
         },
     )
     transaction.on_commit(lambda: dispatch_reconstruction(job.job_id))
@@ -260,7 +372,12 @@ def _backend_root() -> Path:
 def dispatch_reconstruction(job_id) -> None:
     """Spawn a detached backend Python process for the long-running GPU job."""
     backend_root = _backend_root()
-    log_dir = Path(settings.MEDIA_ROOT).resolve() / "character-studio" / "model3d" / "logs"
+    log_dir = (
+        Path(settings.MEDIA_ROOT).resolve()
+        / "character-studio"
+        / "model3d"
+        / "logs"
+    )
     log_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable,
@@ -285,7 +402,11 @@ def dispatch_reconstruction(job_id) -> None:
             subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, **kwargs)
     except OSError as error:
         logger.exception("Could not start model3d reconstruction job %s", job_id)
-        _fail_job(job_id, f"Could not start reconstruction worker: {error}", "WORKER_START_FAILED")
+        _fail_job(
+            job_id,
+            f"Could not start reconstruction worker: {error}",
+            "WORKER_START_FAILED",
+        )
 
 
 def _conda_python_prefix() -> list[str]:
@@ -296,7 +417,11 @@ def _conda_python_prefix() -> list[str]:
         return [explicit_python]
 
     configured = str(getattr(settings, "MODEL3D_CONDA_EXE", "") or "").strip()
-    conda_exe = Path(configured) if configured else Path.home() / "miniconda3" / "Scripts" / "conda.exe"
+    conda_exe = (
+        Path(configured)
+        if configured
+        else Path.home() / "miniconda3" / "Scripts" / "conda.exe"
+    )
     if not conda_exe.is_file():
         raise FileNotFoundError(
             "conda executable was not found; set MODEL3D_CONDA_EXE or "
@@ -344,20 +469,12 @@ def _file_digest(path: Path) -> str:
 def _pipeline_reference_views(
     references: dict[str, CharacterAsset],
 ) -> tuple[list[ReferenceView], list[str]]:
-    """Allocate unique saved face angles to Hunyuan's cardinal slots.
-
-    Saved side references have no physical-facing metadata, and the pinned
-    Hunyuan preprocessor has no three-quarter index. Profile-to-left preserves
-    the legacy policy; a second unique three-quarter view uses the right slot
-    as an explicit conditioning approximation.
-    """
+    """Allocate unique saved angles to Hunyuan's cardinal input slots."""
     front_asset = references[CharacterAssetType.PORTRAIT]
     front_path = _asset_path(front_asset)
     seen_digests = {_file_digest(front_path)}
-    views: list[ReferenceView] = [
-        ("front", CharacterAssetType.PORTRAIT, front_asset, front_path)
-    ]
     skipped_duplicates: list[str] = []
+    side_views: list[ReferenceView] = []
     side_slots = iter(("left", "right"))
 
     for asset_type in SIDE_REFERENCE_TYPES:
@@ -370,7 +487,27 @@ def _pipeline_reference_views(
             skipped_duplicates.append(asset_type)
             continue
         seen_digests.add(digest)
-        views.append((next(side_slots), asset_type, asset, path))
+        side_views.append((next(side_slots), asset_type, asset, path))
+
+    views: list[ReferenceView] = [
+        ("front", CharacterAssetType.PORTRAIT, front_asset, front_path)
+    ]
+    if side_views:
+        views.append(side_views[0])
+
+    back_asset = references[CharacterAssetType.BACK_VIEW]
+    back_path = _asset_path(back_asset)
+    back_digest = _file_digest(back_path)
+    if back_digest in seen_digests:
+        skipped_duplicates.append(CharacterAssetType.BACK_VIEW)
+    else:
+        seen_digests.add(back_digest)
+        views.append(
+            ("back", CharacterAssetType.BACK_VIEW, back_asset, back_path)
+        )
+
+    if len(side_views) > 1:
+        views.append(side_views[1])
     return views, skipped_duplicates
 
 
@@ -401,9 +538,17 @@ def _execute_pipeline(
         tools_root / "postprocess_hunyuan_mesh.py",
     ):
         if not required_path.is_file():
-            raise FileNotFoundError(f"reconstruction tool does not exist: {required_path}")
+            raise FileNotFoundError(
+                f"reconstruction tool does not exist: {required_path}"
+            )
 
     views, skipped_duplicates = _pipeline_reference_views(references)
+    if len(views) != 4:
+        duplicate_types = ", ".join(skipped_duplicates) or "unknown"
+        raise ValidationError(
+            "Four unique portrait/profile/three-quarter/back views are "
+            f"required; duplicate references: {duplicate_types}."
+        )
     prefix = _conda_python_prefix()
     prepared_dir = work_dir / "prepared"
     hunyuan_dir = work_dir / "hunyuan"
@@ -412,7 +557,7 @@ def _execute_pipeline(
     hunyuan_command = prefix + [str(tools_root / "run_hunyuan_multiview.py")]
     for view_name, reference_type, _, source_path in views:
         prepare_command.extend([f"--{view_name}", str(source_path)])
-        if view_name != "front":
+        if view_name in ("left", "right"):
             prepare_command.extend([f"--{view_name}-reference-type", reference_type])
         prepared_path = prepared_dir / "inputs" / f"{view_name}.png"
         hunyuan_command.extend([f"--{view_name}", str(prepared_path)])
@@ -432,6 +577,23 @@ def _execute_pipeline(
     )
     command_runner(hunyuan_command, hunyuan_root)
     _set_progress(job.job_id, 80)
+    model3d_params = (
+        job.character.model3d_params
+        if isinstance(job.character.model3d_params, dict)
+        else {}
+    )
+    hair_params = model3d_params.get("hair", {})
+    skin_params = model3d_params.get("skin_color", {})
+    hair_color = (
+        hair_params.get("hairColor", "#1e1a18")
+        if isinstance(hair_params, dict)
+        else "#1e1a18"
+    )
+    skin_color = (
+        skin_params.get("skinTone", "#d8ab8a")
+        if isinstance(skin_params, dict)
+        else "#d8ab8a"
+    )
     command_runner(
         prefix
         + [
@@ -440,6 +602,16 @@ def _execute_pipeline(
             str(hunyuan_dir / "raw" / "model.glb"),
             "--output",
             str(output_path),
+            "--hair-output",
+            str(output_path.with_name("hair.glb")),
+            "--front-reference",
+            str(prepared_dir / "inputs" / "front.png"),
+            "--profile-reference",
+            str(prepared_dir / "inputs" / "left.png"),
+            "--hair-color",
+            str(hair_color),
+            "--skin-color",
+            str(skin_color),
             "--preview-dir",
             str(work_dir / "previews"),
             "--metadata",
@@ -449,7 +621,11 @@ def _execute_pipeline(
     )
     return {
         "side_reference_type": next(
-            (asset_type for view_name, asset_type, _, _ in views if view_name == "left"),
+            (
+                asset_type
+                for view_name, asset_type, _, _ in views
+                if view_name == "left"
+            ),
             None,
         ),
         "reference_views": [
@@ -457,12 +633,14 @@ def _execute_pipeline(
                 "view": view_name,
                 "reference_type": asset_type,
                 "asset_id": str(asset.asset_id),
-                "physical_direction_known": view_name == "front",
-                "cardinal_slot_is_approximation": view_name != "front",
+                "physical_direction_known": view_name in ("front", "back"),
+                "cardinal_slot_is_approximation": view_name in ("left", "right"),
             }
             for view_name, asset_type, asset, _ in views
         ],
         "skipped_duplicate_reference_types": skipped_duplicates,
+        "hair_output": str(output_path.with_name("hair.glb")),
+        "back_view_contributed": any(view[0] == "back" for view in views),
         "work_dir": str(work_dir),
         "hunyuan_metadata": str(hunyuan_dir / "metadata.json"),
     }
@@ -528,7 +706,9 @@ def run_reconstruction_job(
         _fail_job(job.job_id, "The reconstruction output asset is missing.")
         return None
     try:
-        request_payload = job.request_payload if isinstance(job.request_payload, dict) else {}
+        request_payload = (
+            job.request_payload if isinstance(job.request_payload, dict) else {}
+        )
         reference_ids = request_payload.get("reference_asset_ids", {})
         if not isinstance(reference_ids, dict):
             raise ValidationError("Reconstruction reference list is invalid.")
@@ -557,16 +737,45 @@ def run_reconstruction_job(
         )
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise RuntimeError("The reconstruction pipeline produced no GLB file.")
+        hair_output_path = output_path.with_name("hair.glb").resolve()
+        hair_output_path.relative_to(media_root)
+        if (
+            not hair_output_path.is_file()
+            or hair_output_path.stat().st_size == 0
+        ):
+            raise RuntimeError("The reconstruction pipeline produced no hair GLB file.")
 
         digest = hashlib.sha256()
         with output_path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
+        previous_metadata = asset.metadata if isinstance(asset.metadata, dict) else {}
+        previous_hair = previous_metadata.get("hair_asset", {})
+        hair_params = (
+            job.character.model3d_params.get("hair", {})
+            if isinstance(job.character.model3d_params, dict)
+            else {}
+        )
+        hair_metadata = {
+            **(previous_hair if isinstance(previous_hair, dict) else {}),
+            "asset_id": f"{asset.asset_id}:hair",
+            "source": "generated",
+            "generation_method": (
+                "multiview_hunyuan_voxel_remesh_with_inset_backing_v3"
+            ),
+            "style_id": hair_params.get("hairStyle", "multiview_generated"),
+            "color_hex": hair_params.get("hairColor"),
+            "sha256": _file_digest(hair_output_path),
+            "bytes": hair_output_path.stat().st_size,
+            "coordinate_space": "head_y_up_z_front_metres",
+        }
         asset.status = CharacterAssetStatus.READY
         asset.error_message = ""
         asset.metadata = {
-            **(asset.metadata if isinstance(asset.metadata, dict) else {}),
+            **previous_metadata,
             **pipeline_metadata,
+            "component": "head",
+            "hair_asset": hair_metadata,
             "reference_fingerprint": fingerprint,
             "sha256": digest.hexdigest(),
             "bytes": output_path.stat().st_size,
