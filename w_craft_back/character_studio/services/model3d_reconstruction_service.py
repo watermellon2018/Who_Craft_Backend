@@ -51,6 +51,7 @@ SIDE_REFERENCE_TYPES = (
 )
 
 CommandRunner = Callable[[list[str], Path], None]
+ReferenceView = tuple[str, str, CharacterAsset, Path]
 
 
 def _selected_references(character: StudioCharacter) -> dict[str, CharacterAsset]:
@@ -58,14 +59,12 @@ def _selected_references(character: StudioCharacter) -> dict[str, CharacterAsset
     latest = CharacterAssetService().latest_ready_by_reference_type(character)
     if any(asset_type not in latest for asset_type in REQUIRED_REFERENCE_TYPES):
         return {}
-    side = next(
-        (latest[asset_type] for asset_type in SIDE_REFERENCE_TYPES if asset_type in latest),
-        None,
-    )
-    if side is None:
+    if not any(asset_type in latest for asset_type in SIDE_REFERENCE_TYPES):
         return {}
     selected = {asset_type: latest[asset_type] for asset_type in REQUIRED_REFERENCE_TYPES}
-    selected[side.asset_type] = side
+    for asset_type in SIDE_REFERENCE_TYPES:
+        if asset_type in latest:
+            selected[asset_type] = latest[asset_type]
     return selected
 
 
@@ -333,6 +332,48 @@ def _asset_path(asset: CharacterAsset) -> Path:
     return resolved
 
 
+def _file_digest(path: Path) -> str:
+    """Return a streaming digest used to identify equal reference images."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pipeline_reference_views(
+    references: dict[str, CharacterAsset],
+) -> tuple[list[ReferenceView], list[str]]:
+    """Allocate unique saved face angles to Hunyuan's cardinal slots.
+
+    Saved side references have no physical-facing metadata, and the pinned
+    Hunyuan preprocessor has no three-quarter index. Profile-to-left preserves
+    the legacy policy; a second unique three-quarter view uses the right slot
+    as an explicit conditioning approximation.
+    """
+    front_asset = references[CharacterAssetType.PORTRAIT]
+    front_path = _asset_path(front_asset)
+    seen_digests = {_file_digest(front_path)}
+    views: list[ReferenceView] = [
+        ("front", CharacterAssetType.PORTRAIT, front_asset, front_path)
+    ]
+    skipped_duplicates: list[str] = []
+    side_slots = iter(("left", "right"))
+
+    for asset_type in SIDE_REFERENCE_TYPES:
+        asset = references.get(asset_type)
+        if asset is None:
+            continue
+        path = _asset_path(asset)
+        digest = _file_digest(path)
+        if digest in seen_digests:
+            skipped_duplicates.append(asset_type)
+            continue
+        seen_digests.add(digest)
+        views.append((next(side_slots), asset_type, asset, path))
+    return views, skipped_duplicates
+
+
 def _run_command(command: list[str], cwd: Path) -> None:
     subprocess.run(command, cwd=str(cwd), check=True)
 
@@ -362,35 +403,24 @@ def _execute_pipeline(
         if not required_path.is_file():
             raise FileNotFoundError(f"reconstruction tool does not exist: {required_path}")
 
-    portrait = _asset_path(references[CharacterAssetType.PORTRAIT])
-    side = next(references[asset_type] for asset_type in SIDE_REFERENCE_TYPES if asset_type in references)
-    side_path = _asset_path(side)
+    views, skipped_duplicates = _pipeline_reference_views(references)
     prefix = _conda_python_prefix()
     prepared_dir = work_dir / "prepared"
     hunyuan_dir = work_dir / "hunyuan"
 
-    command_runner(
-        prefix
-        + [
-            str(tools_root / "prepare_hunyuan_views.py"),
-            "--front",
-            str(portrait),
-            "--left",
-            str(side_path),
-            "--out-dir",
-            str(prepared_dir),
-        ],
-        tools_root,
-    )
+    prepare_command = prefix + [str(tools_root / "prepare_hunyuan_views.py")]
+    hunyuan_command = prefix + [str(tools_root / "run_hunyuan_multiview.py")]
+    for view_name, reference_type, _, source_path in views:
+        prepare_command.extend([f"--{view_name}", str(source_path)])
+        if view_name != "front":
+            prepare_command.extend([f"--{view_name}-reference-type", reference_type])
+        prepared_path = prepared_dir / "inputs" / f"{view_name}.png"
+        hunyuan_command.extend([f"--{view_name}", str(prepared_path)])
+    prepare_command.extend(["--out-dir", str(prepared_dir)])
+    command_runner(prepare_command, tools_root)
     _set_progress(job.job_id, 25)
-    command_runner(
-        prefix
-        + [
-            str(tools_root / "run_hunyuan_multiview.py"),
-            "--front",
-            str(prepared_dir / "inputs" / "front.png"),
-            "--left",
-            str(prepared_dir / "inputs" / "left.png"),
+    hunyuan_command.extend(
+        [
             "--model-root",
             str(model_root),
             "--hunyuan-root",
@@ -398,9 +428,9 @@ def _execute_pipeline(
             "--out-dir",
             str(hunyuan_dir),
             "--cpu-offload",
-        ],
-        hunyuan_root,
+        ]
     )
+    command_runner(hunyuan_command, hunyuan_root)
     _set_progress(job.job_id, 80)
     command_runner(
         prefix
@@ -418,7 +448,21 @@ def _execute_pipeline(
         tools_root,
     )
     return {
-        "side_reference_type": side.asset_type,
+        "side_reference_type": next(
+            (asset_type for view_name, asset_type, _, _ in views if view_name == "left"),
+            None,
+        ),
+        "reference_views": [
+            {
+                "view": view_name,
+                "reference_type": asset_type,
+                "asset_id": str(asset.asset_id),
+                "physical_direction_known": view_name == "front",
+                "cardinal_slot_is_approximation": view_name != "front",
+            }
+            for view_name, asset_type, asset, _ in views
+        ],
+        "skipped_duplicate_reference_types": skipped_duplicates,
         "work_dir": str(work_dir),
         "hunyuan_metadata": str(hunyuan_dir / "metadata.json"),
     }
