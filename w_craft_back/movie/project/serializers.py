@@ -16,6 +16,8 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectGenerationJob,
     ProjectTag,
     Scene,
+    SceneStatus,
+    SceneType,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
 
@@ -155,12 +157,106 @@ class CharacterCreateSerializer(serializers.Serializer):
     )
 
 
+SCRIPT_BLOCK_TYPES = (
+    "scene_heading",
+    "action",
+    "character",
+    "dialogue",
+    "remark",
+    "camera",
+    "transition",
+    "sound",
+    "note",
+)
+
+
+class ScriptBlockSerializer(serializers.Serializer):
+    id = serializers.CharField(max_length=100, allow_blank=False)
+    type = serializers.ChoiceField(choices=SCRIPT_BLOCK_TYPES)
+    text = serializers.CharField(allow_blank=True, trim_whitespace=False)
+    characterId = serializers.UUIDField(required=False, allow_null=True)
+
+
+class _SceneWriteSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=255, required=False)
+    description = serializers.CharField(allow_blank=True, required=False)
+    script_text = serializers.CharField(
+        allow_blank=True, required=False, trim_whitespace=False
+    )
+    script_blocks = ScriptBlockSerializer(many=True, required=False)
+    location_id = serializers.IntegerField(required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=SceneStatus.choices, required=False)
+    order = serializers.IntegerField(required=False, min_value=0)
+    act = serializers.IntegerField(required=False, min_value=1, max_value=3)
+    duration_seconds = serializers.IntegerField(required=False, min_value=0)
+    mood = serializers.CharField(max_length=100, allow_blank=True, required=False)
+    scene_type = serializers.ChoiceField(choices=SceneType.choices, required=False)
+    notes = serializers.CharField(
+        allow_blank=True, required=False, trim_whitespace=False
+    )
+    camera_settings = serializers.JSONField(required=False)
+    character_ids = serializers.ListField(
+        child=serializers.UUIDField(), allow_empty=True, required=False
+    )
+
+    def validate_title(self, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise serializers.ValidationError("Title cannot be empty")
+        return title
+
+    def validate_character_ids(self, value):
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Character ids must be unique")
+        self._validate_project_characters(value)
+        return value
+
+    def validate_script_blocks(self, value):
+        character_ids = {
+            block["characterId"]
+            for block in value
+            if block.get("characterId") is not None
+        }
+        self._validate_project_characters(character_ids)
+        return [
+            {
+                **block,
+                **(
+                    {"characterId": str(block["characterId"])}
+                    if block.get("characterId") is not None
+                    else {}
+                ),
+            }
+            for block in value
+        ]
+
+    def _validate_project_characters(self, character_ids) -> None:
+        project = self.context.get("project")
+        if project is None or not character_ids:
+            return
+        found_ids = set(
+            StudioCharacter.objects.filter(
+                project=project, character_id__in=character_ids
+            ).values_list("character_id", flat=True)
+        )
+        if set(character_ids) - found_ids:
+            raise serializers.ValidationError("Character not found in this project")
+
+
 class SceneCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(allow_blank=True, required=False, default="")
     script_text = serializers.CharField(allow_blank=True, required=False, default="")
     location_id = serializers.IntegerField(required=False, allow_null=True)
     order = serializers.IntegerField(required=False, min_value=0)
+
+
+class SceneWorkspaceCreateSerializer(_SceneWriteSerializer):
+    title = serializers.CharField(max_length=255)
+
+
+class SceneWorkspaceUpdateSerializer(_SceneWriteSerializer):
+    version = serializers.IntegerField(min_value=1, required=True)
 
 
 class MusicTrackCreateSerializer(serializers.Serializer):

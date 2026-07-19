@@ -46,6 +46,18 @@ class SceneStatus(models.TextChoices):
     FAILED = "failed", "Ошибка"
 
 
+class SceneType(models.TextChoices):
+    SETUP = "setup", "Setup"
+    PROVOCATION = "provocation", "Provocation"
+    TURN = "turn", "Turn"
+    OBSTACLE = "obstacle", "Obstacle"
+    ESCALATION = "escalation", "Escalation"
+    CLIMAX = "climax", "Climax"
+    RESOLUTION = "resolution", "Resolution"
+    FINAL = "final", "Final"
+    OTHER = "other", "Other"
+
+
 class AssetType(models.TextChoices):
     IMAGE = "image", "Изображение"
     VIDEO = "video", "Видео"
@@ -233,6 +245,19 @@ class Scene(models.Model):
     order = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True, default="")
     script_text = models.TextField(blank=True, default="")
+    script_blocks = models.JSONField(default=list, blank=True)
+    act = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(3)],
+    )
+    duration_seconds = models.PositiveIntegerField(default=0)
+    mood = models.CharField(max_length=100, blank=True, default="")
+    scene_type = models.CharField(
+        max_length=20,
+        choices=SceneType.choices,
+        default=SceneType.OTHER,
+    )
+    notes = models.TextField(blank=True, default="")
     location = models.ForeignKey(
         Location,
         on_delete=models.SET_NULL,
