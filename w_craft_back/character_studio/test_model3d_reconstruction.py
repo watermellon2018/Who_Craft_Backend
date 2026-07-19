@@ -22,6 +22,7 @@ from w_craft_back.character_studio.models import (
     GenerationJobType,
 )
 from w_craft_back.character_studio.services.character_service import CharacterService
+from w_craft_back.character_studio.services.errors import ValidationError
 from w_craft_back.character_studio.services.model3d_reconstruction_service import (
     SIDE_REFERENCE_TYPES,
     _execute_pipeline,
@@ -72,6 +73,7 @@ class Model3DReconstructionTests(TestCase):
             CharacterAssetType.PORTRAIT,
             CharacterAssetType.FULL_BODY,
             CharacterAssetType.PROFILE,
+            CharacterAssetType.THREE_QUARTER,
             CharacterAssetType.BACK_VIEW,
         ):
             asset = CharacterAsset.objects.create(
@@ -132,7 +134,11 @@ class Model3DReconstructionTests(TestCase):
             ):
                 (tools_root / script_name).write_text("", encoding="utf-8")
 
-            for asset_type in (CharacterAssetType.PORTRAIT, *SIDE_REFERENCE_TYPES):
+            for asset_type in (
+                CharacterAssetType.PORTRAIT,
+                CharacterAssetType.BACK_VIEW,
+                *SIDE_REFERENCE_TYPES,
+            ):
                 asset = references.get(asset_type)
                 if asset is None:
                     continue
@@ -168,7 +174,7 @@ class Model3DReconstructionTests(TestCase):
     def _view_args(command: list[str]) -> list[tuple[str, str]]:
         result = []
         for index, argument in enumerate(command[:-1]):
-            if argument in ("--front", "--left", "--right"):
+            if argument in ("--front", "--left", "--back", "--right"):
                 result.append((argument, Path(command[index + 1]).name))
         return result
 
@@ -207,8 +213,27 @@ class Model3DReconstructionTests(TestCase):
         self.assertEqual(second["job_id"], state["job_id"])
         second_dispatch.assert_not_called()
 
+    def test_views_from_an_old_portrait_block_reconstruction(self):
+        for asset_type in (
+            CharacterAssetType.FULL_BODY,
+            CharacterAssetType.PROFILE,
+            CharacterAssetType.THREE_QUARTER,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            asset = self.reference_assets[asset_type]
+            asset.metadata = {
+                **asset.metadata,
+                "source_identity_asset_id": "replaced-portrait-id",
+            }
+            asset.save(update_fields=("metadata", "updated_at"))
+
+        state, dispatch = self._ensure_and_dispatch()
+
+        self.assertEqual(state["status"], "missing")
+        self.assertIn("different identity", state["error_message"])
+        dispatch.assert_not_called()
+
     def test_pipeline_passes_profile_and_three_quarter_in_order(self):
-        self._add_reference(CharacterAssetType.THREE_QUARTER)
 
         selected = _selected_references(self.character)
         self.assertEqual(
@@ -227,15 +252,33 @@ class Model3DReconstructionTests(TestCase):
         expected_source_views = [
             ("--front", "portrait.png"),
             ("--left", "profile.png"),
+            ("--back", "back_view.png"),
             ("--right", "three_quarter.png"),
         ]
         expected_prepared_views = [
             ("--front", "front.png"),
             ("--left", "left.png"),
+            ("--back", "back.png"),
             ("--right", "right.png"),
         ]
         self.assertEqual(self._view_args(commands[0]), expected_source_views)
         self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
+        self.assertEqual(
+            Path(self._argument_value(commands[2], "--front-reference")).name,
+            "front.png",
+        )
+        self.assertEqual(
+            Path(self._argument_value(commands[2], "--profile-reference")).name,
+            "left.png",
+        )
+        self.assertEqual(
+            self._argument_value(commands[2], "--hair-color"),
+            "#1e1a18",
+        )
+        self.assertEqual(
+            self._argument_value(commands[2], "--skin-color"),
+            "#d8ab8a",
+        )
         self.assertEqual(
             self._argument_value(commands[0], "--left-reference-type"),
             CharacterAssetType.PROFILE,
@@ -245,8 +288,11 @@ class Model3DReconstructionTests(TestCase):
             CharacterAssetType.THREE_QUARTER,
         )
         self.assertEqual(
-            [item["cardinal_slot_is_approximation"] for item in metadata["reference_views"]],
-            [False, True, True],
+            [
+                item["cardinal_slot_is_approximation"]
+                for item in metadata["reference_views"]
+            ],
+            [False, True, False, True],
         )
 
         self.assertEqual(
@@ -254,11 +300,12 @@ class Model3DReconstructionTests(TestCase):
             [
                 CharacterAssetType.PORTRAIT,
                 CharacterAssetType.PROFILE,
+                CharacterAssetType.BACK_VIEW,
                 CharacterAssetType.THREE_QUARTER,
             ],
         )
         job = CharacterGenerationJob.objects.latest("created_at")
-        self.assertEqual(job.request_payload["pipeline_version"], 3)
+        self.assertEqual(job.request_payload["pipeline_version"], 5)
         self.assertSetEqual(
             set(job.request_payload["reference_asset_ids"]),
             {
@@ -270,71 +317,37 @@ class Model3DReconstructionTests(TestCase):
             },
         )
 
-    def test_pipeline_keeps_legacy_front_and_profile_arguments(self):
-        commands, metadata = self._capture_pipeline_commands()
+    def test_missing_three_quarter_reference_does_not_create_job(self):
+        self.reference_assets.pop(CharacterAssetType.THREE_QUARTER).delete()
 
-        expected_source_views = [
-            ("--front", "portrait.png"),
-            ("--left", "profile.png"),
-        ]
-        expected_prepared_views = [
-            ("--front", "front.png"),
-            ("--left", "left.png"),
-        ]
-        self.assertEqual(self._view_args(commands[0]), expected_source_views)
-        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
-        self.assertEqual(metadata["skipped_duplicate_reference_types"], [])
+        state, dispatch = self._ensure_and_dispatch()
 
-    def test_pipeline_skips_duplicate_three_quarter_content(self):
-        self._add_reference(CharacterAssetType.THREE_QUARTER)
-        commands, metadata = self._capture_pipeline_commands(
-            {
-                CharacterAssetType.PROFILE: b"same-side",
-                CharacterAssetType.THREE_QUARTER: b"same-side",
-            }
-        )
+        self.assertEqual(state["status"], "missing")
+        self.assertIn("Required references", state["error_message"])
+        dispatch.assert_not_called()
 
-        expected_source_views = [
-            ("--front", "portrait.png"),
-            ("--left", "profile.png"),
-        ]
-        expected_prepared_views = [
-            ("--front", "front.png"),
-            ("--left", "left.png"),
-        ]
-        self.assertEqual(self._view_args(commands[0]), expected_source_views)
-        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
-        self.assertEqual(
-            metadata["skipped_duplicate_reference_types"],
-            [CharacterAssetType.THREE_QUARTER],
-        )
+    def test_duplicate_side_views_block_four_view_reconstruction(self):
+        with self.assertRaisesRegex(ValidationError, "Four unique"):
+            self._capture_pipeline_commands(
+                {
+                    CharacterAssetType.PROFILE: b"same-side",
+                    CharacterAssetType.THREE_QUARTER: b"same-side",
+                }
+            )
 
-    def test_three_quarter_falls_back_to_left_when_profile_is_missing(self):
+    def test_missing_profile_reference_does_not_create_job(self):
         self.reference_assets.pop(CharacterAssetType.PROFILE).delete()
-        self._add_reference(CharacterAssetType.THREE_QUARTER)
 
-        commands, _ = self._capture_pipeline_commands()
+        state, dispatch = self._ensure_and_dispatch()
 
-        expected_source_views = [
-            ("--front", "portrait.png"),
-            ("--left", "three_quarter.png"),
-        ]
-        expected_prepared_views = [
-            ("--front", "front.png"),
-            ("--left", "left.png"),
-        ]
-        self.assertEqual(self._view_args(commands[0]), expected_source_views)
-        self.assertEqual(self._view_args(commands[1]), expected_prepared_views)
-        self.assertEqual(
-            self._argument_value(commands[0], "--left-reference-type"),
-            CharacterAssetType.THREE_QUARTER,
-        )
+        self.assertEqual(state["status"], "missing")
+        self.assertIn("Required references", state["error_message"])
+        dispatch.assert_not_called()
 
     def test_cross_repo_prepare_cli_smoke(self):
         if os.environ.get("W_CRAFT_RUN_CROSS_REPO_SMOKE") != "1":
             self.skipTest("set W_CRAFT_RUN_CROSS_REPO_SMOKE=1 to run")
 
-        self._add_reference(CharacterAssetType.THREE_QUARTER)
         state, _ = self._ensure_and_dispatch()
         job = CharacterGenerationJob.objects.get(job_id=state["job_id"])
         references = _selected_references(self.character)
@@ -355,7 +368,10 @@ class Model3DReconstructionTests(TestCase):
             os.environ.get("W_CRAFT_CROSS_REPO_CONDA_EXE", default_conda_exe)
         )
         conda_environment = os.environ.get("W_CRAFT_CROSS_REPO_CONDA_ENV", "basic")
-        self.assertTrue(prepare_script.is_file(), f"missing sibling tool: {prepare_script}")
+        self.assertTrue(
+            prepare_script.is_file(),
+            f"missing sibling tool: {prepare_script}",
+        )
         self.assertTrue(conda_exe.is_file(), f"missing conda executable: {conda_exe}")
 
         with tempfile.TemporaryDirectory() as directory:
@@ -367,11 +383,13 @@ class Model3DReconstructionTests(TestCase):
                 CharacterAssetType.THREE_QUARTER: (
                     media_root / "tests" / "three_quarter.png"
                 ),
+                CharacterAssetType.BACK_VIEW: media_root / "tests" / "back_view.png",
             }
             colors = {
                 CharacterAssetType.PORTRAIT: (174, 110, 72),
                 CharacterAssetType.PROFILE: (166, 104, 68),
                 CharacterAssetType.THREE_QUARTER: (158, 98, 64),
+                CharacterAssetType.BACK_VIEW: (150, 92, 60),
             }
             for asset_type, source_path in source_paths.items():
                 self._write_reference_png(source_path, colors[asset_type])
@@ -432,6 +450,7 @@ class Model3DReconstructionTests(TestCase):
                 [
                     ("--front", "portrait.png"),
                     ("--left", "profile.png"),
+                    ("--back", "back_view.png"),
                     ("--right", "three_quarter.png"),
                 ],
             )
@@ -440,6 +459,7 @@ class Model3DReconstructionTests(TestCase):
                 [
                     ("--front", "front.png"),
                     ("--left", "left.png"),
+                    ("--back", "back.png"),
                     ("--right", "right.png"),
                 ],
             )
@@ -448,17 +468,18 @@ class Model3DReconstructionTests(TestCase):
             inputs_dir = prepared_dir / "inputs"
             self.assertEqual(
                 sorted(path.name for path in inputs_dir.iterdir()),
-                ["front.png", "left.png", "right.png"],
+                ["back.png", "front.png", "left.png", "right.png"],
             )
             report_path = prepared_dir / "input-metadata.json"
             with report_path.open("r", encoding="utf-8") as handle:
                 report = json.load(handle)
 
-            self.assertEqual(list(report["views"]), ["front", "left", "right"])
+            self.assertEqual(list(report["views"]), ["front", "left", "back", "right"])
             self.assertEqual(report["skipped_duplicate_views"], [])
             expected_sources = {
                 "front": source_paths[CharacterAssetType.PORTRAIT],
                 "left": source_paths[CharacterAssetType.PROFILE],
+                "back": source_paths[CharacterAssetType.BACK_VIEW],
                 "right": source_paths[CharacterAssetType.THREE_QUARTER],
             }
             for view_name, source_path in expected_sources.items():
@@ -483,13 +504,14 @@ class Model3DReconstructionTests(TestCase):
                 [
                     CharacterAssetType.PORTRAIT,
                     CharacterAssetType.PROFILE,
+                    CharacterAssetType.BACK_VIEW,
                     CharacterAssetType.THREE_QUARTER,
                 ],
             )
             self.assertFalse((work_dir / "hunyuan").exists())
 
-    def test_missing_all_side_references_does_not_create_job(self):
-        self.reference_assets.pop(CharacterAssetType.PROFILE).delete()
+    def test_missing_back_reference_does_not_create_job(self):
+        self.reference_assets.pop(CharacterAssetType.BACK_VIEW).delete()
 
         state, dispatch = self._ensure_and_dispatch()
 
@@ -509,6 +531,7 @@ class Model3DReconstructionTests(TestCase):
                     self.assertIn(CharacterAssetType.PORTRAIT, references)
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(b"glTF-personal-head")
+                    output_path.with_name("hair.glb").write_bytes(b"glTF-personal-hair")
                     return {"test_pipeline": True}
 
                 with patch(PIPELINE, side_effect=fake_pipeline):
@@ -524,7 +547,43 @@ class Model3DReconstructionTests(TestCase):
                     ready["model_url"],
                     f"http://testserver/media/{asset.storage_path}",
                 )
+                self.assertEqual(
+                    ready["hair_url"],
+                    "http://testserver/media/"
+                    f"{Path(asset.storage_path).with_name('hair.glb').as_posix()}",
+                )
+                self.assertEqual(ready["assets"]["hair"]["source"], "generated")
+                self.assertEqual(
+                    ready["assets"]["hair"]["generation_method"],
+                    "multiview_hunyuan_voxel_remesh_with_inset_backing_v3",
+                )
                 self.assertTrue((Path(media_root) / asset.storage_path).is_file())
+
+    def test_retry_replaces_ready_asset_missing_generated_hair(self):
+        state, _ = self._ensure_and_dispatch()
+        job = CharacterGenerationJob.objects.get(job_id=state["job_id"])
+        job.status = GenerationJobStatus.COMPLETED
+        job.progress = 100
+        job.save(update_fields=("status", "progress"))
+        asset = CharacterAsset.objects.get(source_job_id=job.job_id)
+        asset.status = CharacterAssetStatus.READY
+        asset.metadata = {
+            key: value
+            for key, value in asset.metadata.items()
+            if key != "hair_asset"
+        }
+        asset.save(update_fields=("status", "metadata", "updated_at"))
+
+        failed = reconstruction_state(self.character)
+        self.assertEqual(failed["status"], "failed")
+
+        with patch(DISPATCH) as dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                retried = retry_reconstruction(self.character)
+
+        self.assertEqual(retried["status"], "queued")
+        self.assertNotEqual(retried["job_id"], state["job_id"])
+        dispatch.assert_called_once()
 
     def test_worker_failure_is_visible_and_retry_creates_new_job(self):
         state, _ = self._ensure_and_dispatch()
