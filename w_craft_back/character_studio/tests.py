@@ -35,6 +35,7 @@ from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
 from w_craft_back.character_studio.services.model3d_autofit_service import (
+    _fallback_iris_color,
     _iris_color,
     _hair_band_color,
     _hair_sample_box,
@@ -2382,9 +2383,9 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         second = self._post()
 
         self.assertEqual(first.status_code, 200, first.content)
-        self.assertEqual(first.json()["autofit_version"], 4)
+        self.assertEqual(first.json()["autofit_version"], 5)
         self.assertEqual(second.status_code, 200, second.content)
-        self.assertEqual(second.json()["autofit_version"], 5)
+        self.assertEqual(second.json()["autofit_version"], 6)
         self.assertEqual(second.json()["params"]["nose"]["noseTip"], 0.6)
         self.assertEqual(compute.call_count, 2)
 
@@ -2405,7 +2406,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertEqual(params["torso"]["chestWidth"], 0.9)
         self.assertEqual(params["hair"]["hairColor"], "#b9653b")
         self.character.refresh_from_db()
-        self.assertEqual(self.character.model3d_autofit_version, 5)
+        self.assertEqual(self.character.model3d_autofit_version, 6)
 
     @patch("w_craft_back.character_studio.views.compute_autofit")
     def test_v2_upgrade_replaces_ignored_face_defaults(self, compute):
@@ -2473,7 +2474,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             params["skin_color"],
             {"skinTone": "#f0c6ad", "skinSaturation": 0.3},
         )
-        self.assertEqual(response.json()["autofit_version"], 5)
+        self.assertEqual(response.json()["autofit_version"], 6)
 
     def test_model3d_get_reports_autofit_done(self):
         get_url = (
@@ -2489,7 +2490,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             self._post()
         after = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
         self.assertTrue(after.json()["autofit_done"])
-        self.assertEqual(after.json()["autofit_version"], 5)
+        self.assertEqual(after.json()["autofit_version"], 6)
 
     def test_metrics_canonical_face_is_neutral_oval(self):
         metrics = metrics_from_landmarks(self._landmarks())
@@ -2866,6 +2867,39 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             self._color_distance(color, copper),
             self._color_distance(color, highlight),
         )
+
+    def test_fallback_iris_color_finds_blue_pair_without_mediapipe(self):
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (240, 240), (224, 184, 154))
+        draw = ImageDraw.Draw(image)
+        for center_x in (86, 154):
+            draw.ellipse(
+                (center_x - 20, 62, center_x + 20, 82),
+                fill=(245, 245, 240),
+            )
+            draw.ellipse(
+                (center_x - 8, 64, center_x + 8, 80),
+                fill=(70, 145, 205),
+            )
+            draw.ellipse(
+                (center_x - 3, 67, center_x + 3, 77),
+                fill=(10, 15, 22),
+            )
+
+        color = _fallback_iris_color(image)
+
+        self.assertIsNotNone(color)
+        red, green, blue = self._rgb(color)
+        self.assertGreater(blue, red + 35)
+        self.assertGreater(green, red + 20)
+
+    def test_fallback_iris_color_rejects_flat_portrait(self):
+        from PIL import Image
+
+        image = Image.new("RGB", (240, 240), self.SKIN_RGB)
+
+        self.assertIsNone(_fallback_iris_color(image))
 
     def test_iris_color_ignores_dark_pupil_and_highlight(self):
         from PIL import Image, ImageDraw
