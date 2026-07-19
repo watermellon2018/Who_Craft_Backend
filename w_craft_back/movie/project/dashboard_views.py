@@ -48,14 +48,21 @@ from w_craft_back.movie.project.serializers import (
     MusicTrackCreateSerializer,
     ProjectCreateSerializer,
     ProjectUpdateSerializer,
-    SceneCreateSerializer,
 )
+from w_craft_back.movie.project.serializers import SceneWorkspaceCreateSerializer
 from w_craft_back.movie.project.services import (
     build_project_dashboard,
     build_project_edit_payload,
     build_project_summary,
     record_activity,
 )
+from w_craft_back.movie.project.script_workspace import (
+    characters_collection_payload,
+    replace_scene_characters,
+    scene_payload,
+    script_text_from_blocks,
+)
+
 from w_craft_back.movie.properties.models import Audience, Genre
 
 logger = logging.getLogger(__name__)
@@ -568,6 +575,15 @@ class ProjectDashboardView(APIView):
 class _ProjectScopedView(APIView):
     """Base for endpoints that need an editable project."""
 
+    def _viewable_project(self, request, project_id: int):
+        user = _resolve_user(request)
+        if user is None:
+            return None, None, _unauthorized()
+        project = _get_project_or_404(project_id)
+        if not user_has_project_access(user, project):
+            return None, None, _forbidden()
+        return user, project, None
+
     def _editable_project(self, request, project_id: int):
         user = _resolve_user(request)
         if user is None:
@@ -579,6 +595,12 @@ class _ProjectScopedView(APIView):
 
 
 class ProjectCharactersView(_ProjectScopedView):
+    def get(self, request, project_id: int):
+        user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        return Response(characters_collection_payload(project, request))
+
     def post(self, request, project_id: int):
         user, project, err = self._editable_project(request, project_id)
         if err:
@@ -600,6 +622,7 @@ class ProjectCharactersView(_ProjectScopedView):
                 name=data["name"],
                 short_description=data.get("short_description", ""),
                 role=data.get("role", "secondary"),
+                status="active",
             )
             record_activity(
                 project,
@@ -622,12 +645,22 @@ class ProjectCharactersView(_ProjectScopedView):
 
 
 class ProjectScenesView(_ProjectScopedView):
+    def get(self, request, project_id: int):
+        user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        from w_craft_back.movie.project.script_workspace import scenes_collection_payload
+
+        return Response(scenes_collection_payload(project, user, request))
+
     def post(self, request, project_id: int):
         user, project, err = self._editable_project(request, project_id)
         if err:
             return err
 
-        serializer = SceneCreateSerializer(data=request.data)
+        serializer = SceneWorkspaceCreateSerializer(
+            data=request.data, context={"project": project}
+        )
         if not serializer.is_valid():
             return _validation_error(serializer.errors)
         data = serializer.validated_data
@@ -646,17 +679,33 @@ class ProjectScenesView(_ProjectScopedView):
         if order is None:
             order = (Scene.objects.filter(project=project).count() or 0) + 1
 
+        script_blocks = data.get("script_blocks")
+        script_text = data.get("script_text", "")
+        if script_blocks is not None:
+            script_text = script_text_from_blocks(script_blocks)
+        character_ids = data.get("character_ids", [])
+
+        data["script_text"] = script_text
         with transaction.atomic():
             scene = Scene.objects.create(
                 project=project,
                 title=data["title"],
                 description=data.get("description", ""),
                 script_text=data.get("script_text", ""),
+                script_blocks=script_blocks or [],
+                status=data.get("status", "draft"),
+                act=data.get("act", 1),
+                duration_seconds=data.get("duration_seconds", 0),
+                mood=data.get("mood", ""),
+                scene_type=data.get("scene_type", "other"),
+                notes=data.get("notes", ""),
+                camera_settings=data.get("camera_settings", {}),
                 location=location,
                 order=order,
                 created_by=user,
                 updated_by=user,
             )
+            replace_scene_characters(scene, project, character_ids)
             record_activity(
                 project,
                 user,
@@ -666,10 +715,7 @@ class ProjectScenesView(_ProjectScopedView):
                 metadata={"scene_id": scene.id},
             )
 
-        return Response(
-            {"id": scene.id, "title": scene.title, "order": scene.order},
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(scene_payload(scene, request), status=status.HTTP_201_CREATED)
 
 
 class ProjectMusicView(_ProjectScopedView):
