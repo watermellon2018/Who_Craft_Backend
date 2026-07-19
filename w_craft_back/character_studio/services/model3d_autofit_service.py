@@ -10,9 +10,9 @@ Two quality tiers, decided at runtime:
 * mediapipe installed (optional dependency, see requirements.txt): FaceMesh
   landmarks give facial proportion metrics, iris color, and a polygon skin
   mask (the face oval minus eyes/brows/mouth) for an accurate skin color;
-* mediapipe missing: a heuristic central crop still yields plausible skin
-  and hair colors, and the response carries warnings so the frontend can
-  tell the user which sliders were left untouched.
+* mediapipe missing: heuristic portrait regions still yield plausible skin
+  and hair colors, while a symmetric eye-pair detector samples iris color
+  without introducing another native runtime dependency.
 
 Hair has no per-class segmentation under the pinned mediapipe (that needs a
 downloaded Tasks-API model we don't ship), so its color stays a best-effort
@@ -131,7 +131,7 @@ CANON_UPPER_FOREARM = 1.15  # upper-arm segment / forearm segment
 POSE_MIN_VISIBILITY = 0.6
 POSE_MAX_Z_SPREAD = 0.18    # |z| gap of shoulders/hips; larger = turned
 POSE_ARM_GATE_FLOOR = 0.15  # below this elbow-straightness, drop arm length
-MODEL3D_AUTOFIT_VERSION = 5
+MODEL3D_AUTOFIT_VERSION = 6
 
 
 HAIR_COLORS = (
@@ -453,7 +453,11 @@ def compute_autofit(character):
 
     if landmarks is None:
         warnings.append("landmarks_unavailable")
-        warnings.append("eye_color_unavailable")
+        eye_color = _fallback_iris_color(image)
+        if eye_color:
+            params.setdefault("eyes", {})["eyeColor"] = eye_color
+        else:
+            warnings.append("eye_color_unavailable")
     else:
         try:
             metrics = metrics_from_landmarks(landmarks)
@@ -1145,6 +1149,119 @@ def hair_band_box(points, width, height):
     if right - left < 1.0:
         return None
     return (left, top, right, bottom)
+
+
+def _fallback_iris_color(image):
+    """Sample paired irises when FaceMesh is unavailable.
+
+    Generated portraits keep both eyes in a predictable upper-center band. A
+    small symmetric contrast search finds dark iris centers surrounded by
+    lighter sclera, then the dominant chromatic pixels provide the color. The
+    confidence gate rejects flat skin/hair illustrations instead of inventing
+    a color.
+    """
+    size = 192
+    resized = image.convert("RGB").resize(
+        (size, size),
+        Image.Resampling.BILINEAR,
+    )
+    pixels = list(resized.getdata())
+    luminance = [
+        0.2126 * red + 0.7152 * green + 0.0722 * blue
+        for red, green, blue in pixels
+    ]
+    integral = [[0.0] * (size + 1) for _ in range(size + 1)]
+    for y in range(size):
+        row_sum = 0.0
+        previous = integral[y]
+        current = integral[y + 1]
+        for x in range(size):
+            row_sum += luminance[y * size + x]
+            current[x + 1] = previous[x + 1] + row_sum
+
+    def box_mean(center_x, center_y, radius):
+        left = max(0, center_x - radius)
+        top = max(0, center_y - radius)
+        right = min(size, center_x + radius + 1)
+        bottom = min(size, center_y + radius + 1)
+        total = (
+            integral[bottom][right]
+            - integral[top][right]
+            - integral[bottom][left]
+            + integral[top][left]
+        )
+        return total / max(1, (right - left) * (bottom - top))
+
+    best = None
+    sample_radius = 2
+    for center_y in range(round(size * 0.20), round(size * 0.34)):
+        for face_center_x in range(round(size * 0.46), round(size * 0.55)):
+            for eye_offset in range(round(size * 0.08), round(size * 0.16)):
+                centers = (
+                    face_center_x - eye_offset,
+                    face_center_x + eye_offset,
+                )
+                contrasts = []
+                for center_x in centers:
+                    iris = box_mean(center_x, center_y, sample_radius)
+                    sclera = statistics.mean((
+                        box_mean(center_x - 6, center_y, sample_radius),
+                        box_mean(center_x + 6, center_y, sample_radius),
+                    ))
+                    contrasts.append(sclera - iris)
+                score = (
+                    statistics.mean(contrasts)
+                    - abs(contrasts[0] - contrasts[1]) * 0.45
+                    - eye_offset * 0.05
+                )
+                if best is None or score > best[0]:
+                    best = (score, centers, center_y)
+
+    if best is None or best[0] < 12.0:
+        return None
+
+    _, centers, center_y = best
+    iris_pixels = []
+    iris_radius = 3
+    for center_x in centers:
+        for y in range(center_y - iris_radius, center_y + iris_radius + 1):
+            for x in range(center_x - iris_radius, center_x + iris_radius + 1):
+                if (x - center_x) ** 2 + (y - center_y) ** 2 <= iris_radius ** 2:
+                    iris_pixels.append(resized.getpixel((x, y)))
+
+    categories = {"cool": [], "green": [], "warm": []}
+    for pixel in iris_pixels:
+        red, green, blue = pixel
+        brightness = (red + green + blue) / 3
+        if not 20 < brightness < 205:
+            continue
+        if blue - red > 12 and blue - green > 5:
+            categories["cool"].append(pixel)
+        elif green - red > 8 and green - blue > 3:
+            categories["green"].append(pixel)
+        elif red - blue > 12 and red - green > 5:
+            categories["warm"].append(pixel)
+
+    category, candidates = max(categories.items(), key=lambda item: len(item[1]))
+    if len(candidates) < 4:
+        return None
+    ranked = sorted(
+        candidates,
+        key=lambda pixel: (
+            0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
+        ),
+    )
+    low_fraction, high_fraction = (
+        (0.25, 0.70) if category == "warm" else (0.45, 0.90)
+    )
+    low = int((len(ranked) - 1) * low_fraction)
+    high = int((len(ranked) - 1) * high_fraction)
+    selected = ranked[low:high + 1]
+    color = tuple(
+        round(statistics.median(pixel[channel] for pixel in selected))
+        for channel in range(3)
+    )
+    return "#{:02x}{:02x}{:02x}".format(*color)
 
 
 def _iris_color(image, landmarks):
