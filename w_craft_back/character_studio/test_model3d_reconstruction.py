@@ -1,11 +1,15 @@
 """Tests for per-character 3D reconstruction orchestration."""
 
+import json
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
+from PIL import Image, ImageDraw
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import (
@@ -172,6 +176,16 @@ class Model3DReconstructionTests(TestCase):
     def _argument_value(command: list[str], name: str) -> str:
         return command[command.index(name) + 1]
 
+    @staticmethod
+    def _write_reference_png(path: Path, color: tuple[int, int, int]) -> None:
+        """Write a small face-like fixture without using the prepare runtime."""
+        image = Image.new("RGB", (256, 256), (220, 220, 220))
+        drawing = ImageDraw.Draw(image)
+        drawing.ellipse((72, 28, 184, 206), fill=color)
+        drawing.rectangle((104, 168, 152, 244), fill=color)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, format="PNG")
+
     def test_ensure_creates_one_idempotent_job_and_asset(self):
         state, dispatch = self._ensure_and_dispatch()
         self.assertEqual(state["status"], "queued")
@@ -315,6 +329,164 @@ class Model3DReconstructionTests(TestCase):
             self._argument_value(commands[0], "--left-reference-type"),
             CharacterAssetType.THREE_QUARTER,
         )
+
+    def test_cross_repo_prepare_cli_smoke(self):
+        if os.environ.get("W_CRAFT_RUN_CROSS_REPO_SMOKE") != "1":
+            self.skipTest("set W_CRAFT_RUN_CROSS_REPO_SMOKE=1 to run")
+
+        self._add_reference(CharacterAssetType.THREE_QUARTER)
+        state, _ = self._ensure_and_dispatch()
+        job = CharacterGenerationJob.objects.get(job_id=state["job_id"])
+        references = _selected_references(self.character)
+
+        backend_root = Path(__file__).resolve().parents[2]
+        default_tools_root = (
+            backend_root.parent / "who_craft" / "tools" / "reconstruction"
+        )
+        tools_root = Path(
+            os.environ.get(
+                "W_CRAFT_CROSS_REPO_TOOLS_ROOT",
+                default_tools_root,
+            )
+        )
+        prepare_script = tools_root / "prepare_hunyuan_views.py"
+        default_conda_exe = Path.home() / "miniconda3" / "Scripts" / "conda.exe"
+        conda_exe = Path(
+            os.environ.get("W_CRAFT_CROSS_REPO_CONDA_EXE", default_conda_exe)
+        )
+        conda_environment = os.environ.get("W_CRAFT_CROSS_REPO_CONDA_ENV", "basic")
+        self.assertTrue(prepare_script.is_file(), f"missing sibling tool: {prepare_script}")
+        self.assertTrue(conda_exe.is_file(), f"missing conda executable: {conda_exe}")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media_root = root / "media"
+            source_paths = {
+                CharacterAssetType.PORTRAIT: media_root / "tests" / "portrait.png",
+                CharacterAssetType.PROFILE: media_root / "tests" / "profile.png",
+                CharacterAssetType.THREE_QUARTER: (
+                    media_root / "tests" / "three_quarter.png"
+                ),
+            }
+            colors = {
+                CharacterAssetType.PORTRAIT: (174, 110, 72),
+                CharacterAssetType.PROFILE: (166, 104, 68),
+                CharacterAssetType.THREE_QUARTER: (158, 98, 64),
+            }
+            for asset_type, source_path in source_paths.items():
+                self._write_reference_png(source_path, colors[asset_type])
+
+            commands: list[list[str]] = []
+            executed_scripts: list[str] = []
+
+            def run_prepare_only(command: list[str], cwd: Path) -> None:
+                commands.append(command)
+                if str(prepare_script) in command:
+                    subprocess.run(
+                        command,
+                        cwd=str(cwd),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    executed_scripts.append(prepare_script.name)
+
+            work_dir = root / "work"
+            with override_settings(
+                MEDIA_ROOT=media_root,
+                MODEL3D_RECONSTRUCTION_PYTHON="",
+                MODEL3D_CONDA_EXE=conda_exe,
+                MODEL3D_CONDA_ENV=conda_environment,
+                MODEL3D_RECONSTRUCTION_TOOLS_ROOT=tools_root,
+                MODEL3D_HUNYUAN_ROOT=root / "unused-hunyuan",
+                MODEL3D_MODEL_ROOT=root / "unused-models",
+            ):
+                pipeline_metadata = _execute_pipeline(
+                    job,
+                    references,
+                    root / "unused-head.glb",
+                    work_dir,
+                    run_prepare_only,
+                )
+
+            script_names = [
+                next(
+                    Path(argument).name
+                    for argument in command
+                    if argument.endswith(".py")
+                )
+                for command in commands
+            ]
+            self.assertEqual(
+                script_names,
+                [
+                    "prepare_hunyuan_views.py",
+                    "run_hunyuan_multiview.py",
+                    "postprocess_hunyuan_mesh.py",
+                ],
+            )
+            self.assertEqual(executed_scripts, ["prepare_hunyuan_views.py"])
+            self.assertEqual(
+                self._view_args(commands[0]),
+                [
+                    ("--front", "portrait.png"),
+                    ("--left", "profile.png"),
+                    ("--right", "three_quarter.png"),
+                ],
+            )
+            self.assertEqual(
+                self._view_args(commands[1]),
+                [
+                    ("--front", "front.png"),
+                    ("--left", "left.png"),
+                    ("--right", "right.png"),
+                ],
+            )
+
+            prepared_dir = work_dir / "prepared"
+            inputs_dir = prepared_dir / "inputs"
+            self.assertEqual(
+                sorted(path.name for path in inputs_dir.iterdir()),
+                ["front.png", "left.png", "right.png"],
+            )
+            report_path = prepared_dir / "input-metadata.json"
+            with report_path.open("r", encoding="utf-8") as handle:
+                report = json.load(handle)
+
+            self.assertEqual(list(report["views"]), ["front", "left", "right"])
+            self.assertEqual(report["skipped_duplicate_views"], [])
+            expected_sources = {
+                "front": source_paths[CharacterAssetType.PORTRAIT],
+                "left": source_paths[CharacterAssetType.PROFILE],
+                "right": source_paths[CharacterAssetType.THREE_QUARTER],
+            }
+            for view_name, source_path in expected_sources.items():
+                output_path = inputs_dir / f"{view_name}.png"
+                self.assertEqual(
+                    Path(report["views"][view_name]["source"]),
+                    source_path.resolve(),
+                )
+                self.assertEqual(
+                    Path(report["views"][view_name]["output"]),
+                    output_path,
+                )
+                with Image.open(output_path) as image:
+                    self.assertEqual(image.mode, "RGBA")
+                    self.assertEqual(image.size, (512, 512))
+
+            self.assertEqual(
+                [
+                    item["reference_type"]
+                    for item in pipeline_metadata["reference_views"]
+                ],
+                [
+                    CharacterAssetType.PORTRAIT,
+                    CharacterAssetType.PROFILE,
+                    CharacterAssetType.THREE_QUARTER,
+                ],
+            )
+            self.assertFalse((work_dir / "hunyuan").exists())
 
     def test_missing_all_side_references_does_not_create_job(self):
         self.reference_assets.pop(CharacterAssetType.PROFILE).delete()
