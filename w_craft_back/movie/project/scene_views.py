@@ -27,6 +27,13 @@ from w_craft_back.movie.project.dashboard_models import (
     Scene,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project.script_workspace import (
+    replace_scene_characters,
+    scene_payload,
+    scenes_queryset,
+    script_text_from_blocks,
+)
+from w_craft_back.movie.project.serializers import SceneWorkspaceUpdateSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -146,31 +153,93 @@ class _VersionedEntityView(APIView):
 class SceneDetailView(_VersionedEntityView):
     model = Scene
     url_kwarg = "scene_id"
-    editable_fields = (
-        "title",
-        "description",
-        "script_text",
-        "status",
-        "order",
-        "camera_settings",
-    )
 
-    def serialize(self, scene: Scene) -> dict:
-        return {
-            "id": scene.id,
-            "title": scene.title,
-            "description": scene.description,
-            "scriptText": scene.script_text,
-            "status": scene.status,
-            "order": scene.order,
-            "cameraSettings": scene.camera_settings or {},
-            "version": scene.version,
-            "updatedAt": scene.updated_at.isoformat() if scene.updated_at else None,
-            "updatedById": scene.updated_by_id,
-            "updatedByUsername": (
-                scene.updated_by.username if scene.updated_by_id else None
-            ),
-        }
+    def serialize(self, scene: Scene, request=None) -> dict:
+        hydrated = scenes_queryset(scene.project).get(pk=scene.pk)
+        return scene_payload(hydrated, request)
+
+    def get(self, request, project_id, **kwargs):
+        user, project, obj, err = self._resolve(request, project_id, **kwargs)
+        if err:
+            return err
+        return Response(self.serialize(obj, request))
+
+    def patch(self, request, project_id, **kwargs):
+        user, project, obj, err = self._resolve(request, project_id, **kwargs)
+        if err:
+            return err
+        if not policy.can_edit(user, project):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = SceneWorkspaceUpdateSerializer(
+            data=request.data,
+            context={"project": project},
+        )
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "validation error", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        data = dict(serializer.validated_data)
+        expected = data.pop("version")
+        if expected != obj.version:
+            return _conflict(obj.version)
+
+        character_ids = data.pop("character_ids", None)
+        location_supplied = "location_id" in data
+        location_id = data.pop("location_id", None)
+        location = None
+        if location_supplied and location_id is not None:
+            location = Location.objects.filter(
+                pk=location_id,
+                project=project,
+            ).first()
+            if location is None:
+                return Response(
+                    {
+                        "detail": "validation error",
+                        "errors": {
+                            "location_id": ["location not found in this project"]
+                        },
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if "script_blocks" in data:
+            data["script_text"] = script_text_from_blocks(data["script_blocks"])
+        elif "script_text" in data:
+            data["script_blocks"] = []
+
+        with transaction.atomic():
+            locked = Scene.objects.select_for_update().get(
+                pk=obj.pk,
+                project=project,
+            )
+            if expected != locked.version:
+                return _conflict(locked.version)
+
+            changed = bool(data) or character_ids is not None or location_supplied
+            for field, value in data.items():
+                setattr(locked, field, value)
+            if location_supplied:
+                locked.location = location
+            if character_ids is not None:
+                replace_scene_characters(locked, project, character_ids)
+            if changed:
+                locked.version = (locked.version or 1) + 1
+                locked.updated_by = user
+                locked.save()
+
+        return Response(self.serialize(locked, request))
+
+    def delete(self, request, project_id, **kwargs):
+        user, project, obj, err = self._resolve(request, project_id, **kwargs)
+        if err:
+            return err
+        if not policy.can_edit(user, project):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class LocationDetailView(_VersionedEntityView):
