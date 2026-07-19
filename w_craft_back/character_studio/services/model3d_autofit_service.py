@@ -131,7 +131,7 @@ CANON_UPPER_FOREARM = 1.15  # upper-arm segment / forearm segment
 POSE_MIN_VISIBILITY = 0.6
 POSE_MAX_Z_SPREAD = 0.18    # |z| gap of shoulders/hips; larger = turned
 POSE_ARM_GATE_FLOOR = 0.15  # below this elbow-straightness, drop arm length
-MODEL3D_AUTOFIT_VERSION = 6
+MODEL3D_AUTOFIT_VERSION = 7
 
 
 HAIR_COLORS = (
@@ -176,6 +176,27 @@ CLOTHING_COLORS = (
     ("beige", "#c9b99b"),
     ("white", "#dedbd2"),
     ("red", "#8a4542"),
+)
+CLOTHING_TOP_STYLE_KEYWORDS = (
+    ("sleeveless", ("sleeveless", "tank top", "camisole", "vest", "без рукав", "майк")),
+    (
+        "long_sleeve",
+        (
+            "long sleeve", "hoodie", "sweater", "sweatshirt", "jacket",
+            "coat", "turtleneck", "blazer", "длинный рукав", "длинным рукавом",
+            "худи", "свитер", "толстовк", "куртк", "пальто",
+        ),
+    ),
+)
+CLOTHING_BOTTOM_STYLE_KEYWORDS = (
+    (
+        "trousers",
+        (
+            "trousers", "pants", "jeans", "leggings", "slacks", "брюк", "штан",
+            "джинс", "леггинс",
+        ),
+    ),
+    ("shorts", ("shorts", "шорт")),
 )
 BODY_PRESETS = {
     "slim": {
@@ -230,6 +251,22 @@ def _hex_or_named_color(value, palette):
         (color for keyword, color in palette if keyword in normalized),
         None,
     )
+
+
+def _infer_clothing_styles(value):
+    """Infer the closest editable garment silhouettes from authored outfit text."""
+    normalized = str(value or "").lower().replace("_", " ").replace("-", " ")
+    top_style = "tshirt"
+    bottom_style = "shorts"
+    for style, keywords in CLOTHING_TOP_STYLE_KEYWORDS:
+        if any(keyword in normalized for keyword in keywords):
+            top_style = style
+            break
+    for style, keywords in CLOTHING_BOTTOM_STYLE_KEYWORDS:
+        if any(keyword in normalized for keyword in keywords):
+            bottom_style = style
+            break
+    return top_style, bottom_style
 
 
 def _character_authored_params(character):
@@ -343,19 +380,34 @@ def _character_authored_params(character):
         for color in palette
         if _hex_or_named_color(color, CLOTHING_COLORS)
     ]
-    clothing_text = (
-        f"{getattr(character, 'clothing_description', '')} "
-        f"{getattr(outfit, 'description', '')}"
+    clothing_text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(character, "clothing_description", ""),
+            getattr(outfit, "name", ""),
+            getattr(outfit, "description", ""),
+            getattr(outfit, "style", ""),
+            getattr(outfit, "layers", ""),
+        )
     )
+    top_style, bottom_style = _infer_clothing_styles(clothing_text)
+    if clothing_text.strip() or colors:
+        params["clothing_top"] = {"enabled": True, "style": top_style}
+        params["clothing_bottom"] = {"enabled": True, "style": bottom_style}
+
     top_source = colors[0] if colors else clothing_text
     top_color = _hex_or_named_color(top_source, CLOTHING_COLORS)
     if top_color:
-        params["clothing_top"] = {"enabled": True, "color": top_color}
+        params.setdefault("clothing_top", {}).update(
+            {"enabled": True, "color": top_color}
+        )
     if len(colors) > 1:
-        params["clothing_bottom"] = {
-            "enabled": True,
-            "color": _hex_or_named_color(colors[1], CLOTHING_COLORS),
-        }
+        params.setdefault("clothing_bottom", {}).update(
+            {
+                "enabled": True,
+                "color": _hex_or_named_color(colors[1], CLOTHING_COLORS),
+            }
+        )
     return params
 
 

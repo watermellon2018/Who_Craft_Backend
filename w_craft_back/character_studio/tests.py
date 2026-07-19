@@ -2237,7 +2237,27 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertEqual(params["waist"]["waistWidth"], -0.25)
         self.assertEqual(params["posture"]["posturePreset"], "confident")
         self.assertEqual(params["clothing_top"]["color"], "#263a55")
+        self.assertEqual(params["clothing_top"]["style"], "tshirt")
         self.assertEqual(params["clothing_bottom"]["color"], "#2d2d33")
+        self.assertEqual(params["clothing_bottom"]["style"], "shorts")
+
+    def test_outfit_text_selects_editable_clothing_silhouettes(self):
+        outfit = CharacterOutfit.objects.create(
+            character=self.character,
+            name="Street outfit",
+            description="black long-sleeve hoodie and blue jeans",
+            color_palette=["#232329", "#3b5266"],
+            is_default=True,
+        )
+        self.character.active_outfit = outfit
+        self.character.save(update_fields=["active_outfit", "updated_at"])
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        params = response.json()["params"]
+        self.assertEqual(params["clothing_top"]["style"], "long_sleeve")
+        self.assertEqual(params["clothing_bottom"]["style"], "trousers")
 
     def test_structured_hair_color_wins_over_portrait_band_sample(self):
         appearance = self.character.active_appearance
@@ -2383,9 +2403,9 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         second = self._post()
 
         self.assertEqual(first.status_code, 200, first.content)
-        self.assertEqual(first.json()["autofit_version"], 5)
+        self.assertEqual(first.json()["autofit_version"], 6)
         self.assertEqual(second.status_code, 200, second.content)
-        self.assertEqual(second.json()["autofit_version"], 6)
+        self.assertEqual(second.json()["autofit_version"], 7)
         self.assertEqual(second.json()["params"]["nose"]["noseTip"], 0.6)
         self.assertEqual(compute.call_count, 2)
 
@@ -2406,7 +2426,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         self.assertEqual(params["torso"]["chestWidth"], 0.9)
         self.assertEqual(params["hair"]["hairColor"], "#b9653b")
         self.character.refresh_from_db()
-        self.assertEqual(self.character.model3d_autofit_version, 6)
+        self.assertEqual(self.character.model3d_autofit_version, 7)
 
     @patch("w_craft_back.character_studio.views.compute_autofit")
     def test_v2_upgrade_replaces_ignored_face_defaults(self, compute):
@@ -2474,7 +2494,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             params["skin_color"],
             {"skinTone": "#f0c6ad", "skinSaturation": 0.3},
         )
-        self.assertEqual(response.json()["autofit_version"], 6)
+        self.assertEqual(response.json()["autofit_version"], 7)
 
     def test_model3d_get_reports_autofit_done(self):
         get_url = (
@@ -2490,7 +2510,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
             self._post()
         after = self.client.get(get_url, HTTP_X_USER_TOKEN=self.token)
         self.assertTrue(after.json()["autofit_done"])
-        self.assertEqual(after.json()["autofit_version"], 6)
+        self.assertEqual(after.json()["autofit_version"], 7)
 
     def test_metrics_canonical_face_is_neutral_oval(self):
         metrics = metrics_from_landmarks(self._landmarks())
