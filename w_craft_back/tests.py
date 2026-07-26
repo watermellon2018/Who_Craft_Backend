@@ -73,6 +73,7 @@ class CharacterTreeStudioTests(TestCase):
     def setUp(self):
         user = User.objects.create_user(username="owner", password="password")
         self.user_key = UserKey.objects.create(user=user)
+        self.client.defaults["HTTP_X_USER_TOKEN"] = str(self.user_key.key)
         self.project = Project.objects.create(
             user=self.user_key,
             title="Tree project",
