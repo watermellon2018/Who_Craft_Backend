@@ -74,7 +74,11 @@ if CORS_ORIGIN_ALLOW_ALL and CORS_ALLOW_CREDENTIALS and not DEBUG:
     )
 
 from corsheaders.defaults import default_headers as _cors_default_headers
-CORS_ALLOW_HEADERS = (*_cors_default_headers, "x-user-token")
+CORS_ALLOW_HEADERS = (
+    *_cors_default_headers,
+    "x-user-token",
+    "idempotency-key",
+)
 
 
 MIDDLEWARE = [

@@ -5,7 +5,7 @@ subclasses (and are translated to HTTP statuses by the view layer)."""
 from __future__ import annotations
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.poster import facade
@@ -83,6 +83,7 @@ class PosterFacadeAccessTests(TestCase):
             )
 
 
+@override_settings(POSTER_GENERATION_USE_MOCK=True)
 class PosterFacadeHappyPathTests(TestCase):
     """The inline mock generator is wired up by default — this test follows the
     full create → get → select → delete cycle without a real worker."""

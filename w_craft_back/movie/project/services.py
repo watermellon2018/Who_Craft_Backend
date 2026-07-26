@@ -9,6 +9,7 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Any, Optional
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -129,6 +130,17 @@ def _absolute_url(request, file_field) -> Optional[str]:
     if request is None:
         return url
     return request.build_absolute_uri(url)
+
+
+def _selected_poster_url(project: Project, request=None) -> Optional[str]:
+    """Return the canonical selected poster variant without exposing other jobs."""
+    try:
+        selected = project.poster.selected_variant
+    except ObjectDoesNotExist:
+        return None
+    if selected is None or selected.is_deleted:
+        return None
+    return _absolute_url(request, selected.image)
 
 
 def _absolute_url_str(request, raw_url: Optional[str]) -> Optional[str]:
@@ -257,8 +269,10 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
         owner_name = owner_payload["displayName"]
 
     description = project.description or project.desc or ""
-    cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
-        request, project.image
+    cover_url = (
+        _absolute_url(request, project.cover_image)
+        or _selected_poster_url(project, request)
+        or _absolute_url(request, project.image)
     )
 
     from w_craft_back.movie.project import policy as _policy
@@ -590,8 +604,10 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
     if scenes_total is None:
         scenes_total = Scene.objects.filter(project=project).count()
 
-    cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
-        request, project.image
+    cover_url = (
+        _absolute_url(request, project.cover_image)
+        or _selected_poster_url(project, request)
+        or _absolute_url(request, project.image)
     )
 
     # When the caller did a ``prefetch_related('tags')`` we read the cache
@@ -673,8 +689,10 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
     """
 
     base = build_project_summary(project, request)
-    poster_url = _absolute_url(request, project.image) or _absolute_url(
-        request, project.cover_image
+    poster_url = (
+        _selected_poster_url(project, request)
+        or _absolute_url(request, project.image)
+        or _absolute_url(request, project.cover_image)
     )
     base.update({
         "format": project.format or "",

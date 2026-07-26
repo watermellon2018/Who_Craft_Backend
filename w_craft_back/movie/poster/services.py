@@ -7,15 +7,36 @@ without touching the views.
 
 from __future__ import annotations
 
+from datetime import timedelta
+from io import BytesIO
 from typing import Any, Optional
 
 from django.contrib.auth.models import User
+from django.core.files.base import ContentFile
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
+from PIL import Image
 
+from w_craft_back.movie.poster.errors import (
+    IdempotencyConflict,
+    PosterConcurrencyLimit,
+    PosterQuotaExceeded,
+)
+from w_craft_back.movie.poster.generation_guard import (
+    daily_quota,
+    daily_quota_per_user,
+    job_lease_seconds,
+    max_active_jobs,
+    max_active_jobs_per_user,
+    max_output_bytes,
+    max_output_pixels,
+    quota_window_start,
+)
 from w_craft_back.movie.poster.models import (
     POSTER_FORMAT_DIMENSIONS,
     PosterGenerationJob,
+    PosterJobOperation,
     PosterJobStatus,
     PosterVariant,
     ProjectPoster,
@@ -92,6 +113,7 @@ def serialize_job(job: PosterGenerationJob, request=None) -> dict[str, Any]:
         "height": job.height,
         "errorMessage": job.error_message or None,
         "errorCode": job.error_code or None,
+        "errorHttpStatus": job.error_http_status,
         "createdAt": job.created_at.isoformat() if job.created_at else None,
         "startedAt": job.started_at.isoformat() if job.started_at else None,
         "completedAt": job.completed_at.isoformat() if job.completed_at else None,
@@ -122,9 +144,13 @@ def serialize_poster(
     }
 
 
+class InvalidProviderImage(ValueError):
+    """Provider output failed bounded image validation before storage."""
+
 # --------------------------------------------------------------------------- #
 # Mutations
 # --------------------------------------------------------------------------- #
+
 
 def get_or_create_project_poster(project: Project, user: User) -> ProjectPoster:
     poster, _ = ProjectPoster.objects.get_or_create(
@@ -156,6 +182,26 @@ def resolve_reference_asset(
     return ProjectAsset.objects.filter(project=project, pk=asset_id).first()
 
 
+def _expire_stale_jobs(user: User, now) -> None:
+    """Release abandoned jobs so a process crash cannot block generation forever."""
+    legacy_cutoff = now - timedelta(seconds=job_lease_seconds())
+    PosterGenerationJob.objects.filter(
+        user=user,
+        status__in=[PosterJobStatus.QUEUED, PosterJobStatus.PROCESSING],
+    ).filter(
+        Q(lease_expires_at__lte=now)
+        | Q(lease_expires_at__isnull=True, created_at__lte=legacy_cutoff)
+    ).update(
+        status=PosterJobStatus.FAILED,
+        error_message="Poster generation lease expired",
+        error_code="POSTER_JOB_LEASE_EXPIRED",
+        error_http_status=503,
+        completed_at=now,
+        lease_expires_at=None,
+        updated_at=now,
+    )
+
+
 def enqueue_generation_job(
     *,
     project: Project,
@@ -163,24 +209,87 @@ def enqueue_generation_job(
     prompt: str,
     style: str,
     format: str,
+    operation: str = PosterJobOperation.GENERATE,
+    idempotency_key: str = "",
+    request_hash: str = "",
     reference_image_url: str = "",
     reference_asset: Optional[ProjectAsset] = None,
-) -> tuple[ProjectPoster, PosterGenerationJob]:
-    """Create the job in QUEUED state and flip the poster to GENERATING.
-
-    Wrapped in a single transaction so the poster row, the job row, and the
-    status change are persisted atomically — a worker that races us will
-    always see a coherent (poster, job) pair.
-    """
+    source_variant: Optional[PosterVariant] = None,
+) -> tuple[ProjectPoster, PosterGenerationJob, bool]:
+    """Create one guarded job or replay the job for the same request key."""
     aspect, width, height = POSTER_FORMAT_DIMENSIONS[format]
 
     with transaction.atomic():
-        poster = get_or_create_project_poster(project, user)
+        Project.objects.select_for_update().get(pk=project.pk)
+        User.objects.select_for_update().get(pk=user.pk)
+        now = timezone.now()
+        _expire_stale_jobs(user, now)
 
+        if idempotency_key:
+            existing = (
+                PosterGenerationJob.objects
+                .select_related("poster")
+                .filter(
+                    project=project,
+                    user=user,
+                    operation=operation,
+                    idempotency_key=idempotency_key,
+                )
+                .first()
+            )
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise IdempotencyConflict(
+                        "Idempotency-Key was already used with another payload"
+                    )
+                return existing.poster, existing, False
+
+        active_statuses = [PosterJobStatus.QUEUED, PosterJobStatus.PROCESSING]
+        active_count = PosterGenerationJob.objects.filter(
+            project=project,
+            user=user,
+            status__in=active_statuses,
+        ).count()
+        if active_count >= max_active_jobs():
+            raise PosterConcurrencyLimit(
+                "Another poster generation request is already active"
+            )
+
+        user_active_count = PosterGenerationJob.objects.filter(
+            user=user,
+            status__in=active_statuses,
+        ).count()
+        if user_active_count >= max_active_jobs_per_user():
+            raise PosterConcurrencyLimit(
+                "Too many poster generation requests are active for this user"
+            )
+
+        user_recent_count = PosterGenerationJob.objects.filter(
+            user=user,
+            created_at__gte=quota_window_start(),
+        ).count()
+        if user_recent_count >= daily_quota_per_user():
+            raise PosterQuotaExceeded(
+                "Poster generation account quota is exhausted"
+            )
+
+        recent_count = PosterGenerationJob.objects.filter(
+            project=project,
+            user=user,
+            created_at__gte=quota_window_start(),
+        ).count()
+        if recent_count >= daily_quota():
+            raise PosterQuotaExceeded("Poster generation quota is exhausted")
+
+        poster = get_or_create_project_poster(project, user)
         job = PosterGenerationJob.objects.create(
             poster=poster,
             project=project,
             user=user,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            lease_expires_at=now + timedelta(seconds=job_lease_seconds()),
             prompt=prompt,
             style=style,
             format=format,
@@ -189,24 +298,18 @@ def enqueue_generation_job(
             height=height,
             reference_image_url=reference_image_url or "",
             reference_asset=reference_asset,
+            source_variant=source_variant,
             status=PosterJobStatus.QUEUED,
         )
 
-        # Don't downgrade a "ready" poster optimistically — only flip from
-        # empty/failed to generating so a subsequent failed retry doesn't hide
-        # an already-selected good variant.
         if poster.status in (
             ProjectPosterStatus.EMPTY,
             ProjectPosterStatus.FAILED,
         ):
             poster.status = ProjectPosterStatus.GENERATING
             poster.save(update_fields=["status", "updated_at"])
-        elif poster.status == ProjectPosterStatus.READY:
-            # Keep status READY but track that a new generation is in flight
-            # via the job rows themselves.
-            pass
 
-    return poster, job
+    return poster, job, True
 
 
 def select_variant(
@@ -246,7 +349,6 @@ def soft_delete_variant(*, variant: PosterVariant) -> ProjectPoster:
     """Soft-delete ``variant``. If it was the selected one, fall back to the
     next non-deleted variant or clear the selection."""
     poster = variant.poster
-    project = variant.project
 
     with transaction.atomic():
         PosterVariant.objects.filter(pk=variant.pk).update(
@@ -274,13 +376,179 @@ def soft_delete_variant(*, variant: PosterVariant) -> ProjectPoster:
                     poster=poster, is_deleted=False
                 ).exists()
                 poster.status = (
-                    ProjectPosterStatus.READY if remaining else ProjectPosterStatus.EMPTY
+                    ProjectPosterStatus.READY
+                    if remaining
+                    else ProjectPosterStatus.EMPTY
                 )
             poster.save(
                 update_fields=["selected_variant", "status", "updated_at"]
             )
 
     return poster
+
+
+def mark_generation_processing(
+    job: PosterGenerationJob,
+    *,
+    provider_name: str,
+    model_name: str,
+) -> PosterGenerationJob:
+    """Atomically claim a queued job for the synchronous bounded provider call."""
+    with transaction.atomic():
+        locked = PosterGenerationJob.objects.select_for_update().get(pk=job.pk)
+        if locked.status == PosterJobStatus.QUEUED:
+            locked.status = PosterJobStatus.PROCESSING
+            locked.started_at = timezone.now()
+            locked.model_provider = provider_name[:64]
+            locked.model_name = model_name[:128]
+            locked.lease_expires_at = timezone.now() + timedelta(
+                seconds=job_lease_seconds()
+            )
+            locked.save(
+                update_fields=[
+                    "status",
+                    "started_at",
+                    "model_provider",
+                    "model_name",
+                    "lease_expires_at",
+                    "updated_at",
+                ]
+            )
+        return locked
+
+
+def _generated_image_metadata(image_bytes: bytes) -> tuple[str, str, int, int]:
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        raise InvalidProviderImage(
+            "Provider returned an empty or invalid image payload"
+        )
+    if len(image_bytes) > max_output_bytes():
+        raise InvalidProviderImage("Provider image exceeds the output byte limit")
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image_format = (image.format or "").upper()
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > max_output_pixels():
+                raise InvalidProviderImage(
+                    "Provider image dimensions exceed the safety limit"
+                )
+            image.verify()
+    except (Image.DecompressionBombError, OSError) as exc:
+        raise InvalidProviderImage("Provider returned invalid image bytes") from exc
+
+    suffix_by_format = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
+    suffix = suffix_by_format.get(image_format)
+    mime_type = Image.MIME.get(image_format)
+    if suffix is None or mime_type is None:
+        raise InvalidProviderImage("Provider returned an unsupported image format")
+    return mime_type, suffix, width, height
+
+
+def complete_generation(
+    job: PosterGenerationJob,
+    image_bytes_list: list[bytes],
+) -> list[PosterVariant]:
+    """Persist provider results and complete the job exactly once."""
+    with transaction.atomic():
+        locked = (
+            PosterGenerationJob.objects
+            .select_for_update()
+            .select_related("poster", "project", "user")
+            .get(pk=job.pk)
+        )
+        if locked.status == PosterJobStatus.COMPLETED:
+            return list(locked.variants.order_by("variant_index"))
+        if locked.status in (PosterJobStatus.FAILED, PosterJobStatus.CANCELLED):
+            return []
+
+        created: list[PosterVariant] = []
+        for index, image_bytes in enumerate(image_bytes_list):
+            mime_type, suffix, width, height = _generated_image_metadata(image_bytes)
+            variant = PosterVariant(
+                job=locked,
+                poster=locked.poster,
+                project=locked.project,
+                user=locked.user,
+                variant_index=index,
+                width=width,
+                height=height,
+                file_size_bytes=len(image_bytes),
+                mime_type=mime_type,
+            )
+            variant.image.save(
+                f"poster_job_{locked.id}_v{index}.{suffix}",
+                ContentFile(image_bytes),
+                save=False,
+            )
+            variant.save()
+            created.append(variant)
+
+        locked.status = PosterJobStatus.COMPLETED
+        locked.completed_at = timezone.now()
+        locked.lease_expires_at = None
+        locked.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "lease_expires_at",
+                "updated_at",
+            ]
+        )
+
+        poster = locked.poster
+        poster.status = ProjectPosterStatus.READY
+        if created:
+            first = created[0]
+            PosterVariant.objects.filter(
+                poster=poster,
+                is_selected=True,
+            ).update(is_selected=False)
+            PosterVariant.objects.filter(pk=first.pk).update(is_selected=True)
+            first.is_selected = True
+            poster.selected_variant = first
+        poster.save(update_fields=["selected_variant", "status", "updated_at"])
+        return created
+
+
+def fail_generation(
+    job: PosterGenerationJob,
+    *,
+    error_message: str,
+    error_code: str = "",
+    error_http_status: int | None = None,
+) -> None:
+    """Persist a provider failure while preserving an existing good poster."""
+    with transaction.atomic():
+        locked = (
+            PosterGenerationJob.objects
+            .select_for_update()
+            .select_related("poster")
+            .get(pk=job.pk)
+        )
+        if locked.status == PosterJobStatus.COMPLETED:
+            return
+        locked.status = PosterJobStatus.FAILED
+        locked.error_message = error_message
+        locked.error_code = error_code or ""
+        locked.error_http_status = error_http_status
+        locked.completed_at = timezone.now()
+        locked.lease_expires_at = None
+        locked.save(
+            update_fields=[
+                "status",
+                "error_message",
+                "error_code",
+                "error_http_status",
+                "completed_at",
+                "lease_expires_at",
+                "updated_at",
+            ]
+        )
+
+        poster = locked.poster
+        if poster.selected_variant_id is None:
+            poster.status = ProjectPosterStatus.FAILED
+            poster.save(update_fields=["status", "updated_at"])
 
 
 # --------------------------------------------------------------------------- #
@@ -291,7 +559,8 @@ def soft_delete_variant(*, variant: PosterVariant) -> ProjectPoster:
 # the model's output bytes; until then we just persist a deterministic blob so
 # the rest of the pipeline (selection, listing, FE rendering) can be exercised.
 _PLACEHOLDER_PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAY"
+    "AAjCB0C8AAAAASUVORK5CYII="
 )
 
 
@@ -300,67 +569,19 @@ def complete_generation_mock(
     *,
     variant_count: int = 4,
 ) -> list[PosterVariant]:
-    """Simulate a worker run: queued → processing → completed, with N variants.
-
-    Idempotent for an already-completed job (returns its existing variants).
-    Returning early when status is ``failed``/``cancelled`` keeps replay safe.
-    """
+    """Complete a guarded job with deterministic local placeholder images."""
     import base64
 
-    from django.core.files.base import ContentFile
-
-    if job.status == PosterJobStatus.COMPLETED:
-        return list(job.variants.all())
-    if job.status in (PosterJobStatus.FAILED, PosterJobStatus.CANCELLED):
-        return []
-
     placeholder_bytes = base64.b64decode(_PLACEHOLDER_PNG_BASE64)
-
-    with transaction.atomic():
-        job.status = PosterJobStatus.PROCESSING
-        job.started_at = timezone.now()
-        job.save(update_fields=["status", "started_at", "updated_at"])
-
-        created: list[PosterVariant] = []
-        for idx in range(variant_count):
-            variant = PosterVariant(
-                job=job,
-                poster=job.poster,
-                project=job.project,
-                user=job.user,
-                variant_index=idx,
-                width=job.width,
-                height=job.height,
-                mime_type="image/png",
-            )
-            variant.image.save(
-                f"poster_job_{job.id}_v{idx}.png",
-                ContentFile(placeholder_bytes),
-                save=False,
-            )
-            variant.save()
-            created.append(variant)
-
-        job.status = PosterJobStatus.COMPLETED
-        job.completed_at = timezone.now()
-        job.save(update_fields=["status", "completed_at", "updated_at"])
-
-        # Spec: "после новой генерации автоматически выбрать первый новый
-        # variant". Always promote the first new variant — predictable for the
-        # FE; the user can pick another via PATCH /select.
-        poster = job.poster
-        poster.status = ProjectPosterStatus.READY
-        if created:
-            first = created[0]
-            PosterVariant.objects.filter(
-                poster=poster, is_selected=True
-            ).update(is_selected=False)
-            PosterVariant.objects.filter(pk=first.pk).update(is_selected=True)
-            first.is_selected = True
-            poster.selected_variant = first
-        poster.save(update_fields=["selected_variant", "status", "updated_at"])
-
-    return created
+    claimed = mark_generation_processing(
+        job,
+        provider_name="mock",
+        model_name="mock-poster-provider",
+    )
+    return complete_generation(
+        claimed,
+        [placeholder_bytes for _ in range(variant_count)],
+    )
 
 
 def fail_generation_mock(
@@ -368,23 +589,12 @@ def fail_generation_mock(
     *,
     error_message: str,
     error_code: str = "",
+    error_http_status: int | None = None,
 ) -> None:
-    """Mark a job failed and bubble the failure up to the poster row when the
-    poster has no good variant yet."""
-
-    with transaction.atomic():
-        job.status = PosterJobStatus.FAILED
-        job.error_message = error_message
-        job.error_code = error_code or ""
-        job.completed_at = timezone.now()
-        job.save(
-            update_fields=[
-                "status", "error_message", "error_code",
-                "completed_at", "updated_at",
-            ]
-        )
-
-        poster = job.poster
-        if poster.selected_variant_id is None:
-            poster.status = ProjectPosterStatus.FAILED
-            poster.save(update_fields=["status", "updated_at"])
+    """Backward-compatible alias for tests that simulate worker failure."""
+    fail_generation(
+        job,
+        error_message=error_message,
+        error_code=error_code,
+        error_http_status=error_http_status,
+    )

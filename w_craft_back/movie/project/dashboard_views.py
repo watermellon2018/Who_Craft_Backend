@@ -353,7 +353,7 @@ class ProjectListCreateView(APIView):
         # projects list endpoint).
         projects = (
             Project.objects.filter(owner_q | legacy_owner_q | member_q)
-            .select_related("progress", "owner", "user")
+            .select_related("progress", "owner", "user", "poster__selected_variant")
             .prefetch_related(
                 Prefetch(
                     "tags",

@@ -1,37 +1,49 @@
-"""Public service facade matching the request spec's method signatures.
-
-Lives between views and the lower-level service helpers in ``services.py``.
-The shape is ``method(user, project_id, ...)`` so non-HTTP callers (workers,
-admin scripts, tests) can use it without recreating DRF request objects.
-
-Errors are raised as ``poster.errors.PosterError`` subclasses; the view layer
-in ``dashboard_views.py`` translates them into the canonical HTTP response.
-"""
+"""Project-scoped poster service facade."""
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Optional
 
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.shortcuts import get_object_or_404
 
 from w_craft_back.movie.poster.errors import (
+    PosterError,
+    PosterImageTooLarge,
     PosterJobNotFound,
+    PosterProviderCircuitOpen,
+    PosterProviderFailure,
     PosterVariantDeleted,
     PosterVariantNotFound,
     ProjectAccessDenied,
     ProjectNotFound,
 )
+from w_craft_back.movie.poster.generation_guard import (
+    ensure_provider_circuit_closed,
+    max_input_bytes,
+    provider_circuit_key,
+    provider_timeout_seconds,
+    record_provider_failure,
+    record_provider_success,
+    request_fingerprint,
+)
 from w_craft_back.movie.poster.models import (
     PosterGenerationJob,
+    PosterJobOperation,
+    PosterJobStatus,
     PosterVariant,
     ProjectPoster,
 )
 from w_craft_back.movie.poster.services import (
+    complete_generation,
     complete_generation_mock,
     enqueue_generation_job,
+    fail_generation,
     get_or_create_project_poster,
+    InvalidProviderImage,
     list_recent_variants,
+    mark_generation_processing,
     resolve_reference_asset,
     select_variant as _select_variant,
     serialize_job,
@@ -39,25 +51,20 @@ from w_craft_back.movie.poster.services import (
     serialize_variant,
     soft_delete_variant,
 )
+from w_craft_back.movie.project import policy
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.permissions import (
     user_can_edit_project,
     user_has_project_access,
 )
-
-
-# Toggle to run the mock generator inline so the FE can iterate without a
-# real worker. Drop this flag and dispatch to a queue from ``generate_poster``
-# when the real pipeline lands.
-RUN_MOCK_GENERATION_INLINE = True
+from w_craft_back.services.image_generation import (
+    ImageProviderError,
+    resolve_provider_for_user,
+)
 
 DEFAULT_VARIANT_LIMIT = 8
 MAX_VARIANT_LIMIT = 50
 
-
-# --------------------------------------------------------------------------- #
-# Access helpers
-# --------------------------------------------------------------------------- #
 
 def _load_project(project_id: int) -> Project:
     try:
@@ -80,9 +87,163 @@ def _project_for_edit(user: User, project_id: int) -> Project:
     return project
 
 
-# --------------------------------------------------------------------------- #
-# Public API (matches the spec's recommended service shape)
-# --------------------------------------------------------------------------- #
+def _project_for_generation(user: User, project_id: int) -> Project:
+    project = _load_project(project_id)
+    if not policy.can(user, project, policy.Action.RUN_GENERATION):
+        raise ProjectAccessDenied("generation is not permitted for this project")
+    return project
+
+
+def _service_idempotency_key(value: str) -> str:
+    return value or f"service:{uuid.uuid4()}"
+
+
+def _read_limited_file(file_field) -> bytes:
+    limit = max_input_bytes()
+    try:
+        file_field.open("rb")
+        data = file_field.read(limit + 1)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise PosterVariantNotFound("poster source image is unavailable") from exc
+    finally:
+        try:
+            file_field.close()
+        except (AttributeError, OSError):
+            pass
+    if len(data) > limit:
+        raise PosterImageTooLarge("Poster source image exceeds the byte limit")
+    return data
+
+
+def _serialize_operation(
+    project: Project,
+    poster: ProjectPoster,
+    job: PosterGenerationJob,
+    *,
+    request=None,
+    replayed: bool = False,
+) -> dict[str, Any]:
+    recent = list_recent_variants(project, limit=DEFAULT_VARIANT_LIMIT)
+    variants = list(
+        PosterVariant.objects.filter(job=job, is_deleted=False)
+        .order_by("variant_index", "created_at")
+    )
+    return {
+        "jobId": job.id,
+        "status": job.status,
+        "idempotentReplay": replayed,
+        "job": serialize_job(job, request),
+        "poster": serialize_poster(
+            poster,
+            recent_variants=recent,
+            request=request,
+        ),
+        "variants": [serialize_variant(variant, request) for variant in variants],
+    }
+
+
+def _raise_stored_failure(job: PosterGenerationJob) -> None:
+    raise PosterProviderFailure(
+        job.error_message or "Poster provider request failed",
+        code=job.error_code or PosterProviderFailure.code,
+        http_status=job.error_http_status or PosterProviderFailure.http_status,
+    )
+
+
+def _provider_failure(job, provider_key: str | None, exc: ImageProviderError):
+    if provider_key and exc.http_status >= 500:
+        record_provider_failure(provider_key)
+    fail_generation(
+        job,
+        error_message=exc.message,
+        error_code=exc.code,
+        error_http_status=exc.http_status,
+    )
+    raise PosterProviderFailure(
+        exc.message,
+        code=exc.code,
+        http_status=exc.http_status,
+    ) from exc
+
+
+def _raise_persistence_failure(job, exc: Exception) -> None:
+    try:
+        fail_generation(
+            job,
+            error_message="Generated poster could not be stored",
+            error_code="POSTER_RESULT_PERSISTENCE_FAILED",
+            error_http_status=500,
+        )
+    except Exception:  # noqa: BLE001 — the lease remains a recovery fallback
+        pass
+    raise PosterProviderFailure(
+        "Generated poster could not be stored",
+        code="POSTER_RESULT_PERSISTENCE_FAILED",
+        http_status=500,
+    ) from exc
+
+
+def _complete_provider_result(job, images: list[bytes], provider_key: str) -> None:
+    try:
+        complete_generation(job, images)
+    except InvalidProviderImage:
+        invalid_output = ImageProviderError(
+            code="IMAGE_PROVIDER_BAD_RESPONSE",
+            message="Poster provider returned an invalid image",
+            http_status=502,
+        )
+        _provider_failure(job, provider_key, invalid_output)
+    except Exception as exc:  # noqa: BLE001 — storage/DB boundary
+        _raise_persistence_failure(job, exc)
+    record_provider_success(provider_key)
+
+
+def _complete_mock_result(job, *, variant_count: int = 4) -> None:
+    try:
+        complete_generation_mock(job, variant_count=variant_count)
+    except Exception as exc:  # noqa: BLE001 — storage/DB boundary
+        _raise_persistence_failure(job, exc)
+
+
+def _resolve_and_claim(job, user, model_override, *, require_edit: bool):
+    try:
+        provider = resolve_provider_for_user(
+            user,
+            override=model_override,
+            require_edit=require_edit,
+        )
+    except ImageProviderError as exc:
+        fail_generation(
+            job,
+            error_message=exc.message,
+            error_code=exc.code,
+            error_http_status=exc.http_status,
+        )
+        raise PosterProviderFailure(
+            exc.message,
+            code=exc.code,
+            http_status=exc.http_status,
+        ) from exc
+
+    provider_key = provider_circuit_key(provider)
+    try:
+        ensure_provider_circuit_closed(provider_key)
+    except PosterProviderCircuitOpen as exc:
+        fail_generation(
+            job,
+            error_message=exc.message,
+            error_code=exc.code,
+            error_http_status=exc.http_status,
+        )
+        raise
+
+    claimed = mark_generation_processing(
+        job,
+        provider_name=str(getattr(provider, "name", "")),
+        model_name=str(getattr(provider, "model_id", "")),
+    )
+    return provider, provider_key, claimed
+
 
 def get_project_poster(
     user: User,
@@ -96,7 +257,9 @@ def get_project_poster(
     recent = list_recent_variants(project, limit=limit)
     return {
         "poster": serialize_poster(
-            poster, recent_variants=recent, request=request
+            poster,
+            recent_variants=recent,
+            request=request,
         ),
         "recentVariants": [serialize_variant(v, request) for v in recent],
     }
@@ -109,43 +272,220 @@ def generate_poster(
     prompt: str,
     style: str,
     format: str,
+    idempotency_key: str = "",
+    reference_image_bytes: bytes | None = None,
+    reference_mime_type: str = "image/png",
     reference_image_url: str = "",
     reference_image_asset_id: Optional[int] = None,
+    image_model: str | None = None,
     request=None,
-    run_mock: bool = RUN_MOCK_GENERATION_INLINE,
+    run_mock: bool | None = None,
 ) -> dict[str, Any]:
-    project = _project_for_edit(user, project_id)
-
+    project = _project_for_generation(user, project_id)
     reference_asset = resolve_reference_asset(project, reference_image_asset_id)
-    poster, job = enqueue_generation_job(
+    if reference_image_asset_id and reference_asset is None:
+        raise PosterVariantNotFound("reference asset not found")
+    if reference_image_url:
+        raise PosterError(
+            "Arbitrary reference URLs are not accepted; upload a project asset"
+        )
+    if reference_image_bytes is None and reference_asset is not None:
+        reference_image_bytes = _read_limited_file(reference_asset.file)
+        reference_mime_type = (
+            (reference_asset.metadata or {}).get("mime_type") or "image/png"
+        )
+    if (
+        reference_image_bytes is not None
+        and len(reference_image_bytes) > max_input_bytes()
+    ):
+        raise PosterImageTooLarge("Reference image exceeds the byte limit")
+
+    key = _service_idempotency_key(idempotency_key)
+    fingerprint = request_fingerprint(
+        {
+            "operation": PosterJobOperation.GENERATE,
+            "prompt": prompt,
+            "style": style,
+            "format": format,
+            "reference_asset_id": reference_image_asset_id,
+            "reference_mime_type": reference_mime_type,
+            "image_model": image_model,
+        },
+        reference_image_bytes,
+    )
+    poster, job, created = enqueue_generation_job(
         project=project,
         user=user,
         prompt=prompt,
         style=style,
         format=format,
-        reference_image_url=reference_image_url or "",
+        operation=PosterJobOperation.GENERATE,
+        idempotency_key=key,
+        request_hash=fingerprint,
         reference_asset=reference_asset,
     )
+    if not created:
+        if job.status == PosterJobStatus.FAILED:
+            _raise_stored_failure(job)
+        return _serialize_operation(
+            project, poster, job, request=request, replayed=True
+        )
 
-    if run_mock:
-        complete_generation_mock(job)
-        job.refresh_from_db()
-        poster.refresh_from_db()
-
-    recent = list_recent_variants(project, limit=DEFAULT_VARIANT_LIMIT)
-    variants_for_job = list(
-        PosterVariant.objects.filter(job=job, is_deleted=False)
-        .order_by("variant_index", "created_at")
+    use_mock = (
+        getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
+        if run_mock is None
+        else run_mock
     )
-    return {
-        "jobId": job.id,
-        "status": job.status,
-        "job": serialize_job(job, request),
-        "poster": serialize_poster(
-            poster, recent_variants=recent, request=request
-        ),
-        "variants": [serialize_variant(v, request) for v in variants_for_job],
-    }
+    if use_mock:
+        _complete_mock_result(job)
+    else:
+        provider, provider_key, claimed = _resolve_and_claim(
+            job,
+            user,
+            image_model,
+            require_edit=False,
+        )
+        try:
+            if reference_image_bytes is not None:
+                generate_with_reference = getattr(
+                    provider,
+                    "generate_with_reference",
+                    None,
+                )
+                if generate_with_reference is None:
+                    raise PosterError(
+                        "Selected provider does not support reference images"
+                    )
+                images = generate_with_reference(
+                    prompt,
+                    reference_image_bytes,
+                    mime_type=reference_mime_type,
+                    variant_count=1,
+                    timeout=provider_timeout_seconds(),
+                )
+            else:
+                images = provider.generate(
+                    prompt,
+                    aspect_ratio=claimed.aspect_ratio,
+                    variant_count=1,
+                    timeout=provider_timeout_seconds(),
+                )
+            if not isinstance(images, list) or len(images) != 1:
+                raise ImageProviderError(
+                    code="IMAGE_PROVIDER_BAD_RESPONSE",
+                    message="Provider must return exactly one poster image",
+                    http_status=502,
+                )
+        except ImageProviderError as exc:
+            _provider_failure(claimed, provider_key, exc)
+        except PosterError as exc:
+            fail_generation(
+                claimed,
+                error_message=exc.message,
+                error_code=exc.code,
+                error_http_status=exc.http_status,
+            )
+            raise
+        except Exception:  # noqa: BLE001
+            mapped = ImageProviderError(
+                code="IMAGE_PROVIDER_UNAVAILABLE",
+                message="Poster provider is unavailable",
+                http_status=503,
+            )
+            _provider_failure(claimed, provider_key, mapped)
+        else:
+            _complete_provider_result(claimed, images, provider_key)
+
+    job.refresh_from_db()
+    poster.refresh_from_db()
+    return _serialize_operation(project, poster, job, request=request)
+
+
+def edit_poster(
+    user: User,
+    project_id: int,
+    *,
+    source_variant_id: int,
+    instruction: str,
+    idempotency_key: str = "",
+    image_model: str | None = None,
+    request=None,
+    run_mock: bool | None = None,
+) -> dict[str, Any]:
+    project = _project_for_generation(user, project_id)
+    source = (
+        PosterVariant.objects
+        .select_related("job")
+        .filter(pk=source_variant_id, project=project, is_deleted=False)
+        .first()
+    )
+    if source is None:
+        raise PosterVariantNotFound("source poster variant not found")
+    source_bytes = _read_limited_file(source.image)
+
+    key = _service_idempotency_key(idempotency_key)
+    fingerprint = request_fingerprint(
+        {
+            "operation": PosterJobOperation.EDIT,
+            "source_variant_id": source.id,
+            "instruction": instruction,
+            "image_model": image_model,
+        }
+    )
+    poster, job, created = enqueue_generation_job(
+        project=project,
+        user=user,
+        prompt=instruction,
+        style=source.job.style,
+        format=source.job.format,
+        operation=PosterJobOperation.EDIT,
+        idempotency_key=key,
+        request_hash=fingerprint,
+        source_variant=source,
+    )
+    if not created:
+        if job.status == PosterJobStatus.FAILED:
+            _raise_stored_failure(job)
+        return _serialize_operation(
+            project, poster, job, request=request, replayed=True
+        )
+
+    use_mock = (
+        getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
+        if run_mock is None
+        else run_mock
+    )
+    if use_mock:
+        _complete_mock_result(job, variant_count=1)
+    else:
+        provider, provider_key, claimed = _resolve_and_claim(
+            job,
+            user,
+            image_model,
+            require_edit=True,
+        )
+        try:
+            edited = provider.edit(
+                source_bytes,
+                instruction,
+                mime_type=source.mime_type or "image/png",
+                timeout=provider_timeout_seconds(),
+            )
+        except ImageProviderError as exc:
+            _provider_failure(claimed, provider_key, exc)
+        except Exception:  # noqa: BLE001
+            mapped = ImageProviderError(
+                code="IMAGE_PROVIDER_UNAVAILABLE",
+                message="Poster provider is unavailable",
+                http_status=503,
+            )
+            _provider_failure(claimed, provider_key, mapped)
+        else:
+            _complete_provider_result(claimed, [edited], provider_key)
+
+    job.refresh_from_db()
+    poster.refresh_from_db()
+    return _serialize_operation(project, poster, job, request=request)
 
 
 def get_poster_job(
@@ -158,7 +498,8 @@ def get_poster_job(
     project = _project_for_access(user, project_id)
     try:
         job = PosterGenerationJob.objects.select_related("poster").get(
-            pk=job_id, project=project
+            pk=job_id,
+            project=project,
         )
     except PosterGenerationJob.DoesNotExist as exc:
         raise PosterJobNotFound("poster job not found") from exc
@@ -181,10 +522,7 @@ def select_poster_variant(
     request=None,
 ) -> dict[str, Any]:
     project = _project_for_edit(user, project_id)
-
-    variant = (
-        PosterVariant.objects.filter(pk=variant_id, project=project).first()
-    )
+    variant = PosterVariant.objects.filter(pk=variant_id, project=project).first()
     if variant is None:
         raise PosterVariantNotFound("poster variant not found")
     if variant.is_deleted:
@@ -194,7 +532,6 @@ def select_poster_variant(
     poster.refresh_from_db()
     variant.refresh_from_db()
     recent = list_recent_variants(project, limit=DEFAULT_VARIANT_LIMIT)
-
     return {
         "poster": {
             **serialize_poster(poster, recent_variants=recent, request=request),
@@ -225,14 +562,9 @@ def delete_poster_variant(
     request=None,
 ) -> dict[str, Any]:
     project = _project_for_edit(user, project_id)
-
-    variant = (
-        PosterVariant.objects.filter(pk=variant_id, project=project).first()
-    )
+    variant = PosterVariant.objects.filter(pk=variant_id, project=project).first()
     if variant is None:
         raise PosterVariantNotFound("poster variant not found")
-
     if not variant.is_deleted:
         soft_delete_variant(variant=variant)
-
     return {"success": True}

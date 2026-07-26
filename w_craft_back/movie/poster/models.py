@@ -42,6 +42,11 @@ class PosterJobStatus(models.TextChoices):
     CANCELLED = "cancelled", "Отменено"
 
 
+class PosterJobOperation(models.TextChoices):
+    GENERATE = "generate", "Генерация"
+    EDIT = "edit", "Редактирование"
+
+
 class PosterStyle(models.TextChoices):
     CINEMATIC = "cinematic", "Кинематографичный"
     ANIME = "anime", "Аниме"
@@ -120,6 +125,15 @@ class PosterGenerationJob(models.Model):
         related_name="poster_generation_jobs",
     )
 
+    operation = models.CharField(
+        max_length=16,
+        choices=PosterJobOperation.choices,
+        default=PosterJobOperation.GENERATE,
+    )
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
+    request_hash = models.CharField(max_length=64, blank=True, default="")
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+
     prompt = models.TextField()
     negative_prompt = models.TextField(blank=True, default="")
 
@@ -139,6 +153,13 @@ class PosterGenerationJob(models.Model):
         blank=True,
         related_name="poster_jobs",
     )
+    source_variant = models.ForeignKey(
+        "PosterVariant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="edit_jobs",
+    )
 
     model_provider = models.CharField(max_length=64, blank=True, default="")
     model_name = models.CharField(max_length=128, blank=True, default="")
@@ -152,6 +173,7 @@ class PosterGenerationJob(models.Model):
 
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=128, blank=True, default="")
+    error_http_status = models.PositiveSmallIntegerField(null=True, blank=True)
 
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -166,9 +188,31 @@ class PosterGenerationJob(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["poster", "-created_at"]),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "project",
+                    "user",
+                    "operation",
+                    "idempotency_key",
+                ],
+                condition=~models.Q(idempotency_key=""),
+                name="uniq_poster_job_idempotency_key",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"PosterJob#{self.id} [{self.status}]"
+
+
+class PosterProviderCircuit(models.Model):
+    provider_key = models.CharField(max_length=255, unique=True)
+    failure_count = models.PositiveSmallIntegerField(default=0)
+    opened_until = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"{self.provider_key}: failures={self.failure_count}"
 
 
 class PosterVariant(models.Model):
@@ -226,6 +270,12 @@ class PosterVariant(models.Model):
                 fields=["project"],
                 name="poster_variant_selected_idx",
                 condition=models.Q(is_selected=True),
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "variant_index"],
+                name="uniq_poster_job_variant_index",
             ),
         ]
 

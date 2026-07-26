@@ -1,19 +1,8 @@
-"""HTTP views for the project poster API.
-
-Lives next to the legacy ``views.py`` (which still serves the old
-``/api/generate/poster/`` endpoint) but is wired under ``/api/projects/...``
-to follow the dashboard convention.
-
-The thin layer here:
-  1. resolves the user from the existing ``token_user`` auth scheme,
-  2. validates input via DRF serializers,
-  3. delegates to ``facade.py``,
-  4. translates ``PosterError`` into the canonical response shape.
-"""
+"""HTTP views for the authenticated, project-scoped poster API."""
 
 from __future__ import annotations
 
-import logging
+from django.core.files.uploadhandler import FileUploadHandler, StopUpload
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -24,25 +13,23 @@ from w_craft_back.movie.poster.errors import (
     InvalidPosterFormat,
     InvalidPosterStyle,
     PosterError,
+    PosterImageTooLarge,
     PromptRequired,
     PromptTooLong,
 )
+from w_craft_back.movie.poster.generation_guard import (
+    max_input_bytes,
+    normalize_idempotency_key,
+)
 from w_craft_back.movie.poster.serializers import (
     PROMPT_MAX_LENGTH,
+    PosterEditSerializer,
     PosterGenerateSerializer,
     PosterSelectSerializer,
 )
-from w_craft_back.movie.project.dashboard_views import (
-    _resolve_user,
-    _unauthorized,
-)
+from w_craft_back.auth.models import UserKey
+from w_craft_back.movie.project.dashboard_views import _unauthorized
 
-logger = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# Error envelope
-# --------------------------------------------------------------------------- #
 
 def _error_response(err: PosterError) -> Response:
     payload: dict = {"detail": err.message or err.code, "code": err.code}
@@ -58,45 +45,96 @@ def _validation_error(errors: dict, code: str = "VALIDATION_ERROR") -> Response:
     )
 
 
-# Map specific serializer field errors to stable codes the FE can branch on.
 def _coerce_generate_errors(errors: dict) -> Response:
-    prompt_errs = errors.get("prompt") or []
-    style_errs = errors.get("style") or []
-    format_errs = errors.get("format") or []
-
-    if prompt_errs:
-        msg = str(prompt_errs[0])
-        if "max" in msg or f"{PROMPT_MAX_LENGTH}" in msg:
-            return _error_response(PromptTooLong(msg, errors=errors))
-        return _error_response(PromptRequired(msg, errors=errors))
-    if style_errs:
-        return _error_response(InvalidPosterStyle(str(style_errs[0]), errors=errors))
-    if format_errs:
-        return _error_response(InvalidPosterFormat(str(format_errs[0]), errors=errors))
+    prompt_errors = errors.get("prompt") or []
+    style_errors = errors.get("style") or []
+    format_errors = errors.get("format") or []
+    if prompt_errors:
+        message = str(prompt_errors[0])
+        if "max" in message or f"{PROMPT_MAX_LENGTH}" in message:
+            return _error_response(PromptTooLong(message, errors=errors))
+        return _error_response(PromptRequired(message, errors=errors))
+    if style_errors:
+        return _error_response(
+            InvalidPosterStyle(str(style_errors[0]), errors=errors)
+        )
+    if format_errors:
+        return _error_response(
+            InvalidPosterFormat(str(format_errors[0]), errors=errors)
+        )
     return _validation_error(errors)
 
 
-# --------------------------------------------------------------------------- #
-# Views
-# --------------------------------------------------------------------------- #
+class _PosterReferenceUploadLimitHandler(FileUploadHandler):
+    """Stop streaming a poster reference once it exceeds the byte limit."""
+
+    def __init__(self, request=None):
+        super().__init__(request)
+        self.received_bytes = 0
+
+    def receive_data_chunk(self, raw_data, start):
+        self.received_bytes += len(raw_data)
+        if self.received_bytes > max_input_bytes():
+            setattr(self.request, "_poster_upload_exceeded", True)
+            raise StopUpload(connection_reset=True)
+        return raw_data
+
+    def file_complete(self, file_size):
+        return None
+
+
+def _prepare_reference_upload(request) -> None:
+    """Reject declared oversized requests before parsing and cap chunked files."""
+    raw_request = getattr(request, "_request", request)
+    content_length = raw_request.META.get("CONTENT_LENGTH")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except (TypeError, ValueError):
+            declared_size = 0
+        multipart_overhead = 64 * 1024
+        if declared_size > max_input_bytes() + multipart_overhead:
+            raise PosterImageTooLarge("Poster request exceeds the byte limit")
+    raw_request.upload_handlers.insert(
+        0,
+        _PosterReferenceUploadLimitHandler(raw_request),
+    )
+
+
+def _read_reference(uploaded_file) -> bytes | None:
+    if uploaded_file is None:
+        return None
+    payload = uploaded_file.read(max_input_bytes() + 1)
+    if len(payload) > max_input_bytes():
+        raise PosterImageTooLarge("Reference image exceeds the byte limit")
+    return payload
+
 
 class _AuthedView(APIView):
-    """Resolve user once, return 401 if missing."""
+    """Resolve the custom token once and reject anonymous requests."""
 
     def _user(self, request):
-        user = _resolve_user(request)
-        if user is None:
+        # Header-only auth deliberately avoids touching ``request.data`` before
+        # rejecting anonymous multipart requests.
+        token = request.META.get("HTTP_X_USER_TOKEN", "").strip()
+        if not token:
+            return None, _unauthorized()
+        try:
+            user = UserKey.objects.select_related("user").get(key=token).user
+        except (UserKey.DoesNotExist, ValueError, TypeError):
             return None, _unauthorized()
         return user, None
 
+    @staticmethod
+    def _idempotency_key(request):
+        return normalize_idempotency_key(request.headers.get("Idempotency-Key"))
+
 
 class ProjectPosterView(_AuthedView):
-    """``GET /api/projects/<project_id>/poster/``"""
-
     def get(self, request, project_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
+        user, error = self._user(request)
+        if error:
+            return error
         try:
             data = facade.get_project_poster(user, project_id, request=request)
         except PosterError as exc:
@@ -105,41 +143,106 @@ class ProjectPosterView(_AuthedView):
 
 
 class ProjectPosterGenerateView(_AuthedView):
-    """``POST /api/projects/<project_id>/poster/generate/``"""
+    """POST-only paid poster generation endpoint."""
 
     def post(self, request, project_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
+        user, error = self._user(request)
+        if error:
+            return error
+        try:
+            idempotency_key = self._idempotency_key(request)
+        except PosterError as exc:
+            return _error_response(exc)
 
-        serializer = PosterGenerateSerializer(data=request.data)
+        try:
+            _prepare_reference_upload(request)
+        except PosterError as exc:
+            return _error_response(exc)
+
+        request_data = request.data
+        raw_request = getattr(request, "_request", request)
+        if getattr(raw_request, "_poster_upload_exceeded", False):
+            return _error_response(
+                PosterImageTooLarge("Reference image exceeds the byte limit")
+            )
+
+        serializer = PosterGenerateSerializer(data=request_data)
         if not serializer.is_valid():
             return _coerce_generate_errors(serializer.errors)
         data = serializer.validated_data
+        reference = data.get("reference_image")
 
         try:
+            reference_bytes = _read_reference(reference)
             payload = facade.generate_poster(
                 user,
                 project_id,
                 prompt=data["prompt"],
                 style=data["style"],
                 format=data["format"],
+                idempotency_key=idempotency_key,
+                reference_image_bytes=reference_bytes,
+                reference_mime_type=(
+                    getattr(reference, "content_type", "") or "image/png"
+                ),
                 reference_image_url=data.get("reference_image_url") or "",
                 reference_image_asset_id=data.get("reference_image_asset_id"),
+                image_model=data.get("image_model"),
                 request=request,
             )
         except PosterError as exc:
             return _error_response(exc)
-        return Response(payload, status=status.HTTP_201_CREATED)
+
+        response_status = (
+            status.HTTP_200_OK
+            if payload.get("idempotentReplay")
+            else status.HTTP_201_CREATED
+        )
+        return Response(payload, status=response_status)
+
+
+class ProjectPosterEditView(_AuthedView):
+    """POST-only edit operation using a project-owned source variant."""
+
+    def post(self, request, project_id: int):
+        user, error = self._user(request)
+        if error:
+            return error
+        try:
+            idempotency_key = self._idempotency_key(request)
+        except PosterError as exc:
+            return _error_response(exc)
+
+        serializer = PosterEditSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer.errors)
+        data = serializer.validated_data
+        try:
+            payload = facade.edit_poster(
+                user,
+                project_id,
+                source_variant_id=data["source_variant_id"],
+                instruction=data["instruction"],
+                idempotency_key=idempotency_key,
+                image_model=data.get("image_model"),
+                request=request,
+            )
+        except PosterError as exc:
+            return _error_response(exc)
+
+        response_status = (
+            status.HTTP_200_OK
+            if payload.get("idempotentReplay")
+            else status.HTTP_201_CREATED
+        )
+        return Response(payload, status=response_status)
 
 
 class ProjectPosterJobDetailView(_AuthedView):
-    """``GET /api/projects/<project_id>/poster/jobs/<job_id>/``"""
-
     def get(self, request, project_id: int, job_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
+        user, error = self._user(request)
+        if error:
+            return error
         try:
             data = facade.get_poster_job(user, project_id, job_id, request=request)
         except PosterError as exc:
@@ -148,21 +251,20 @@ class ProjectPosterJobDetailView(_AuthedView):
 
 
 class ProjectPosterVariantsView(_AuthedView):
-    """``GET /api/projects/<project_id>/poster/variants/?limit=8``"""
-
     def get(self, request, project_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
-
+        user, error = self._user(request)
+        if error:
+            return error
         try:
             limit = int(request.query_params.get("limit", facade.DEFAULT_VARIANT_LIMIT))
         except (TypeError, ValueError):
             limit = facade.DEFAULT_VARIANT_LIMIT
-
         try:
             data = facade.get_poster_variants(
-                user, project_id, limit=limit, request=request
+                user,
+                project_id,
+                limit=limit,
+                request=request,
             )
         except PosterError as exc:
             return _error_response(exc)
@@ -170,17 +272,13 @@ class ProjectPosterVariantsView(_AuthedView):
 
 
 class ProjectPosterSelectView(_AuthedView):
-    """``PATCH /api/projects/<project_id>/poster/select/``"""
-
     def patch(self, request, project_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
-
+        user, error = self._user(request)
+        if error:
+            return error
         serializer = PosterSelectSerializer(data=request.data)
         if not serializer.is_valid():
             return _validation_error(serializer.errors)
-
         try:
             data = facade.select_poster_variant(
                 user,
@@ -194,15 +292,16 @@ class ProjectPosterSelectView(_AuthedView):
 
 
 class ProjectPosterVariantDeleteView(_AuthedView):
-    """``DELETE /api/projects/<project_id>/poster/variants/<variant_id>/``"""
-
     def delete(self, request, project_id: int, variant_id: int):
-        user, err = self._user(request)
-        if err:
-            return err
+        user, error = self._user(request)
+        if error:
+            return error
         try:
             data = facade.delete_poster_variant(
-                user, project_id, variant_id, request=request
+                user,
+                project_id,
+                variant_id,
+                request=request,
             )
         except PosterError as exc:
             return _error_response(exc)

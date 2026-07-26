@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest import TestCase, mock
+from unittest import TestCase
+
+from django.test import override_settings
 
 from w_craft_back.services.image_generation.errors import (
     CODE_BAD_RESPONSE,
@@ -18,6 +20,7 @@ from w_craft_back.services.image_generation.errors import (
 )
 from w_craft_back.services.image_generation.litellm_provider import (
     LiteLLMProvider,
+    _decode_b64_or_data_url,
     _extract_chat_images,
     _extract_image_api,
 )
@@ -51,6 +54,38 @@ class ExtractorTest(TestCase):
         images = _extract_image_api(resp)
         self.assertEqual(images[0], PNG_BYTES)
 
+    def test_extract_image_api_rejects_remote_url(self):
+        with self.assertRaises(ImageProviderError) as cm:
+            _extract_image_api(
+                {"data": [{"url": "https://attacker.test/image.png"}]}
+            )
+        self.assertEqual(cm.exception.code, CODE_BAD_RESPONSE)
+
+    @override_settings(IMAGE_PROVIDER_MAX_OUTPUT_BYTES=4)
+    def test_decode_rejects_oversized_provider_image(self):
+        encoded = base64.b64encode(b"12345").decode("ascii")
+        with self.assertRaises(ImageProviderError) as cm:
+            _decode_b64_or_data_url(encoded)
+        self.assertEqual(cm.exception.code, CODE_BAD_RESPONSE)
+
+    @override_settings(IMAGE_PROVIDER_MAX_OUTPUT_IMAGES=1)
+    def test_extract_image_api_rejects_too_many_images(self):
+        response = {"data": [{"b64_json": PNG_B64}, {"b64_json": PNG_B64}]}
+        with self.assertRaises(ImageProviderError) as cm:
+            _extract_image_api(response)
+        self.assertEqual(cm.exception.code, CODE_BAD_RESPONSE)
+
+    @override_settings(
+        IMAGE_PROVIDER_MAX_OUTPUT_BYTES=10,
+        IMAGE_PROVIDER_MAX_OUTPUT_TOTAL_BYTES=5,
+    )
+    def test_extract_image_api_rejects_aggregate_output_over_limit(self):
+        encoded = base64.b64encode(b"123").decode("ascii")
+        response = {"data": [{"b64_json": encoded}, {"b64_json": encoded}]}
+        with self.assertRaises(ImageProviderError) as cm:
+            _extract_image_api(response)
+        self.assertEqual(cm.exception.code, CODE_BAD_RESPONSE)
+
     def test_extract_image_api_empty_raises(self):
         with self.assertRaises(ImageProviderError) as cm:
             _extract_image_api({"data": []})
@@ -70,7 +105,12 @@ class ExtractorTest(TestCase):
                 {
                     "message": {
                         "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{PNG_B64}"}},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{PNG_B64}"
+                                },
+                            },
                             {"type": "text", "text": "ignored"},
                         ],
                     }
@@ -81,7 +121,15 @@ class ExtractorTest(TestCase):
         self.assertEqual(images, [PNG_BYTES])
 
     def test_extract_chat_images_empty_raises_bad_response(self):
-        resp = {"choices": [{"message": {"content": [{"type": "text", "text": "no image"}]}}]}
+        resp = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [{"type": "text", "text": "no image"}]
+                    }
+                }
+            ]
+        }
         with self.assertRaises(ImageProviderError) as cm:
             _extract_chat_images(resp)
         self.assertEqual(cm.exception.code, CODE_BAD_RESPONSE)
@@ -118,7 +166,13 @@ class GenerateTest(TestCase):
             captured.update(kwargs)
             return {
                 "choices": [{"message": {
-                    "images": [{"image_url": {"url": f"data:image/png;base64,{PNG_B64}"}}],
+                    "images": [
+                        {
+                            "image_url": {
+                                "url": f"data:image/png;base64,{PNG_B64}"
+                            }
+                        }
+                    ],
                     "content": "",
                 }}]
             }
@@ -164,7 +218,9 @@ class EditTest(TestCase):
         content = captured["messages"][0]["content"]
         # first part = image, second part = instruction
         self.assertEqual(content[0]["type"], "image_url")
-        self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertTrue(
+            content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        )
         self.assertEqual(content[1]["type"], "text")
         self.assertEqual(content[1]["text"], "edit it")
 

@@ -19,6 +19,7 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectScenesView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
+    ProjectPosterEditView,
     ProjectPosterGenerateView,
     ProjectPosterJobDetailView,
     ProjectPosterSelectView,
@@ -77,6 +78,11 @@ urlpatterns = [
     # Poster generation page (/create-project/gen-poster).
     path('<int:project_id>/poster/', ProjectPosterView.as_view(), name='project-poster'),
     path('<int:project_id>/poster/generate/', ProjectPosterGenerateView.as_view(), name='project-poster-generate'),
+    path(
+        '<int:project_id>/poster/edit/',
+        ProjectPosterEditView.as_view(),
+        name='project-poster-edit',
+    ),
     path('<int:project_id>/poster/jobs/<int:job_id>/', ProjectPosterJobDetailView.as_view(), name='project-poster-job'),
     path('<int:project_id>/poster/variants/', ProjectPosterVariantsView.as_view(), name='project-poster-variants'),
     path('<int:project_id>/poster/variants/<int:variant_id>/', ProjectPosterVariantDeleteView.as_view(), name='project-poster-variant-detail'),
