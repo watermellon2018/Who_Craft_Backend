@@ -8,6 +8,7 @@ SceneCharacter therefore links Scene -> StudioCharacter directly.
 """
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
@@ -247,7 +248,7 @@ class Scene(models.Model):
         related_name="scenes",
     )
     title = models.CharField(max_length=255)
-    order = models.PositiveIntegerField(default=0)
+    order = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True, default="")
     script_text = models.TextField(blank=True, default="")
     script_blocks = models.JSONField(default=list, blank=True)
@@ -309,6 +310,32 @@ class Scene(models.Model):
             models.Index(fields=["project", "updated_at"]),
         ]
 
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(order__gte=1),
+                name="chk_scene_order_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["project", "order"],
+                name="uniq_scene_order_per_project",
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.order is not None and self.order < 1:
+            errors["order"] = "Scene order must be at least 1."
+        if self.location_id and self.project_id:
+            if self.location.project_id != self.project_id:
+                errors["location"] = "Location must belong to the scene project."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.order:02d} — {self.title}"
 
@@ -335,6 +362,18 @@ class SceneCharacter(models.Model):
                 name="uniq_scene_character",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.scene_id and self.character_id:
+            if self.scene.project_id != self.character.project_id:
+                raise ValidationError(
+                    {"character": "Character must belong to the scene project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class MusicTrack(models.Model):
@@ -401,6 +440,18 @@ class SceneMusic(models.Model):
                 name="uniq_scene_music",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.scene_id and self.track_id:
+            if self.scene.project_id != self.track.project_id:
+                raise ValidationError(
+                    {"track": "Music track must belong to the scene project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class ProjectAsset(models.Model):
@@ -516,7 +567,9 @@ class ProjectGenerationJob(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="project_generation_jobs",
     )
     job_type = models.CharField(max_length=30, choices=GenerationJobType.choices)

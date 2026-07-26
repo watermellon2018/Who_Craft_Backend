@@ -121,6 +121,8 @@ class CharacterService:
         character.active_appearance = appearance
         character.save(update_fields=["active_appearance", "updated_at"])
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.INITIAL_CREATE,
             changed_region="full_character",
@@ -284,6 +286,8 @@ class CharacterService:
                 character.active_appearance = appearance
                 character.save(update_fields=["active_appearance", "updated_at"])
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.MANUAL_UPDATE,
             changed_region="full_character",
@@ -317,6 +321,8 @@ class CharacterService:
         character.locked_by = user
         character.save()
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.IDENTITY_LOCK,
             changed_region="full_character",
@@ -374,6 +380,8 @@ class CharacterService:
         variant.applied_at = timezone.now()
         variant.save(update_fields=["applied", "status", "applied_at"])
         revision = self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.APPLY_VARIANT,
             source_variant=variant,

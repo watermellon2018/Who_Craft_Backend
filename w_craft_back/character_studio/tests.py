@@ -60,6 +60,7 @@ from w_craft_back.character_studio.services.revision_service import (
 )
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project.policy import Action
 
 PROVIDER_SESSION = "w_craft_back.character_studio.services.providers.requests.Session"
 
@@ -249,9 +250,18 @@ class RevisionTests(CharacterStudioTestCase):
         character = self.create_character()
         revision_service = CharacterRevisionService()
         revision = revision_service.create_revision(
-            character, "manual_update", change_summary="checkpoint",
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            "manual_update",
+            change_summary="checkpoint",
         )
-        restored = revision_service.restore_revision(character, revision)
+        restored = revision_service.restore_revision(
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            revision,
+        )
         self.assertEqual(restored.change_type, "restore_revision")
         self.assertEqual(character.revisions.count(), 3)
 
@@ -302,7 +312,12 @@ class GenerationFlowTests(CharacterStudioTestCase):
             hair_variant.variant_id, {"apply_as": "current_reference"},
         )
         previous = character.revisions.order_by("revision_number").first()
-        restored = CharacterRevisionService().restore_revision(character, previous)
+        restored = CharacterRevisionService().restore_revision(
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            previous,
+        )
         self.assertEqual(restored.change_type, "restore_revision")
 
     def test_generation_validation(self):

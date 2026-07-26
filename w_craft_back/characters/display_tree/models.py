@@ -15,7 +15,7 @@ class MenuFolder(MPTTModel):
     parent = TreeForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='children')
     is_folder = models.BooleanField(default=False)
 
-    user = models.ForeignKey(UserKey, null=True, on_delete=models.CASCADE)
+    user = models.ForeignKey(UserKey, null=True, blank=True, on_delete=models.SET_NULL)
     cur_project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True)
 
     class MPTTMeta:

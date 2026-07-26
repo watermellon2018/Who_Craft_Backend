@@ -5,7 +5,6 @@ import logging
 
 from w_craft_back.character_studio.models import (
     CharacterAsset,
-    CharacterAssetStatus,
     CharacterAssetType,
     CharacterGenerationJob,
     CharacterImageType,
@@ -23,6 +22,7 @@ from w_craft_back.character_studio.services.errors import NotFoundError, Validat
 from w_craft_back.character_studio.services.prompt_compiler import CharacterPromptCompiler
 from w_craft_back.character_studio.services.providers import ProviderUserFacingError, get_image_provider
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
+from w_craft_back.movie.project.policy import Action
 from w_craft_back.character_studio.services.serialization import job_dict
 
 
@@ -821,7 +821,13 @@ class CharacterGenerationService:
                 correction = (request_payload.get("correction_prompt") or "").strip()
                 if correction:
                     asset_kwargs["correction_prompt"] = correction
-                asset = self.assets.save_asset(character, asset_type, **asset_kwargs)
+                asset = self.assets.save_asset(
+                    job.user,
+                    Action.RUN_GENERATION,
+                    character,
+                    asset_type,
+                    **asset_kwargs,
+                )
                 first_asset = first_asset or asset
                 variant = self.variants.create(
                     job=job,
@@ -959,6 +965,8 @@ class CharacterGenerationService:
                 if correction_prompt:
                     asset_kwargs["correction_prompt"] = correction_prompt
                 asset = self.assets.save_asset(
+                    job.user,
+                    Action.RUN_GENERATION,
                     character,
                     asset_type,
                     **asset_kwargs,

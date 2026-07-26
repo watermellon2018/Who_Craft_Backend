@@ -34,13 +34,13 @@ from w_craft_back.movie.poster.models import (
     PosterJobStatus,
     PosterVariant,
     ProjectPoster,
+    ProjectPosterStatus,
 )
 from w_craft_back.movie.poster.services import (
     complete_generation,
     complete_generation_mock,
     enqueue_generation_job,
     fail_generation,
-    get_or_create_project_poster,
     InvalidProviderImage,
     list_recent_variants,
     mark_generation_processing,
@@ -253,14 +253,30 @@ def get_project_poster(
     limit: int = DEFAULT_VARIANT_LIMIT,
 ) -> dict[str, Any]:
     project = _project_for_access(user, project_id)
-    poster = get_or_create_project_poster(project, user)
+    poster = (
+        ProjectPoster.objects.select_related("selected_variant")
+        .filter(project=project)
+        .first()
+    )
     recent = list_recent_variants(project, limit=limit)
-    return {
-        "poster": serialize_poster(
+    poster_payload = (
+        serialize_poster(
             poster,
             recent_variants=recent,
             request=request,
-        ),
+        )
+        if poster is not None
+        else {
+            "id": None,
+            "projectId": project.id,
+            "status": ProjectPosterStatus.EMPTY,
+            "selectedVariant": None,
+            "recentVariants": [],
+            "updatedAt": None,
+        }
+    )
+    return {
+        "poster": poster_payload,
         "recentVariants": [serialize_variant(v, request) for v in recent],
     }
 

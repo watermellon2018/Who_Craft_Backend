@@ -1,10 +1,8 @@
 import base64
 import logging
 import os
-import uuid
 
-from django.core.exceptions import ObjectDoesNotExist
-from django.core.files.base import ContentFile
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import transaction
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
@@ -15,12 +13,20 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.views import APIView
 
 from w_craft_back.auth.utils import resolve_user_key
-from w_craft_back.movie.project import team_errors, team_service
+from w_craft_back.movie.project import (
+    policy,
+    project_mutations,
+    team_errors,
+    team_service,
+)
 from w_craft_back.movie.project.dashboard_models import (
     ProjectMember,
     ProjectMemberRole,
 )
 from w_craft_back.movie.project.models import Audience, Genre, Project
+from w_craft_back.movie.project.project_images import (
+    decode_project_image_data_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +90,10 @@ def delete_project(request):
         ValueError,
         TypeError,
     ):
-        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+        return JsonResponse(
+            {'error': 'Object with specified ID does not exist'},
+            status=404,
+        )
     except Exception:
         logger.exception('delete_project failed for project_id=%s', project_id)
         return JsonResponse({'error': 'internal_error'}, status=500)
@@ -127,7 +136,10 @@ def select_project_info(request):
         return JsonResponse(response, safe=False, status=200)
 
     except (Project.DoesNotExist, ValueError, TypeError):
-        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
+        return JsonResponse(
+            {'error': 'Object with specified ID does not exist'},
+            status=404,
+        )
     except Exception:
         logger.exception('select_project_info failed for project_id=%s', project_id)
         return JsonResponse({'error': 'internal_error'}, status=500)
@@ -152,7 +164,7 @@ def delete_related_file(sender, instance, **kwargs):
 @api_view(['POST'])
 def update_info_project(request):
     try:
-        cur_user = resolve_user_key(request)
+        credential = resolve_user_key(request)
     except AuthenticationFailed:
         return _auth_failed_response()
 
@@ -162,55 +174,79 @@ def update_info_project(request):
 
     project_id = data.get('id')
     try:
-        project = Project.objects.get(
-            id=project_id,
-            owner=cur_user.user,
+        project_mutations.get_project_for_action(
+            actor=credential.user,
+            project_id=project_id,
+            action=policy.Action.EDIT_SETTINGS,
         )
+    except Project.DoesNotExist:
+        return JsonResponse(
+            {'error': 'Object with specified ID does not exist'},
+            status=404,
+        )
+    except project_mutations.ProjectMutationForbidden:
+        return JsonResponse({'error': 'forbidden'}, status=403)
 
-        image_data = data.get('image') or ''
-        if image_data:
-            old_photo = project.image
-            if old_photo:
-                old_photo.delete()
+    changes = {}
+    field_map = {
+        'title': 'title',
+        'format': 'format',
+        'annot': 'annotation',
+        'desc': 'synopsis',
+    }
+    for legacy_name, canonical_name in field_map.items():
+        if legacy_name in data:
+            changes[canonical_name] = data[legacy_name]
 
-            title = data.get('title') or ''
-            try:
-                fmt, imgstr = image_data.split(';base64,')
-            except ValueError:
-                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
-            ext = fmt.split('/')[-1]
+    audience_list = data.get('audience')
+    audiences = None
+    if isinstance(audience_list, list):
+        changes['audience'] = audience_list
+        audiences = list(Audience.objects.filter(name__in=audience_list))
 
-            user_id = project.owner_id
-            unique_id = uuid.uuid4()
-            path = f'{user_id}/{title}/{unique_id}.{ext}'
+    genre_list = data.get('genre')
+    genres = None
+    if isinstance(genre_list, list):
+        changes['genre'] = genre_list
+        genres = list(Genre.objects.filter(translit__in=genre_list))
 
-            try:
-                decoded = base64.b64decode(imgstr)
-            except Exception:
-                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
-            project.image = ContentFile(decoded, name=path)
+    poster_file = None
+    poster_supplied = False
+    image_data = data.get('image') or ''
+    if image_data:
+        poster_file = decode_project_image_data_url(
+            image_data,
+            owner_id=credential.user_id,
+            title=data.get('title') or 'project',
+        )
+        if poster_file is None:
+            return JsonResponse({'error': 'invalid_image_payload'}, status=400)
+        poster_supplied = True
 
-        project.title = data.get('title', project.title)
-        project.format = data.get('format', project.format)
-        project.annot = data.get('annot', project.annot)
-        project.desc = data.get('desc', project.desc)
-
-        audience_list = data.get('audience') or []
-        if isinstance(audience_list, list):
-            project.audience.set(Audience.objects.filter(name__in=audience_list))
-
-        genre_list = data.get('genre') or []
-        if isinstance(genre_list, list):
-            project.genre.set(Genre.objects.filter(translit__in=genre_list))
-
-        project.save()
-        return HttpResponse(status=200)
-
-    except (Project.DoesNotExist, ValueError, TypeError):
-        return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
-    except Exception:
-        logger.exception('update_info_project failed for project_id=%s', project_id)
-        return JsonResponse({'error': 'internal_error'}, status=500)
+    try:
+        project_mutations.update_project_settings(
+            actor=credential.user,
+            action=policy.Action.EDIT_SETTINGS,
+            project_id=project_id,
+            data=changes,
+            genres=genres,
+            audiences=audiences,
+            poster_file=poster_file,
+            poster_supplied=poster_supplied,
+        )
+    except Project.DoesNotExist:
+        return JsonResponse(
+            {'error': 'Object with specified ID does not exist'},
+            status=404,
+        )
+    except project_mutations.ProjectMutationForbidden:
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    except ValidationError as exc:
+        return JsonResponse(
+            {'error': 'invalid_payload', 'details': exc.message_dict},
+            status=400,
+        )
+    return HttpResponse(status=200)
 
 
 class ProjectView(APIView):
@@ -249,18 +285,17 @@ class ProjectView(APIView):
         }
         image_data = data.get('image') or ''
         if image_data:
-            try:
-                img_fmt, imgstr = image_data.split(';base64,')
-            except ValueError:
-                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
-            ext = img_fmt.split('/')[-1]
-            unique_id = uuid.uuid4()
-            path = f'{cur_user.id}/{title}/{unique_id}.{ext}'
-            try:
-                decoded = base64.b64decode(imgstr)
-            except Exception:
-                return JsonResponse({'error': 'invalid_image_payload'}, status=400)
-            arguments['image'] = ContentFile(decoded, name=path)
+            image = decode_project_image_data_url(
+                image_data,
+                owner_id=cur_user.user_id,
+                title=title,
+            )
+            if image is None:
+                return JsonResponse(
+                    {'error': 'invalid_image_payload'},
+                    status=400,
+                )
+            arguments['image'] = image
 
         try:
             with transaction.atomic():

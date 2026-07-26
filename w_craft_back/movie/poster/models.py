@@ -18,6 +18,7 @@ keys (so the file lands under ``MEDIA_ROOT`` like every other upload).
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from w_craft_back.movie.project.dashboard_models import ProjectAsset
@@ -78,7 +79,9 @@ class ProjectPoster(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="project_posters",
     )
     # FK is set after a user picks a variant. ``SET_NULL`` because soft-deleting
@@ -104,6 +107,25 @@ class ProjectPoster(models.Model):
             models.Index(fields=["status"]),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.selected_variant_id:
+            if self.selected_variant.project_id != self.project_id:
+                errors["selected_variant"] = (
+                    "Selected variant must belong to the poster project."
+                )
+            if not self.pk or self.selected_variant.poster_id != self.pk:
+                errors["selected_variant"] = (
+                    "Selected variant must belong to this poster."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"Poster[{self.project_id}] {self.status}"
 
@@ -121,7 +143,9 @@ class PosterGenerationJob(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="poster_generation_jobs",
     )
 
@@ -204,6 +228,36 @@ class PosterGenerationJob(models.Model):
     def __str__(self) -> str:
         return f"PosterJob#{self.id} [{self.status}]"
 
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.poster_id and self.project_id:
+            if self.poster.project_id != self.project_id:
+                errors["poster"] = (
+                    "Poster must belong to the generation job project."
+                )
+        if self.reference_asset_id and self.project_id:
+            if self.reference_asset.project_id != self.project_id:
+                errors["reference_asset"] = (
+                    "Reference asset must belong to the generation job project."
+                )
+        if self.source_variant_id and self.project_id:
+            if self.source_variant.project_id != self.project_id:
+                errors["source_variant"] = (
+                    "Source variant must belong to the generation job project."
+                )
+        if self.source_variant_id and self.poster_id:
+            if self.source_variant.poster_id != self.poster_id:
+                errors["source_variant"] = (
+                    "Source variant must belong to the generation job poster."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class PosterProviderCircuit(models.Model):
     provider_key = models.CharField(max_length=255, unique=True)
@@ -233,7 +287,9 @@ class PosterVariant(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="poster_variants",
     )
 
@@ -281,3 +337,22 @@ class PosterVariant(models.Model):
 
     def __str__(self) -> str:
         return f"PosterVariant#{self.id} job={self.job_id} sel={self.is_selected}"
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.poster_id and self.project_id:
+            if self.poster.project_id != self.project_id:
+                errors["poster"] = "Poster must belong to the variant project."
+        if self.job_id and self.project_id:
+            if self.job.project_id != self.project_id:
+                errors["job"] = "Job must belong to the variant project."
+        if self.job_id and self.poster_id:
+            if self.job.poster_id != self.poster_id:
+                errors["job"] = "Job must belong to the variant poster."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)

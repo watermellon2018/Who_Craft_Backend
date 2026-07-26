@@ -54,6 +54,7 @@ from w_craft_back.character_studio.services.permissions import (
 from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
 )
+from w_craft_back.movie.project.policy import Action
 from w_craft_back.character_studio.services.serialization import (
     asset_dict,
     character_dict,
@@ -629,7 +630,10 @@ def restore_revision(request, project_id, character_id, revision_id):
     except CharacterRevision.DoesNotExist as exc:
         raise NotFoundError("Revision not found.") from exc
     new_revision = CharacterRevisionService().restore_revision(
-        character, revision, user,
+        user,
+        Action.EDIT_CONTENT,
+        character,
+        revision,
     )
     return ok(revision_dict(new_revision), status=201)
 
@@ -831,6 +835,8 @@ def references_proceed_to_3d(request, project_id, character_id):
     character.status = CharacterStatus.REFERENCES_LOCKED
     character.save(update_fields=["status", "updated_at"])
     CharacterRevisionService().create_revision(
+        user,
+        Action.EDIT_CONTENT,
         character,
         RevisionChangeType.VERSION_CREATE,
         changed_region="full_character",
@@ -882,6 +888,8 @@ def model3d_state(request, project_id, character_id):
     character.model3d_params = cleaned
     character.save(update_fields=["model3d_params", "updated_at"])
     CharacterRevisionService().create_revision(
+        user,
+        Action.EDIT_CONTENT,
         character,
         RevisionChangeType.MANUAL_UPDATE,
         changed_region="full_character",
@@ -1027,6 +1035,8 @@ def model3d_autofit(request, project_id, character_id):
         ],
     )
     CharacterRevisionService().create_revision(
+        user,
+        Action.EDIT_CONTENT,
         character,
         RevisionChangeType.MANUAL_UPDATE,
         changed_region="full_character",

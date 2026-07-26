@@ -14,6 +14,8 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.character_studio.repositories.repositories import AssetRepository
 from w_craft_back.character_studio.services.errors import NotFoundError, ValidationError
+from w_craft_back.character_studio.services.permissions import get_project_for_action
+from w_craft_back.movie.project.policy import Action
 
 
 logger = logging.getLogger(__name__)
@@ -73,13 +75,18 @@ class CharacterAssetService:
     def __init__(self, repository=None):
         self.assets = repository or AssetRepository()
 
-    def save_asset(self, character, asset_type, **payload):
+    def save_asset(self, actor, action, character, asset_type, **payload):
         # Auto-increment version for reference asset_types so each regeneration
         # / correction / upload becomes a new versioned row instead of clobbering
         # the previous one. Non-reference asset_types keep the default version=1.
         # Wrap in atomic + select_for_update on the character row so concurrent
         # uploads serialize and cannot produce duplicate versions.
         from w_craft_back.character_studio.models import StudioCharacter
+        if action is not Action.RUN_GENERATION:
+            raise ValueError(
+                f"Generated asset mutation requires run_generation, received {action.value}"
+            )
+        get_project_for_action(actor, character.project_id, action)
         with transaction.atomic():
             if asset_type in REFERENCE_ASSET_TYPES and "version" not in payload:
                 # Lock the parent character to serialize concurrent writers.
@@ -89,7 +96,7 @@ class CharacterAssetService:
             return self.assets.create(
                 character=character,
                 project=character.project,
-                user=character.user,
+                user=actor,
                 asset_type=asset_type,
                 **payload,
             )

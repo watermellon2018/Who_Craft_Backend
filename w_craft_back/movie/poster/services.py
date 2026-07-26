@@ -452,7 +452,7 @@ def complete_generation(
     with transaction.atomic():
         locked = (
             PosterGenerationJob.objects
-            .select_for_update()
+            .select_for_update(of=("self",))
             .select_related("poster", "project", "user")
             .get(pk=job.pk)
         )
