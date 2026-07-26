@@ -41,8 +41,16 @@ wheels/
 db.sqlite3
 db.sqlite3-journal
 static/media/
+staticfiles/
 *.pyc
 local_settings.py
+
+# Database backups and dumps must never enter Git.
+*.bak
+*.backup
+*.dump
+*.sql
+*db*.json
 
 # PyCharm
 .idea/

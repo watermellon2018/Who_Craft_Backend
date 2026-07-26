@@ -162,7 +162,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
@@ -222,8 +222,10 @@ REST_FRAMEWORK = {
 }
 
 MEDIA_URL = '/media/'
-STATIC_ROOT = BASE_DIR
-MEDIA_ROOT = BASE_DIR / "static" / "media"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_ROOT = Path(
+    os.getenv("MEDIA_ROOT", BASE_DIR.parent / "w_craft_data" / "media")
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 
 # Per-character 3D reconstruction. The web process stays in the lightweight

@@ -18,6 +18,7 @@ from django.urls import path, include
 
 from django.conf import settings
 from django.conf.urls.static import static
+from django.urls.resolvers import URLPattern
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -32,5 +33,16 @@ urlpatterns = [
     path('api/', include('w_craft_back.subscriptions.urls')),
 
 ]
-urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+
+def development_static_urlpatterns() -> list[URLPattern]:
+    """Return local static and media routes only when Django debug mode is on."""
+    if not settings.DEBUG:
+        return []
+    return [
+        *static(settings.STATIC_URL, document_root=settings.STATIC_ROOT),
+        *static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT),
+    ]
+
+
+urlpatterns += development_static_urlpatterns()
