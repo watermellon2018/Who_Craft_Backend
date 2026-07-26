@@ -649,7 +649,9 @@ class ProjectScenesView(_ProjectScopedView):
         user, project, err = self._viewable_project(request, project_id)
         if err:
             return err
-        from w_craft_back.movie.project.script_workspace import scenes_collection_payload
+        from w_craft_back.movie.project.script_workspace import (
+            scenes_collection_payload,
+        )
 
         return Response(scenes_collection_payload(project, user, request))
 

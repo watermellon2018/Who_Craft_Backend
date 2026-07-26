@@ -148,7 +148,10 @@ class ScriptWorkspaceApiTests(TestCase):
     def test_create_list_detail_and_delete_scene(self):
         created = self.create_scene()
         self.assertEqual(created["scriptText"], "INT. CAFE - NIGHT\nWe need to leave.")
-        self.assertEqual(created["characters"][0]["id"], str(self.character.character_id))
+        self.assertEqual(
+            created["characters"][0]["id"],
+            str(self.character.character_id),
+        )
         self.assertEqual(created["act"], 2)
         scene = Scene.objects.get(pk=created["id"])
         self.assertEqual(scene.script_text, created["scriptText"])
@@ -162,7 +165,10 @@ class ScriptWorkspaceApiTests(TestCase):
         self.assertEqual(collection["stats"]["acts"][1]["sceneCount"], 1)
         self.assertEqual(collection["stats"]["acts"][1]["durationSeconds"], 420)
         self.assertNotIn("totalDurationSeconds", collection["stats"]["acts"][1])
-        self.assertEqual(collection["scenes"][0]["scriptBlocks"], created["scriptBlocks"])
+        self.assertEqual(
+            collection["scenes"][0]["scriptBlocks"],
+            created["scriptBlocks"],
+        )
 
         detail_url = f"{self.scenes_url}{scene.id}/"
         detail = self.client.get(
