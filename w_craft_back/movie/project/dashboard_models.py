@@ -168,6 +168,11 @@ class ProjectMember(models.Model):
                 fields=["project", "user"],
                 name="uniq_project_member",
             ),
+            models.UniqueConstraint(
+                fields=["project"],
+                condition=models.Q(role=ProjectMemberRole.OWNER),
+                name="uniq_active_owner_per_project",
+            ),
         ]
         indexes = [
             models.Index(fields=["project", "role"]),

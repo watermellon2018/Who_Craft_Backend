@@ -58,6 +58,7 @@ class ProjectModelTests(TestCase):
         user_key = UserKey.objects.create(user=user)
         project = Project.objects.create(
             user=user_key,
+            owner=user,
             title="No poster",
             format="series",
             annot="Short",
@@ -76,6 +77,7 @@ class CharacterTreeStudioTests(TestCase):
         self.client.defaults["HTTP_X_USER_TOKEN"] = str(self.user_key.key)
         self.project = Project.objects.create(
             user=self.user_key,
+            owner=user,
             title="Tree project",
             format="series",
             annot="Short",

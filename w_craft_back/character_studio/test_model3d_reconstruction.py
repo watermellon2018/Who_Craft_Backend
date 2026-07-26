@@ -51,6 +51,7 @@ class Model3DReconstructionTests(TestCase):
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
             user=self.user_key,
+            owner=user,
             title="3D film",
             format="series",
             annot="Short",

@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from w_craft_back.auth.models import UserKey
+from w_craft_back.movie.project import team_errors, team_service
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
@@ -39,7 +40,6 @@ from w_craft_back.movie.project.models import Project, ProjectStatus
 from w_craft_back.movie.project.permissions import (
     user_can_edit_project,
     user_has_project_access,
-    user_is_project_owner,
 )
 from w_craft_back.movie.project.serializers import (
     CharacterCreateSerializer,
@@ -343,8 +343,8 @@ class ProjectListCreateView(APIView):
         if user is None:
             return _unauthorized()
 
-        # owner via direct FK, owner via legacy UserKey, or member
-        legacy_owner_q = Q(user__user_id=user.id)
+        # Canonical owner or project member. Legacy creator attribution is not
+        # an access-control signal.
         owner_q = Q(owner_id=user.id)
         member_q = Q(members__user_id=user.id)
 
@@ -352,7 +352,7 @@ class ProjectListCreateView(APIView):
         # fire 3 extra queries per project (was an N+1 hot spot for the
         # projects list endpoint).
         projects = (
-            Project.objects.filter(owner_q | legacy_owner_q | member_q)
+            Project.objects.filter(owner_q | member_q)
             .select_related("progress", "owner", "user", "poster__selected_variant")
             .prefetch_related(
                 Prefetch(
@@ -429,8 +429,7 @@ class ProjectListCreateView(APIView):
 
 
 def _legacy_userkey_id(user: User) -> Optional[int]:
-    """Return UserKey.id for the user (if any). Legacy Project.user FK is non-null,
-    so we make sure each new Project has one to avoid breaking older code paths."""
+    """Return/create legacy creator attribution for compatibility."""
     uk = UserKey.objects.filter(user=user).first()
     if uk is None:
         uk = UserKey.objects.create(user=user)
@@ -546,9 +545,12 @@ class ProjectDetailView(APIView):
         if user is None:
             return _unauthorized()
         project = _get_project_or_404(project_id)
-        if not user_is_project_owner(user, project):
+        try:
+            team_service.delete_project(user, project.pk)
+        except Project.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        except team_errors.InsufficientPermissions:
             return _forbidden()
-        project.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

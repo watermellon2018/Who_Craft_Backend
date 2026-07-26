@@ -5,6 +5,7 @@ import uuid
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.base import ContentFile
+from django.db import transaction
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 from django.http import HttpResponse, JsonResponse
@@ -14,6 +15,11 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.views import APIView
 
 from w_craft_back.auth.utils import resolve_user_key
+from w_craft_back.movie.project import team_errors, team_service
+from w_craft_back.movie.project.dashboard_models import (
+    ProjectMember,
+    ProjectMemberRole,
+)
 from w_craft_back.movie.project.models import Audience, Genre, Project
 
 logger = logging.getLogger(__name__)
@@ -31,7 +37,9 @@ def get_list_projects(request):
         return _auth_failed_response()
 
     try:
-        projects_list = Project.objects.filter(user=cur_user).select_related('user')
+        projects_list = (
+            Project.objects.filter(owner=cur_user.user).select_related("owner")
+        )
     except ObjectDoesNotExist:
         return JsonResponse([], safe=False, status=200)
 
@@ -69,9 +77,13 @@ def delete_project(request):
     ) or request.GET.get('id')
 
     try:
-        project = Project.objects.get(id=project_id, user=cur_user)
-        project.delete()
-    except (Project.DoesNotExist, ValueError, TypeError):
+        team_service.delete_project(cur_user.user, project_id)
+    except (
+        Project.DoesNotExist,
+        team_errors.InsufficientPermissions,
+        ValueError,
+        TypeError,
+    ):
         return JsonResponse({'error': 'Object with specified ID does not exist'}, status=404)
     except Exception:
         logger.exception('delete_project failed for project_id=%s', project_id)
@@ -92,7 +104,7 @@ def select_project_info(request):
         project = (
             Project.objects
             .prefetch_related('genre', 'audience')
-            .get(id=project_id, user=cur_user)
+            .get(id=project_id, owner=cur_user.user)
         )
         img_obj = None
         if project.image:
@@ -150,7 +162,10 @@ def update_info_project(request):
 
     project_id = data.get('id')
     try:
-        project = Project.objects.get(id=project_id, user=cur_user)
+        project = Project.objects.get(
+            id=project_id,
+            owner=cur_user.user,
+        )
 
         image_data = data.get('image') or ''
         if image_data:
@@ -165,7 +180,7 @@ def update_info_project(request):
                 return JsonResponse({'error': 'invalid_image_payload'}, status=400)
             ext = fmt.split('/')[-1]
 
-            user_id = project.user_id
+            user_id = project.owner_id
             unique_id = uuid.uuid4()
             path = f'{user_id}/{title}/{unique_id}.{ext}'
 
@@ -230,6 +245,7 @@ class ProjectView(APIView):
             'annot': annot,
             'desc': desc,
             'user': cur_user,
+            'owner': cur_user.user,
         }
         image_data = data.get('image') or ''
         if image_data:
@@ -247,11 +263,17 @@ class ProjectView(APIView):
             arguments['image'] = ContentFile(decoded, name=path)
 
         try:
-            obj = Project.objects.create(**arguments)
-            if isinstance(audience_list, list):
-                obj.audience.set(Audience.objects.filter(name__in=audience_list))
-            if isinstance(genre_list, list):
-                obj.genre.set(Genre.objects.filter(translit__in=genre_list))
+            with transaction.atomic():
+                obj = Project.objects.create(**arguments)
+                ProjectMember.objects.create(
+                    project=obj,
+                    user=cur_user.user,
+                    role=ProjectMemberRole.OWNER,
+                )
+                if isinstance(audience_list, list):
+                    obj.audience.set(Audience.objects.filter(name__in=audience_list))
+                if isinstance(genre_list, list):
+                    obj.genre.set(Genre.objects.filter(translit__in=genre_list))
         except Exception:
             logger.exception('Project create failed')
             return JsonResponse({'error': 'internal_error'}, status=500)

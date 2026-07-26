@@ -6,15 +6,9 @@ endpoint should resolve access through this module instead of hand-rolling
 
 Roles (ProjectMemberRole): owner > admin > editor > viewer.
 
-Resolution of the current user's role unions three ownership signals (for
-back-compat with the two ownership models that predate this feature):
-  1. ``project.owner_id``            (direct AUTH_USER_MODEL FK)
-  2. ``project.user.user_id``        (legacy UserKey wrapper)
-  3. ``ProjectMember.role``          (the collaboration source of truth)
-
-A user matched by (1) or (2) is always treated as ``owner`` even if no
-ProjectMember row exists yet — the data migration backfills those rows, but we
-stay correct if one is somehow missing.
+``Project.owner`` is the canonical ownership authority. The matching
+``ProjectMember(role="owner")`` row mirrors that authority for team APIs.
+``Project.user`` is legacy creator attribution only and never grants access.
 
 The module exposes both boolean predicates (``can_edit`` etc.) and an ``Action``
 enum + ``can(role, action)`` matrix so views can ask the policy directly.
@@ -99,20 +93,19 @@ _MATRIX: dict[str, set[Action]] = {
 # Role resolution
 # --------------------------------------------------------------------------- #
 
-def _legacy_owner_id(project: Project) -> Optional[int]:
-    if not project.user_id:
-        return None
-    return getattr(project.user, "user_id", None)
-
-
 def get_role(user: Optional[User], project: Project) -> Optional[str]:
     """Return the user's role on the project, or ``None`` if no access."""
     if user is None or not getattr(user, "id", None):
         return None
-    if project.owner_id == user.id or _legacy_owner_id(project) == user.id:
+    if project.owner_id == user.id:
         return ProjectMemberRole.OWNER
     member = ProjectMember.objects.filter(project=project, user=user).first()
-    return member.role if member else None
+    if member is None:
+        return None
+    # A stale/corrupt owner member must never become a second authority.
+    if member.role == ProjectMemberRole.OWNER:
+        return ProjectMemberRole.ADMIN
+    return member.role
 
 
 def is_member(user: Optional[User], project: Project) -> bool:
@@ -190,11 +183,7 @@ def can_leave_project(user, project) -> bool:
 
 def accessible_projects_q(user: User) -> Q:
     """Q filter selecting every project the user may access (own / member)."""
-    return (
-        Q(owner_id=user.id)
-        | Q(user__user_id=user.id)
-        | Q(members__user_id=user.id)
-    )
+    return Q(owner_id=user.id) | Q(members__user_id=user.id)
 
 
 def accessible_project_ids(user: User) -> set[int]:

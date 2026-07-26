@@ -222,22 +222,10 @@ def _team_member_payload(member: ProjectMember, profile, request) -> dict:
 # --------------------------------------------------------------------------- #
 
 def _resolve_user_role(project: Project, user: Optional[User]) -> str:
-    """Return current user's role for this project: owner | editor | viewer.
+    """Return the central policy role, defaulting to viewer for display."""
+    from w_craft_back.movie.project import policy
 
-    Owner via direct FK or legacy UserKey wrapper short-circuits to 'owner'.
-    Otherwise reads ProjectMember; defaults to 'viewer' for safety.
-    """
-    if user is None:
-        return "viewer"
-    if project.owner_id == user.id:
-        return "owner"
-    legacy_owner_id = getattr(project.user, "user_id", None) if project.user_id else None
-    if legacy_owner_id == user.id:
-        return "owner"
-    member = ProjectMember.objects.filter(project=project, user=user).first()
-    if member is None:
-        return "viewer"
-    return member.role
+    return policy.get_role(user, project) or "viewer"
 
 
 def _hero_payload(project: Project, request, user: Optional[User] = None) -> dict:

@@ -75,6 +75,7 @@ class CharacterStudioTestCase(TestCase):
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
             user=self.user_key,
+            owner=user,
             title="Film",
             format="series",
             annot="Short",
@@ -1623,7 +1624,12 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         other_user = User.objects.create_user(username="intruder", password="x")
         other_key = UserKey.objects.create(user=other_user)
         other_project = Project.objects.create(
-            user=other_key, title="Other", format="series", annot="x", desc="y",
+            user=other_key,
+            owner=other_user,
+            title="Other",
+            format="series",
+            annot="x",
+            desc="y",
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             response = self.client.post(

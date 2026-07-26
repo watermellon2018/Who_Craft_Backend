@@ -80,6 +80,7 @@ class CharacterTreeSecurityTests(TestCase):
     def _make_project(user_key: UserKey, title: str) -> Project:
         return Project.objects.create(
             user=user_key,
+            owner=user_key.user,
             title=title,
             format="series",
             annot="Short",
