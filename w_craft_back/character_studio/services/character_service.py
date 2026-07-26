@@ -26,10 +26,16 @@ from w_craft_back.character_studio.repositories.repositories import (
     VariantRepository,
 )
 from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, ValidationError
+from w_craft_back.character_studio.services.permissions import (
+    get_editable_project,
+    get_project_for_action,
+    get_viewable_project,
+)
 from w_craft_back.character_studio.services.profile_parser import CharacterProfileParser
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.character_studio.services.serialization import character_dict
+from w_craft_back.movie.project.policy import Action
 
 
 class CharacterService:
@@ -62,6 +68,7 @@ class CharacterService:
 
     @transaction.atomic
     def create_character(self, user, project, payload):
+        project = get_editable_project(user, project.id)
         name = (payload.get("name") or "").strip()
         if not name:
             raise ValidationError("name is required.")
@@ -143,26 +150,31 @@ class CharacterService:
         )
         return character, reference_asset
 
-    def get_character(self, user, project_id, character_id):
-        # Gate project access through the central policy first (the repo no
-        # longer scopes characters by the individual creator, so members of the
-        # same project can read each other's characters — but outsiders must be
-        # rejected). A failed gate raises PermissionDeniedError, which maps to a
-        # 403 upstream; a missing character maps to 404.
-        from w_craft_back.character_studio.services.permissions import get_owned_project
+    def _get_character_for_action(
+        self, user, project_id, character_id, action: Action,
+    ):
 
-        get_owned_project(user, project_id)
+        get_project_for_action(user, project_id, action)
         try:
             return self.characters.get_for_project_user(user, project_id, character_id)
         except Exception as exc:
             raise NotFoundError("Character not found.") from exc
 
-    def _require_edit(self, user, project_id):
-        """Raise PermissionDeniedError unless the user may edit this project's
-        content (rejects viewers on the legacy character surface)."""
-        from w_craft_back.character_studio.services.permissions import require_project_edit
+    def get_viewable_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.VIEW,
+        )
 
-        require_project_edit(user, project_id)
+    def get_editable_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.EDIT_CONTENT,
+        )
+
+    def get_generation_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.RUN_GENERATION,
+        )
+
 
     def get_identity_asset(self, character):
         """Find the best identity-source asset for this character, or None.
@@ -229,9 +241,7 @@ class CharacterService:
 
     def list_project_characters(self, user, project_id, filters=None):
         # Gate project view-access before listing (repo scopes by project only).
-        from w_craft_back.character_studio.services.permissions import get_owned_project
-
-        get_owned_project(user, project_id)
+        get_viewable_project(user, project_id)
         return [
             character_dict(character)
             for character in self.characters.list_project(user, project_id, filters).select_related(
@@ -241,8 +251,7 @@ class CharacterService:
 
     @transaction.atomic
     def update_character(self, user, project_id, character_id, payload):
-        self._require_edit(user, project_id)
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         self._validate_character_type(payload.get("character_type"))
         self._validate_role(payload.get("role"))
         self._validate_age(payload.get("age"))
@@ -285,14 +294,12 @@ class CharacterService:
 
     @transaction.atomic
     def delete_character(self, user, project_id, character_id):
-        self._require_edit(user, project_id)
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         character.delete()
 
     @transaction.atomic
     def lock_identity(self, user, project_id, character_id, payload):
-        self._require_edit(user, project_id)
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         if not payload.get("confirm"):
             raise ValidationError("confirm=true is required to lock identity.")
         before = character_dict(character, include_related=True)
@@ -320,8 +327,7 @@ class CharacterService:
 
     @transaction.atomic
     def apply_variant(self, user, project_id, character_id, variant_id, payload):
-        self._require_edit(user, project_id)
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         try:
             variant = self.variants.get_for_character(character, variant_id)
         except Exception as exc:

@@ -140,7 +140,7 @@ class CharacterServiceTests(CharacterStudioTestCase):
             self.user_key, self.project.id, character.character_id,
         )
         with self.assertRaises(NotFoundError):
-            self.service.get_character(
+            self.service.get_viewable_character(
                 self.user_key, self.project.id, character.character_id,
             )
 

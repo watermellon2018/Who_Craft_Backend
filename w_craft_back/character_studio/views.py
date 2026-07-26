@@ -25,7 +25,6 @@ from w_craft_back.character_studio.services.character_service import CharacterSe
 from w_craft_back.character_studio.services.errors import (
     CharacterStudioError,
     NotFoundError,
-    PermissionDeniedError,
     ValidationError,
 )
 from w_craft_back.character_studio.services.generation_service import (
@@ -44,9 +43,10 @@ from w_craft_back.character_studio.services.model3d_reconstruction_service impor
     retry_reconstruction,
 )
 from w_craft_back.character_studio.services.permissions import (
-    get_owned_project,
+    get_editable_project,
+    get_generation_project,
     get_user_from_request,
-    require_project_edit,
+    get_viewable_project,
 )
 from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
@@ -111,7 +111,7 @@ def characters_collection(request, project_id):
     user = get_user_from_request(request)
     service = CharacterService()
     if request.method == "GET":
-        project = get_owned_project(user, project_id)
+        project = get_viewable_project(user, project_id)
         filters = {
             "role": request.GET.get("role"),
             "search": request.GET.get("search"),
@@ -120,7 +120,7 @@ def characters_collection(request, project_id):
             service.list_project_characters(user, project.id, filters), status=200,
         )
     # Creating a character requires content-edit permission (viewers rejected).
-    project = require_project_edit(user, project_id)
+    project = get_editable_project(user, project_id)
     logger.info("create_character start: project_id=%s", project_id)
     character = service.create_character(user, project, payload(request))
     logger.info(
@@ -158,7 +158,8 @@ def _form_bool(request, key, default=False):
 @handle_errors
 def create_character_from_reference(request, project_id):
     user = get_user_from_request(request)
-    project = require_project_edit(user, project_id)
+    project = get_editable_project(user, project_id)
+    get_generation_project(user, project_id)
     uploaded = request.FILES.get("reference_image")
     if not uploaded:
         raise ValidationError("reference_image is required.")
@@ -261,7 +262,7 @@ def character_detail(request, project_id, character_id):
     user = get_user_from_request(request)
     service = CharacterService()
     if request.method == "GET":
-        character = service.get_character(user, project_id, character_id)
+        character = service.get_viewable_character(user, project_id, character_id)
         return ok(character_dict(character, include_related=True))
     if request.method == "DELETE":
         service.delete_character(user, project_id, character_id)
@@ -369,9 +370,7 @@ def generation_job_summary(job):
 @handle_errors
 def get_generation_job(request, job_id):
     user = get_user_from_request(request)
-    job = CharacterGenerationService().get_generation_job(job_id)
-    if job.user_id != user.id:
-        raise PermissionDeniedError()
+    job = CharacterGenerationService().get_generation_job(user, job_id)
     return ok(job_dict(job))
 
 
@@ -404,12 +403,14 @@ def lock_identity(request, project_id, character_id):
 @handle_errors
 def outfits_collection(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    service = CharacterService()
     if request.method == "GET":
+        character = service.get_viewable_character(user, project_id, character_id)
         outfits = character.outfits.filter(archived_at__isnull=True).order_by(
             "-is_default", "name",
         )
         return ok([outfit_dict(outfit) for outfit in outfits])
+    character = service.get_editable_character(user, project_id, character_id)
     data = payload(request)
     outfit = CharacterOutfit.objects.create(
         character=character,
@@ -431,7 +432,9 @@ def outfits_collection(request, project_id, character_id):
 @handle_errors
 def outfit_detail(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     outfit = _get_user_outfit(character, outfit_id)
     if request.method == "DELETE":
         outfit.archived_at = timezone.now()
@@ -449,7 +452,9 @@ def outfit_detail(request, project_id, character_id, outfit_id):
 @handle_errors
 def set_default_outfit(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     outfit = _get_user_outfit(character, outfit_id)
     OutfitRepository().set_default(character, outfit)
     character.active_outfit = outfit
@@ -475,7 +480,9 @@ def generate_outfit_variants(request, project_id, character_id, outfit_id):
 @handle_errors
 def upload_outfit_reference(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     outfit = _get_user_outfit(character, outfit_id)
 
     uploaded = request.FILES.get("file")
@@ -522,7 +529,9 @@ def upload_outfit_reference(request, project_id, character_id, outfit_id):
 @handle_errors
 def delete_outfit_reference(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     outfit = _get_user_outfit(character, outfit_id)
 
     asset = outfit.reference_image
@@ -537,7 +546,9 @@ def delete_outfit_reference(request, project_id, character_id, outfit_id):
 @handle_errors
 def upload_clothing_reference(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
 
     uploaded = request.FILES.get("file")
     try:
@@ -577,7 +588,9 @@ def upload_clothing_reference(request, project_id, character_id):
 @handle_errors
 def delete_clothing_reference(request, project_id, character_id, asset_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     try:
         asset = character.assets.get(
             asset_id=asset_id, asset_type=CharacterAssetType.CLOTHING_REFERENCE,
@@ -592,7 +605,9 @@ def delete_clothing_reference(request, project_id, character_id, asset_id):
 @handle_errors
 def revisions_collection(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     return ok(CharacterRevisionService().list_revisions(character))
 
 
@@ -600,7 +615,9 @@ def revisions_collection(request, project_id, character_id):
 @handle_errors
 def restore_revision(request, project_id, character_id, revision_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     try:
         revision = CharacterRevision.objects.get(
             character=character, revision_id=revision_id,
@@ -627,7 +644,9 @@ def _readiness_for(character):
 @handle_errors
 def references_collection(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     return ok(references_payload(character, readiness))
 
@@ -643,7 +662,9 @@ def references_generate(request, project_id, character_id):
     # Refresh state so the client gets the updated row immediately (the asset
     # is created by _run_job before the request returns when using the mock
     # provider; for real providers it may still be GENERATING).
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     return ok({
         "job_id": str(job.job_id),
@@ -668,7 +689,9 @@ def references_generate_missing(request, project_id, character_id):
     result = CharacterGenerationService().generate_missing_references(
         user, project_id, character_id, data,
     )
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     return ok({
         "created_jobs": result["created_jobs"],
@@ -685,7 +708,9 @@ def references_correct(request, project_id, character_id, reference_id):
     job = CharacterGenerationService().correct_reference(
         user, project_id, character_id, reference_id, data,
     )
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     return ok({
         "job_id": str(job.job_id),
@@ -700,7 +725,9 @@ def references_correct(request, project_id, character_id, reference_id):
 @handle_errors
 def references_upload(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     ui_type = request.POST.get("reference_type") or request.data.get("reference_type")
     replace_raw = (
         request.POST.get("replace_current")
@@ -719,7 +746,9 @@ def references_upload(request, project_id, character_id):
 @handle_errors
 def references_make_primary(request, project_id, character_id, reference_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     CharacterAssetService().make_primary_reference(character, reference_id)
     readiness = _readiness_for(character)
     return ok(references_payload(character, readiness))
@@ -729,7 +758,9 @@ def references_make_primary(request, project_id, character_id, reference_id):
 @handle_errors
 def references_readiness(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_viewable_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     return ok({
         "can_proceed": readiness["can_proceed"],
@@ -748,7 +779,9 @@ _USER_CHECKLIST_KEYS = (
 @handle_errors
 def references_checklist(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
     data = payload(request)
     state = dict(character.references_state or {})
     for key in _USER_CHECKLIST_KEYS:
@@ -768,7 +801,9 @@ def references_checklist(request, project_id, character_id):
 @handle_errors
 def references_proceed_to_3d(request, project_id, character_id):
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_generation_character(
+        user, project_id, character_id,
+    )
     readiness = _readiness_for(character)
     if not readiness["can_proceed"]:
         return JsonResponse(
@@ -823,8 +858,9 @@ def model3d_state(request, project_id, character_id):
     revision audit log.
     """
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    service = CharacterService()
     if request.method == "GET":
+        character = service.get_viewable_character(user, project_id, character_id)
         # `autofit_done` lets the editor decide on open: seed from references
         # the first time, load the saved state every time after.
         return ok({
@@ -835,6 +871,7 @@ def model3d_state(request, project_id, character_id):
             "updated_at": character.updated_at.isoformat(),
         })
 
+    character = service.get_editable_character(user, project_id, character_id)
     data = payload(request)
     cleaned = validate_model3d_params(data.get("params"))
     character.model3d_params = cleaned
@@ -857,7 +894,9 @@ def model3d_state(request, project_id, character_id):
 def model3d_reconstruction_retry(request, project_id, character_id):
     """Retry a failed personalized GLB reconstruction for locked references."""
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_generation_character(
+        user, project_id, character_id,
+    )
     if character.status != CharacterStatus.REFERENCES_LOCKED:
         raise ValidationError("References must be locked before 3D reconstruction.")
     return ok({"reconstruction": retry_reconstruction(character)}, status=202)
@@ -880,7 +919,9 @@ def model3d_autofit(request, project_id, character_id):
     must not run on speculative prefetches.
     """
     user = get_user_from_request(request)
-    character = CharacterService().get_character(user, project_id, character_id)
+    character = CharacterService().get_editable_character(
+        user, project_id, character_id,
+    )
 
     if character.model3d_autofit_done and (
         character.model3d_autofit_version >= MODEL3D_AUTOFIT_VERSION

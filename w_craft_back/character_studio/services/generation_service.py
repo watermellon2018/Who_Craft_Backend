@@ -115,7 +115,9 @@ class CharacterGenerationService:
 
     @transaction.atomic
     def create_initial_variants(self, user, project_id, character_id, params):
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
         variant_count = self._validate_variant_count(params.get("variant_count", 4))
         image_type = self._validate_image_type(params.get("image_type") or params.get("preview_type") or CharacterImageType.PORTRAIT)
         region = self.IMAGE_TYPE_TO_REGION[image_type]
@@ -197,7 +199,9 @@ class CharacterGenerationService:
         selection = self._validate_selection(payload.get("selection"))
         self.safety.validate_user_text(instruction)
 
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
         region = self.IMAGE_TYPE_TO_REGION[image_type]
         preserve = {"identity": True, "outside_selection": True}
         compiled = self.compiler.compile(
@@ -278,7 +282,9 @@ class CharacterGenerationService:
         asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
         image_type = self.REFERENCE_TYPE_TO_IMAGE_TYPE[asset_type]
 
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
 
         # Conflict guard: another in-flight job for this same image_type would
         # produce racing results and identical asset_type rows. Reject the new
@@ -424,7 +430,9 @@ class CharacterGenerationService:
                 f"Unknown reference_type(s): {', '.join(unknown)}.",
             )
 
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
 
         latest_ready = self.assets.latest_ready_by_reference_type(character)
         created_jobs = []
@@ -471,8 +479,13 @@ class CharacterGenerationService:
         """Apply a textual correction to an existing reference and create a NEW
         version. The previous version is preserved (status stays ready) so the
         user can revert by simply marking it primary."""
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
         try:
-            reference = CharacterAsset.objects.get(asset_id=reference_id, character_id=character_id)
+            reference = CharacterAsset.objects.get(
+                asset_id=reference_id, character=character,
+            )
         except CharacterAsset.DoesNotExist as exc:
             raise NotFoundError("Reference not found.") from exc
         from w_craft_back.character_studio.services.asset_service import (
@@ -497,7 +510,9 @@ class CharacterGenerationService:
 
     @transaction.atomic
     def generate_edit_variants(self, user, project_id, character_id, edit_request):
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
         region = edit_request.get("region")
         if region not in ("face", "hair", "body", "outfit", "style", "full_character"):
             raise ValidationError("region is invalid.")
@@ -638,11 +653,17 @@ class CharacterGenerationService:
             job_type=GenerationJobType.EDIT_VARIANTS,
         )
 
-    def get_generation_job(self, job_id):
+    def get_generation_job(self, user, job_id):
+        from w_craft_back.character_studio.services.permissions import (
+            get_viewable_project,
+        )
+
         try:
-            return self.jobs.get(job_id=job_id)
+            job = self.jobs.get(job_id=job_id)
         except CharacterGenerationJob.DoesNotExist as exc:
             raise NotFoundError("Generation job not found.") from exc
+        get_viewable_project(user, job.project_id)
+        return job
 
     def create_reference_variants(self, user, project_id, character_id, reference_asset, params):
         """Generate variants for a character seeded by a user-uploaded source image.
@@ -655,7 +676,11 @@ class CharacterGenerationService:
 
         from django.conf import settings
 
-        character = self.characters.get_character(user, project_id, character_id)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
+        if reference_asset.character_id != character.character_id:
+            raise NotFoundError("Reference not found for character.")
         variant_count = self._validate_variant_count(params.get("variant_count", 4))
         preserve_identity = bool(params.get("preserve_identity", True))
 
