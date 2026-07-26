@@ -7,6 +7,7 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from w_craft_back.auth.models import UserKey
@@ -15,32 +16,40 @@ from w_craft_back.auth.serializers import UserSerializer
 logger = logging.getLogger(__name__)
 
 
+class _AuthAnonThrottle(AnonRateThrottle):
+    scope = 'auth'
+
+
 class RegistrationView(APIView):
+    throttle_classes = [_AuthAnonThrottle]
+
     def post(self, request):
         serializer = UserSerializer(data=request.data)
-        logger.info(serializer)
         if serializer.is_valid():
-            logger.info('valid')
             user = serializer.save(last_login=timezone.now())
-            logger.info('save')
             key = uuid.uuid4()
             UserKey.objects.create(user=user, key=key)
             return JsonResponse({'token': key}, safe=False,
                                 status=status.HTTP_201_CREATED)
 
-        logger.error('Error registration!')
+        logger.warning('Registration failed: validation error')
         return HttpResponse('Ошибка регистрации!', status=status.HTTP_400_BAD_REQUEST)
 
 
 class LoginView(APIView):
-    def get(self, request):
-        username = request.GET.get('username')
-        password = request.GET.get('password')
-        logger.info(f'User {username} tried to log')
+    throttle_classes = [_AuthAnonThrottle]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response({'status': 'fail'}, status=status.HTTP_400_BAD_REQUEST)
 
         user = authenticate(username=username, password=password)
         if user is None:
-            return Response({'status': 'fail'})
+            logger.info('Login failed for unknown user')
+            return Response({'status': 'fail'}, status=status.HTTP_401_UNAUTHORIZED)
 
         user_key, _ = UserKey.objects.get_or_create(user=user)
         key = user_key.key

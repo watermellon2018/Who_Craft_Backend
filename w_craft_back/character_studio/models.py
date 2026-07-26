@@ -25,8 +25,22 @@ class CharacterRole(models.TextChoices):
 
 
 class CharacterStatus(models.TextChoices):
+    # A character that has been started but not yet confirmed by the user.
+    # We persist drafts because generation needs a character_id to attach
+    # variants to, but drafts must NOT show up in the gallery or tree.
+    DRAFT = "draft", "Draft"
+    # A character the user has confirmed (applied a variant or otherwise
+    # explicitly saved). This is the default "visible" state.
     ACTIVE = "active", "Active"
     REFERENCES_LOCKED = "references_locked", "References locked"
+
+
+# Statuses that should appear in normal user-facing lists (gallery + tree).
+# Drafts are intentionally excluded — they're unfinished creation attempts.
+VISIBLE_CHARACTER_STATUSES = (
+    CharacterStatus.ACTIVE,
+    CharacterStatus.REFERENCES_LOCKED,
+)
 
 
 class CharacterAssetType(models.TextChoices):
@@ -51,6 +65,7 @@ class CharacterAssetType(models.TextChoices):
     OUTFIT_REFERENCE = "outfit_reference", "Outfit reference"
     CLOTHING_REFERENCE = "clothing_reference", "Clothing reference"
     THUMBNAIL = "thumbnail", "Thumbnail"
+    MODEL_3D = "model_3d", "3D model"
 
 
 class CharacterAssetStatus(models.TextChoices):
@@ -66,6 +81,8 @@ class GenerationJobType(models.TextChoices):
     EXPRESSION_VARIANTS = "expression_variants", "Expression variants"
     CHARACTER_SHEET = "character_sheet", "Character sheet"
     REFERENCE_EXTRACTION = "reference_extraction", "Reference extraction"
+    REFERENCE_VARIANTS = "reference_variants", "Reference-based variants"
+    MODEL3D_RECONSTRUCTION = "model3d_reconstruction", "3D reconstruction"
 
 
 class GenerationJobStatus(models.TextChoices):
@@ -144,7 +161,7 @@ class StudioCharacter(models.Model):
     status = models.CharField(
         max_length=20,
         choices=CharacterStatus.choices,
-        default=CharacterStatus.ACTIVE,
+        default=CharacterStatus.DRAFT,
         db_index=True,
     )
     identity_locked = models.BooleanField(default=False)
@@ -199,6 +216,18 @@ class StudioCharacter(models.Model):
     # User-editable references checklist (subjective items only). Auto-derived
     # items (full_body_ready, front_side_back_ready) are computed at request time.
     references_state = models.JSONField(default=dict, blank=True)
+    # Parametric state of the 3D editor stage: {zone_id: {param_id: value}}.
+    # Leaf values are numbers in [-1, 1], short strings (color hex / preset
+    # ids) or booleans — validated in services/model3d_service.py.
+    model3d_params = models.JSONField(default=dict, blank=True)
+    # Whether autofit-from-references has already run for the 3D stage. The
+    # editor seeds parameters from the portrait automatically on first open;
+    # this flag stops it from overwriting the user's manual edits on later
+    # opens, even if they reset everything back to defaults.
+    model3d_autofit_done = models.BooleanField(default=False)
+    # Incremented when a new autofit profile has been applied. This lets the
+    # editor upgrade old sparse fits without overwriting manual parameters.
+    model3d_autofit_version = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -48,8 +48,14 @@ def _ensure_target(current_user: User, target_user_id: int) -> User:
 
 
 def _ensure_profile(user: User) -> UserProfile:
-    profile, _ = UserProfile.objects.get_or_create(user=user)
-    return profile
+    """Ensure ``UserProfile`` exists and return it locked for update.
+
+    Called from inside ``@transaction.atomic`` blocks, so the row stays locked
+    until commit. Two concurrent subscribe() calls thus serialize on the
+    counter row instead of racing to double-increment.
+    """
+    UserProfile.objects.get_or_create(user=user)
+    return UserProfile.objects.select_for_update().get(user=user)
 
 
 @transaction.atomic
@@ -187,8 +193,27 @@ def _normalize_query(raw: str) -> str:
     return q.lower()
 
 
+_MAX_PAGE_LIMIT = 100
+
+
+def _clamp_page(limit: int, offset: int) -> tuple[int, int]:
+    """Normalize pagination args. Negative offsets must NOT wrap from the end."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(limit, _MAX_PAGE_LIMIT))
+    offset = max(0, offset)
+    return limit, offset
+
+
 def list_my_subscriptions(current_user: User, limit: int, offset: int) -> dict:
     """List active subscriptions of current_user, favorites first, newest first."""
+    limit, offset = _clamp_page(limit, offset)
     qs = (
         ChannelSubscription.objects
         .filter(subscriber=current_user, deleted_at__isnull=True, subscribed_to__is_active=True)
@@ -209,9 +234,14 @@ def list_my_subscriptions(current_user: User, limit: int, offset: int) -> dict:
 
 def search_channels(current_user: User, query: str, limit: int, offset: int) -> dict:
     """Trigram-backed user search excluding self and inactive users."""
+    limit, offset = _clamp_page(limit, offset)
     q = _normalize_query(query)
     if not q:
         return {'items': [], 'total': 0, 'limit': limit, 'offset': offset}
+    # Escape LIKE wildcards in user input so a query like "foo%" matches
+    # literally instead of as a pattern.
+    like_pat = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    like = f'%{like_pat}%'
 
     from django.db import connection
     sql = """
@@ -234,8 +264,8 @@ def search_channels(current_user: User, query: str, limit: int, offset: int) -> 
           AND u.id <> %s
           AND p.public_username IS NOT NULL
           AND (
-              p.public_username ILIKE %s
-              OR p.display_name ILIKE %s
+              p.public_username ILIKE %s ESCAPE '\\'
+              OR p.display_name ILIKE %s ESCAPE '\\'
           )
         ORDER BY
             COALESCE(s.is_favorite, false) DESC,
@@ -247,7 +277,6 @@ def search_channels(current_user: User, query: str, limit: int, offset: int) -> 
             p.display_name ASC
         LIMIT %s OFFSET %s
     """
-    like = f'%{q}%'
     params = [current_user.id, current_user.id, like, like, q, q, limit, offset]
 
     with connection.cursor() as cur:
@@ -275,6 +304,7 @@ def search_channels(current_user: User, query: str, limit: int, offset: int) -> 
 
 
 def list_subscribers(target_user_id: int, limit: int, offset: int) -> dict:
+    limit, offset = _clamp_page(limit, offset)
     qs = (
         ChannelSubscription.objects
         .filter(subscribed_to_id=target_user_id, deleted_at__isnull=True, subscriber__is_active=True)
@@ -292,6 +322,7 @@ def list_subscribers(target_user_id: int, limit: int, offset: int) -> dict:
 
 
 def list_user_subscriptions(user_id: int, limit: int, offset: int) -> dict:
+    limit, offset = _clamp_page(limit, offset)
     qs = (
         ChannelSubscription.objects
         .filter(subscriber_id=user_id, deleted_at__isnull=True, subscribed_to__is_active=True)

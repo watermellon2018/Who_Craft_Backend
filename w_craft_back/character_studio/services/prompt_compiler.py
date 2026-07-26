@@ -110,6 +110,7 @@ HAIR_LENGTH_PHRASE = {
     "bald": "a bald head",
 }
 
+# Reserved for the upcoming 3D module — not consumed by the 2D prompt path.
 BODY_TYPE_PHRASE = {
     "slim": "a slim build",
     "athletic": "an athletic build",
@@ -392,6 +393,203 @@ class CharacterPromptCompiler:
             },
         }
 
+    # framing recipes per image_type for identity-anchored generation.
+    _IDENTITY_ANCHORED_FRAMING = {
+        "full_body": (
+            "full-body photo",
+            (
+                "Show from head to toe. Feet fully visible, head fully visible. "
+                "Neutral standing pose. Centered composition. Character fully in frame."
+            ),
+        ),
+        "three_quarter": (
+            "3/4-view image",
+            (
+                "Head turned about 30 degrees away from camera. "
+                "Upper-to-full body framing. Full silhouette readable."
+            ),
+        ),
+        "profile": (
+            "pure side profile view",
+            (
+                "Camera at exactly 90 degrees to the character. "
+                "Clear silhouette of nose, chin, and forehead. "
+                "Same hairstyle visible from the side."
+            ),
+        ),
+        "back_view": (
+            "back view image",
+            (
+                "Character facing fully away from the camera. Full body preferred. "
+                "Hairstyle and outfit visible from behind. Feet fully visible. "
+                "Neutral standing pose."
+            ),
+        ),
+        "emotions": (
+            "expression sheet",
+            (
+                "A grid of head-and-shoulders portraits showing several distinct "
+                "facial expressions (neutral, happy, sad, angry, surprised). "
+                "Same face identity in every cell. No text labels."
+            ),
+        ),
+        "poses": (
+            "pose sheet",
+            (
+                "Several full-body poses of the same character (idle, walking, "
+                "action, sitting). Same outfit and hairstyle across poses. "
+                "Animation/modeling reference style."
+            ),
+        ),
+        "outfit_details": (
+            "close-up outfit detail studies",
+            (
+                "Detailed close-ups of fabric, accessories, shoes, belts and "
+                "jewelry of the outfit. Focus is wardrobe, not identity changes."
+            ),
+        ),
+        "reference_sheet": (
+            "character reference sheet",
+            (
+                "Front, side, and back views on a neutral background. "
+                "Consistent design across views."
+            ),
+        ),
+    }
+
+    def compile_identity_anchored(self, character, appearance, outfit, image_type, params):
+        """Prompt for image-to-image generation of a derived reference view.
+
+        The reference image (uploaded multimodal alongside this prompt) is the
+        authoritative source of the character's identity. The text only adds
+        framing instructions and explicit identity-preservation constraints —
+        we cannot rely on negative prompts for chat-completion models.
+        """
+        controls = dict(params or {})
+        preserve_identity = bool(controls.get("preserve_identity", True))
+        description = self._describe_character(character, appearance, outfit, controls)
+        framing_phrase, framing_instructions = self._IDENTITY_ANCHORED_FRAMING.get(
+            image_type,
+            (
+                f"{image_type.replace('_', ' ')} image",
+                "Keep the character recognizable. Centered composition. Plain neutral background.",
+            ),
+        )
+
+        identity_clause = (
+            "STRICT IDENTITY CONSTRAINTS:\n"
+            "- The output must depict the exact same individual as the reference.\n"
+            "- Preserve face identity, facial structure, eyes, nose, lips, jawline, "
+            "and facial proportions.\n"
+            "- Preserve the same age and gender presentation.\n"
+            "- Preserve the same hairstyle, hair color, and hair texture.\n"
+            "- Preserve the same skin tone and any distinctive marks or features.\n"
+            "- Preserve the established visual style and rendering style.\n"
+            "- A different person is an invalid result. Reinterpreting the character "
+            "is an invalid result.\n"
+            if preserve_identity
+            else "The reference image is the primary visual inspiration; minor stylistic "
+                 "variations are allowed but the character must remain recognizable.\n"
+        )
+
+        positive_prompt = (
+            f"Generate a {framing_phrase} of the SAME character shown in the "
+            "provided reference image.\n\n"
+            f"{identity_clause}\n"
+            f"ONLY CHANGE THE FRAMING:\n{framing_instructions}\n\n"
+            "Do not change the outfit unless explicitly requested. "
+            "Plain neutral studio background, soft studio lighting. "
+            "The image must contain only this one character. "
+            "No text, no logos, no watermarks.\n\n"
+            "Character context (for clarification only — the reference image is "
+            f"authoritative): {description}"
+        )
+
+        refinement = (
+            (controls.get("text_refinement") or controls.get("correction_prompt") or "")
+            .strip()
+        )
+        if refinement:
+            positive_prompt = f"{positive_prompt}\n\nAdditional notes: {refinement}"
+
+        negative = NEGATIVES_BY_IMAGE_TYPE.get(image_type, NEGATIVE_BASE)
+
+        return {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative,
+            "edit_instruction": "",
+            "reference_image_ids": [],
+            "metadata": {
+                "region": "full_character",
+                "image_type": image_type,
+                "mode": "identity_anchored",
+                "preserve_identity": preserve_identity,
+                "controls": controls,
+            },
+        }
+
+    def compile_reference_prompt(self, character, appearance, outfit, params):
+        """Prompt for image-to-image generation seeded by a user-uploaded reference.
+
+        The user attached a real photo / artwork; the model should treat it as
+        the source of identity. We pass it as the multimodal image part separately;
+        this method only builds the accompanying text instruction.
+        """
+        controls = dict(params or {})
+        preserve_identity = bool(controls.get("preserve_identity", True))
+        description = self._describe_character(character, appearance, outfit, controls)
+        style_value = (
+            controls.get("visual_style")
+            or getattr(character, "visual_style", "")
+            or ""
+        )
+        style_clause = (
+            f" in a {str(style_value).replace('_', ' ')} visual style"
+            if style_value
+            else ""
+        )
+
+        identity_clause = (
+            "Preserve the face identity, key facial features, hair, body proportions, "
+            "and distinctive traits from the provided reference image. "
+            if preserve_identity
+            else "Use the provided reference image as a soft visual inspiration. "
+        )
+
+        positive_prompt = (
+            "Generate a clean, single-character WCraft Character Studio portrait based on "
+            "the attached reference image. "
+            f"{identity_clause}"
+            f"The character is {description}{style_clause}. "
+            "Head-and-shoulders or 3/4 character view, centered, plain neutral studio "
+            "background, soft studio lighting, high detail, cinematic clean composition. "
+            "Do not copy the original background, props, text, watermarks, or any extra "
+            "people from the reference. The image must contain only the character."
+        )
+
+        text_refinement = (controls.get("text_refinement") or controls.get("refinement") or "").strip()
+        if text_refinement:
+            positive_prompt = f"{positive_prompt} Additional notes: {text_refinement}"
+
+        negative = (
+            f"{NEGATIVES_BY_IMAGE_TYPE['portrait']}, {CLEAN_FRAME_NEGATIVE}, "
+            "background from reference, copied background, extra people from reference"
+        )
+
+        return {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative,
+            "edit_instruction": "",
+            "reference_image_ids": [],
+            "metadata": {
+                "region": "full_character",
+                "image_type": "portrait",
+                "mode": "reference_seeded",
+                "preserve_identity": preserve_identity,
+                "controls": controls,
+            },
+        }
+
     def _describe_character(self, character, appearance, outfit, controls):
         """Build a natural-language description of one character.
         Never emits 'key: value' or label-style fragments."""
@@ -428,20 +626,10 @@ class CharacterPromptCompiler:
             if hair_clause:
                 has_clauses.append(hair_clause)
 
-            body = controls.get("body_type") or getattr(appearance, "body_type", "")
-            if body:
-                has_clauses.append(_phrase(BODY_TYPE_PHRASE, body, "build"))
-
-            height_cm = controls.get("height_cm")
-            if height_cm in (None, "", 0):
-                height_cm = getattr(appearance, "height_cm", None)
-            if height_cm:
-                try:
-                    height_cm_int = int(height_cm)
-                    if 50 <= height_cm_int <= 280:
-                        has_clauses.append(f"approximately {height_cm_int} cm tall")
-                except (TypeError, ValueError):
-                    pass
+            # body_type / height_cm intentionally omitted from the 2D prompt.
+            # They remain on the appearance model for the upcoming 3D module,
+            # where they will drive real parametric body shaping rather than
+            # ambiguous prompt phrasing.
 
         outfit_clause = ""
         outfit_desc = self._outfit_description(outfit)

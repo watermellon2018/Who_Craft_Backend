@@ -8,7 +8,16 @@ from django.db import transaction
 from django.utils import timezone
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
-from w_craft_back.character_studio.models import CharacterImageType, CharacterRole, CharacterStatus, CharacterType, RevisionChangeType
+from w_craft_back.character_studio.models import (
+    CharacterAsset,
+    CharacterAssetStatus,
+    CharacterAssetType,
+    CharacterImageType,
+    CharacterRole,
+    CharacterStatus,
+    CharacterType,
+    RevisionChangeType,
+)
 from w_craft_back.character_studio.repositories.repositories import (
     AppearanceRepository,
     CharacterImageRepository,
@@ -112,13 +121,117 @@ class CharacterService:
         )
         return character
 
+    @transaction.atomic
+    def create_character_from_reference(self, user, project, payload, uploaded_file):
+        """Create a character and persist the user-uploaded reference image.
+
+        Generation is not started here — the caller is expected to enqueue a
+        :class:`CharacterGenerationService.create_reference_variants` job
+        afterwards. If that fails, character + reference still survive (job is
+        marked failed) so the user can retry from the character page.
+        """
+        if not uploaded_file:
+            raise ValidationError("reference_image is required.")
+        # Defer the asset import to avoid a circular import via services.__init__.
+        from w_craft_back.character_studio.services.asset_service import (
+            CharacterAssetService,
+        )
+
+        character = self.create_character(user, project, payload)
+        reference_asset = CharacterAssetService().save_uploaded_source_reference(
+            character, user, uploaded_file
+        )
+        return character, reference_asset
+
     def get_character(self, user, project_id, character_id):
+        # Gate project access through the central policy first (the repo no
+        # longer scopes characters by the individual creator, so members of the
+        # same project can read each other's characters — but outsiders must be
+        # rejected). A failed gate raises PermissionDeniedError, which maps to a
+        # 403 upstream; a missing character maps to 404.
+        from w_craft_back.character_studio.services.permissions import get_owned_project
+
+        get_owned_project(user, project_id)
         try:
             return self.characters.get_for_project_user(user, project_id, character_id)
         except Exception as exc:
             raise NotFoundError("Character not found.") from exc
 
+    def _require_edit(self, user, project_id):
+        """Raise PermissionDeniedError unless the user may edit this project's
+        content (rejects viewers on the legacy character surface)."""
+        from w_craft_back.character_studio.services.permissions import require_project_edit
+
+        require_project_edit(user, project_id)
+
+    def get_identity_asset(self, character):
+        """Find the best identity-source asset for this character, or None.
+
+        Priority chain (first match wins):
+            1. character.canonical_reference_image — the user's explicit choice
+               (set via apply_variant(apply_as='current_reference') or
+               lock_identity()). This is the strongest signal of "the official
+               look of this character".
+            2. Latest READY ``UPLOADED_REFERENCE`` asset — for characters created
+               via the from-reference flow, where the user gave us a real photo.
+            3. Latest READY ``PORTRAIT`` asset — best-effort fallback when the
+               user generated portrait variants but didn't explicitly mark one
+               canonical.
+
+        Returns ``None`` if no identity source exists yet — callers should
+        translate that into an IdentityAssetRequiredError.
+        """
+        return self._identity_asset(character, allow_portrait_fallback=True)
+
+    def get_explicit_identity_asset(self, character):
+        """Like :meth:`get_identity_asset` but skips the latest-portrait fallback.
+
+        For portrait edits we MUST NOT anchor on the latest portrait (that's
+        the very thing we're editing — anchoring on it would lock in whatever
+        random face the previous edit produced). Only an explicit identity
+        source — canonical reference or uploaded reference — should drive a
+        portrait-edit's image-to-image input.
+        """
+        return self._identity_asset(character, allow_portrait_fallback=False)
+
+    def _identity_asset(self, character, *, allow_portrait_fallback):
+        canonical = character.canonical_reference_image
+        if canonical and canonical.status == CharacterAssetStatus.READY:
+            return canonical
+
+        uploaded = (
+            CharacterAsset.objects
+            .filter(
+                character=character,
+                asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+                status=CharacterAssetStatus.READY,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if uploaded:
+            return uploaded
+
+        if not allow_portrait_fallback:
+            return None
+
+        portrait = (
+            CharacterAsset.objects
+            .filter(
+                character=character,
+                asset_type=CharacterAssetType.PORTRAIT,
+                status=CharacterAssetStatus.READY,
+            )
+            .order_by("-version", "-created_at")
+            .first()
+        )
+        return portrait
+
     def list_project_characters(self, user, project_id, filters=None):
+        # Gate project view-access before listing (repo scopes by project only).
+        from w_craft_back.character_studio.services.permissions import get_owned_project
+
+        get_owned_project(user, project_id)
         return [
             character_dict(character)
             for character in self.characters.list_project(user, project_id, filters).select_related(
@@ -128,6 +241,7 @@ class CharacterService:
 
     @transaction.atomic
     def update_character(self, user, project_id, character_id, payload):
+        self._require_edit(user, project_id)
         character = self.get_character(user, project_id, character_id)
         self._validate_character_type(payload.get("character_type"))
         self._validate_role(payload.get("role"))
@@ -171,11 +285,13 @@ class CharacterService:
 
     @transaction.atomic
     def delete_character(self, user, project_id, character_id):
+        self._require_edit(user, project_id)
         character = self.get_character(user, project_id, character_id)
         character.delete()
 
     @transaction.atomic
     def lock_identity(self, user, project_id, character_id, payload):
+        self._require_edit(user, project_id)
         character = self.get_character(user, project_id, character_id)
         if not payload.get("confirm"):
             raise ValidationError("confirm=true is required to lock identity.")
@@ -204,6 +320,7 @@ class CharacterService:
 
     @transaction.atomic
     def apply_variant(self, user, project_id, character_id, variant_id, payload):
+        self._require_edit(user, project_id)
         character = self.get_character(user, project_id, character_id)
         try:
             variant = self.variants.get_for_character(character, variant_id)
@@ -241,6 +358,10 @@ class CharacterService:
                     "image_type": image_type,
                 },
             )
+        # Applying a variant is the user's explicit "this is the character I
+        # want" signal — that's when a draft graduates to a visible character.
+        if character.status == CharacterStatus.DRAFT:
+            character.status = CharacterStatus.ACTIVE
         character.save()
         variant.applied = True
         variant.status = "applied"

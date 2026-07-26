@@ -44,6 +44,24 @@ class AIImageProvider(ABC):
     def generate_character_sheet(self, job, compiled_prompt):
         raise NotImplementedError
 
+    def generate_from_reference(
+        self,
+        job,
+        compiled_prompt,
+        reference_image_bytes: bytes,
+        mime_type: str,
+        variant_count: int,
+    ):
+        # Default: not supported. Concrete providers override to enable image-input.
+        from w_craft_back.services.image_generation.errors import (
+            CODE_IMAGE_INPUT_NOT_SUPPORTED,
+        )
+
+        raise ProviderUserFacingError(
+            "Этот провайдер не поддерживает генерацию по референсному изображению.",
+            error_code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+        )
+
 
 class MockProvider(AIImageProvider):
     model_name = "mock-character-provider"
@@ -58,6 +76,18 @@ class MockProvider(AIImageProvider):
     def generate_character_sheet(self, job, compiled_prompt):
         return self._variants(job, compiled_prompt, 4, "sheet")
 
+    def generate_from_reference(
+        self, job, compiled_prompt, reference_image_bytes, mime_type, variant_count
+    ):
+        # MockProvider ignores the reference bytes; just emits placeholder variants.
+        return self._variants(job, compiled_prompt, variant_count, "reference")
+
+    # Minimal valid PNG (1x1 transparent pixel) so identity-anchored downstream
+    # generation can read the mock asset's bytes off disk.
+    _PLACEHOLDER_PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+    )
+
     def _variants(self, job, compiled_prompt, variant_count, prefix):
         safe_count = max(1, min(int(variant_count or 4), 4))
         variants = []
@@ -68,6 +98,11 @@ class MockProvider(AIImageProvider):
             storage_path = (
                 f"mock/characters/{job.character_id}/{job.job_id}/{image_type}_{index}.png"
             )
+            # Persist a real (tiny) PNG to disk so that downstream image-to-image
+            # flows (identity-anchored generation) can read the bytes back.
+            abs_path = Path(settings.MEDIA_ROOT) / storage_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_bytes(self._PLACEHOLDER_PNG)
             variants.append(
                 {
                     "variant_index": index,
@@ -91,10 +126,208 @@ class MockProvider(AIImageProvider):
 
 
 def get_image_provider(name="mock"):
-    provider = (name or "mock").strip().lower()
-    if provider in {"gemini", "google", "imagen"}:
+    """Pick a character-studio provider by name.
+
+    Legacy keys (``mock``/``gemini``/``google``/``imagen``) keep their existing
+    behavior. Any key registered in :data:`MODEL_REGISTRY`
+    (e.g. ``gemini-flash-image``, ``openrouter-flash-image``) is dispatched to
+    :class:`LiteLLMCharacterProvider`, which uses the unified LiteLLM client.
+    """
+    from w_craft_back.services.image_generation import MODEL_REGISTRY
+
+    raw = (name or "mock").strip()
+    lower = raw.lower()
+    if lower in {"gemini", "google", "imagen"}:
         return GeminiProvider()
+    if raw in MODEL_REGISTRY:
+        return LiteLLMCharacterProvider(raw)
     return MockProvider()
+
+
+class LiteLLMCharacterProvider(AIImageProvider):
+    """LiteLLM-backed character-studio provider.
+
+    Reuses the same image bytes-to-disk save pattern as :class:`GeminiProvider`
+    so the rest of the pipeline (asset persistence, URL building) keeps working
+    unchanged.
+    """
+
+    model_name = "litellm"
+
+    def __init__(self, registry_key: str) -> None:
+        from w_craft_back.services.image_generation import (
+            LiteLLMProvider,
+            resolve_model,
+        )
+
+        self.spec = resolve_model(registry_key)
+        self.provider = LiteLLMProvider(self.spec)
+        self.model_version = self.spec.model_id
+        self.aspect_ratio = os.getenv("GEMINI_IMAGE_ASPECT_RATIO", "3:4")
+        self.logger = logging.getLogger(__name__)
+
+    # -------- AIImageProvider interface -----------------------------------
+
+    def generate_character_variants(self, job, compiled_prompt, variant_count):
+        prompt = compiled_prompt["positive_prompt"]
+        image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
+        return self._generate(
+            job,
+            prompt=prompt,
+            variant_count=variant_count,
+            prefix="initial",
+            image_type=image_type,
+        )
+
+    def edit_character_region(self, job, compiled_prompt, variant_count):
+        prompt = compiled_prompt["positive_prompt"]
+        image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
+        return self._generate(
+            job,
+            prompt=prompt,
+            variant_count=variant_count,
+            prefix="edit",
+            image_type=image_type,
+        )
+
+    def generate_character_sheet(self, job, compiled_prompt):
+        prompt = compiled_prompt["positive_prompt"]
+        prompt = f"{prompt}. Create a character sheet with 4 variations on pose/angle."
+        return self._generate(
+            job,
+            prompt=prompt,
+            variant_count=4,
+            prefix="sheet",
+            image_type="reference_sheet",
+        )
+
+    def generate_from_reference(
+        self, job, compiled_prompt, reference_image_bytes, mime_type, variant_count
+    ):
+        from w_craft_back.services.image_generation import (
+            ImageProviderError,
+            map_to_provider_error,
+        )
+
+        prompt = compiled_prompt["positive_prompt"]
+        image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
+        count = max(1, min(int(variant_count or 4), 4))
+        try:
+            images = self.provider.generate_with_reference(
+                prompt,
+                reference_image_bytes,
+                mime_type=mime_type or "image/png",
+                variant_count=count,
+            )
+        except ImageProviderError as exc:
+            raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
+        except Exception as exc:  # noqa: BLE001
+            mapped = map_to_provider_error(exc)
+            raise ProviderUserFacingError(mapped.message, error_code=mapped.code) from exc
+
+        # Top-up if the model returned fewer variants than asked (same pattern as _generate).
+        while len(images) < count:
+            try:
+                extra = self.provider.generate_with_reference(
+                    prompt,
+                    reference_image_bytes,
+                    mime_type=mime_type or "image/png",
+                    variant_count=1,
+                )
+            except Exception:  # noqa: BLE001
+                break
+            if not extra:
+                break
+            images.extend(extra)
+        images = images[:count]
+
+        return self._persist_variants(
+            job, images, prompt=prompt, prefix="reference", image_type=image_type
+        )
+
+    # -------- internals ---------------------------------------------------
+
+    def _generate(self, job, *, prompt, variant_count, prefix, image_type):
+        from w_craft_back.services.image_generation import (
+            ImageProviderError,
+            map_to_provider_error,
+        )
+
+        count = max(1, min(int(variant_count or 4), 4))
+        try:
+            images = self.provider.generate(
+                prompt,
+                aspect_ratio=self.aspect_ratio,
+                variant_count=count,
+            )
+        except ImageProviderError as exc:
+            raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
+        except Exception as exc:  # noqa: BLE001
+            mapped = map_to_provider_error(exc)
+            raise ProviderUserFacingError(mapped.message, error_code=mapped.code) from exc
+
+        # If the chat-image model returned fewer variants than requested, top up
+        # by repeating extra generations (cheaper than failing).
+        while len(images) < count:
+            try:
+                extra = self.provider.generate(
+                    prompt,
+                    aspect_ratio=self.aspect_ratio,
+                    variant_count=1,
+                )
+            except Exception:  # noqa: BLE001
+                break
+            if not extra:
+                break
+            images.extend(extra)
+        images = images[:count]
+
+        return self._persist_variants(
+            job, images, prompt=prompt, prefix=prefix, image_type=image_type
+        )
+
+    def _persist_variants(self, job, images, *, prompt, prefix, image_type):
+        variants: List[Dict[str, Any]] = []
+        media_url = settings.MEDIA_URL or "/media/"
+        if not media_url.startswith("/"):
+            media_url = "/" + media_url
+
+        for idx, png_bytes in enumerate(images):
+            image_rel_path = (
+                Path("character-studio")
+                / "jobs"
+                / str(job.job_id)
+                / f"{prefix}_{image_type}_{idx}.png"
+            )
+            abs_path = Path(settings.MEDIA_ROOT) / image_rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_bytes(png_bytes)
+
+            image_url = f"{media_url}{image_rel_path.as_posix()}"
+            variants.append(
+                {
+                    "variant_index": idx,
+                    "image_url": image_url,
+                    "storage_path": str(image_rel_path.as_posix()),
+                    "width": 768,
+                    "height": 1024,
+                    "mime_type": "image/png",
+                    "seed": None,
+                    "model_name": self.model_name,
+                    "model_version": self.model_version,
+                    "prompt": prompt,
+                    "negative_prompt": "",
+                    "metadata": {
+                        "provider": "litellm",
+                        "registry_key": self.spec.key,
+                        "model_id": self.spec.model_id,
+                        "mode": self.spec.mode,
+                        "prefix": prefix,
+                        "image_type": image_type,
+                    },
+                }
+            )
+        return variants
 
 
 class GeminiProvider(AIImageProvider):

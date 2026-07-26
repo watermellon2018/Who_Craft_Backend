@@ -114,6 +114,7 @@ def serialize_profile_me(profile: UserProfile, request) -> dict:
             'language': profile.language,
             'private_account': profile.private_account,
             'notifications_enabled': profile.notifications_enabled,
+            'image_generation_model': profile.image_generation_model or None,
         },
         'profile_completion': completion,
     }

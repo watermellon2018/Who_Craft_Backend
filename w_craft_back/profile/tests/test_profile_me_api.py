@@ -48,7 +48,7 @@ class ProfileMeApiTest(TestCase):
     # ---------- GET ----------
 
     def test_get_me_returns_default_shape(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.status_code, 200)
         data = response.json()
         for key in ('user', 'interests', 'socials', 'settings', 'profile_completion'):
@@ -220,9 +220,10 @@ class ProfileImageEndpointsTest(TestCase):
         response = self._upload_avatar()
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertIn('avatar_url', body)
-        self.assertIsNotNone(body['avatar_url'])
-        self.assertIn('asset_id', body)
+        # Endpoint returns the full profile-me payload — image URLs live under "user".
+        self.assertIn('user', body)
+        self.assertIn('avatar_url', body['user'])
+        self.assertIsNotNone(body['user']['avatar_url'])
 
         profile = UserProfile.objects.get(user=self.user)
         self.assertTrue(bool(profile.avatar))
@@ -266,7 +267,8 @@ class ProfileImageEndpointsTest(TestCase):
         self._upload_avatar()
         url = reverse('profile-me-avatar')
         response = self.client.delete(url, HTTP_X_USER_TOKEN=self.token)
-        self.assertEqual(response.status_code, 204)
+        # DELETE returns the refreshed profile-me payload, not 204.
+        self.assertEqual(response.status_code, 200)
         profile = UserProfile.objects.get(user=self.user)
         self.assertFalse(bool(profile.avatar))
         self.assertIsNone(profile.avatar_asset_id)
@@ -282,7 +284,10 @@ class ProfileImageEndpointsTest(TestCase):
             url, {'file': upload}, format='multipart', HTTP_X_USER_TOKEN=self.token
         )
         self.assertEqual(response.status_code, 200)
-        self.assertIn('cover_url', response.json())
+        body = response.json()
+        self.assertIn('user', body)
+        self.assertIn('cover_url', body['user'])
+        self.assertIsNotNone(body['user']['cover_url'])
 
     def test_delete_cover_clears_profile(self):
         url = reverse('profile-me-cover')
@@ -291,7 +296,8 @@ class ProfileImageEndpointsTest(TestCase):
             url, {'file': upload}, format='multipart', HTTP_X_USER_TOKEN=self.token
         )
         response = self.client.delete(url, HTTP_X_USER_TOKEN=self.token)
-        self.assertEqual(response.status_code, 204)
+        # DELETE returns the refreshed profile-me payload, not 204.
+        self.assertEqual(response.status_code, 200)
         profile = UserProfile.objects.get(user=self.user)
         self.assertFalse(bool(profile.cover))
         self.assertIsNone(profile.cover_asset_id)

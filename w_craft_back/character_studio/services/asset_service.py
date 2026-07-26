@@ -77,16 +77,22 @@ class CharacterAssetService:
         # Auto-increment version for reference asset_types so each regeneration
         # / correction / upload becomes a new versioned row instead of clobbering
         # the previous one. Non-reference asset_types keep the default version=1.
-        if asset_type in REFERENCE_ASSET_TYPES and "version" not in payload:
-            payload["version"] = self._next_version(character, asset_type)
-        payload.setdefault("status", CharacterAssetStatus.READY)
-        return self.assets.create(
-            character=character,
-            project=character.project,
-            user=character.user,
-            asset_type=asset_type,
-            **payload,
-        )
+        # Wrap in atomic + select_for_update on the character row so concurrent
+        # uploads serialize and cannot produce duplicate versions.
+        from w_craft_back.character_studio.models import StudioCharacter
+        with transaction.atomic():
+            if asset_type in REFERENCE_ASSET_TYPES and "version" not in payload:
+                # Lock the parent character to serialize concurrent writers.
+                StudioCharacter.objects.select_for_update().filter(pk=character.pk).first()
+                payload["version"] = self._next_version(character, asset_type)
+            payload.setdefault("status", CharacterAssetStatus.READY)
+            return self.assets.create(
+                character=character,
+                project=character.project,
+                user=character.user,
+                asset_type=asset_type,
+                **payload,
+            )
 
     def get_asset(self, asset_id):
         return self.assets.get(asset_id=asset_id)
@@ -196,6 +202,55 @@ class CharacterAssetService:
             version=version,
             status=CharacterAssetStatus.READY,
             metadata={"uploaded": True, "sha256": hasher.hexdigest()},
+        )
+        return asset
+
+    @transaction.atomic
+    def save_uploaded_source_reference(self, character, user, uploaded_file):
+        """Save a user-uploaded source image to seed reference-based generation.
+
+        Unlike :meth:`upload_reference`, this does not target a specific UI
+        reference slot (portrait / full_body / ...). It records the original
+        reference picture the user provided when creating the character.
+        """
+        if not uploaded_file:
+            raise ValidationError("No file provided.")
+        content_type = getattr(uploaded_file, "content_type", "") or ""
+        if content_type not in ALLOWED_UPLOAD_MIME:
+            raise ValidationError("Only jpg, png and webp are supported.")
+        size = getattr(uploaded_file, "size", 0) or 0
+        if size > MAX_UPLOAD_BYTES:
+            raise ValidationError("File exceeds 10 MB limit.")
+
+        ext = MIME_TO_EXT[content_type]
+        filename = f"{uuid.uuid4().hex}.{ext}"
+        rel_path = (
+            f"character-studio/characters/{character.character_id}/source/{filename}"
+        )
+        abs_path = Path(settings.MEDIA_ROOT) / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        hasher = hashlib.sha256()
+        with abs_path.open("wb") as fh:
+            for chunk in uploaded_file.chunks():
+                hasher.update(chunk)
+                fh.write(chunk)
+
+        media_url = getattr(settings, "MEDIA_URL", "/media/")
+        if not media_url.endswith("/"):
+            media_url += "/"
+        image_url = f"{media_url}{rel_path}"
+
+        asset = CharacterAsset.objects.create(
+            character=character,
+            project=character.project,
+            user=user,
+            asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+            image_url=image_url,
+            storage_path=rel_path,
+            mime_type=content_type,
+            source="uploaded",
+            status=CharacterAssetStatus.READY,
+            metadata={"uploaded": True, "sha256": hasher.hexdigest(), "role": "source"},
         )
         return asset
 
