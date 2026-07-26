@@ -27,7 +27,6 @@ from w_craft_back.movie.poster.serializers import (
     PosterGenerateSerializer,
     PosterSelectSerializer,
 )
-from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project.dashboard_views import _unauthorized
 
 
@@ -113,15 +112,11 @@ def _read_reference(uploaded_file) -> bytes | None:
 class _AuthedView(APIView):
     """Resolve the custom token once and reject anonymous requests."""
 
+    allow_legacy_body_auth = False
+
     def _user(self, request):
-        # Header-only auth deliberately avoids touching ``request.data`` before
-        # rejecting anonymous multipart requests.
-        token = request.META.get("HTTP_X_USER_TOKEN", "").strip()
-        if not token:
-            return None, _unauthorized()
-        try:
-            user = UserKey.objects.select_related("user").get(key=token).user
-        except (UserKey.DoesNotExist, ValueError, TypeError):
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated:
             return None, _unauthorized()
         return user, None
 

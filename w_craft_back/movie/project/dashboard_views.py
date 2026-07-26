@@ -1,8 +1,8 @@
 """Project dashboard API views.
 
-Auth follows the project's existing pattern: a ``token_user`` query/body/header
-value resolves to a ``UserKey`` -> ``User``. We never trust a user_id from
-the request body for access control.
+DRF resolves the ``X-User-Token`` access token before these handlers run. The
+temporary body-token fallback is implemented centrally; query credentials are
+never accepted. We never trust a request-body user id for access control.
 """
 
 from __future__ import annotations
@@ -73,15 +73,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 def _resolve_user(request) -> Optional[User]:
-    """Resolve calling ``User`` via the shared token extractor (header → body → deprecated query string)."""
-    from w_craft_back.auth.utils import extract_user_token
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related("user").get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError):
-        return None
+    """Return the Django user established by DRF authentication."""
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _unauthorized():

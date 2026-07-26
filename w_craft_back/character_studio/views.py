@@ -5,8 +5,11 @@ from pathlib import Path
 from django.conf import settings
 from django.http import JsonResponse
 from django.utils import timezone
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, authentication_classes
 
+from w_craft_back.auth.authentication import (
+    LegacyMultipartUserKeyAuthentication,
+)
 from w_craft_back.character_studio.models import (
     CharacterAsset,
     CharacterAssetType,
@@ -155,6 +158,7 @@ def _form_bool(request, key, default=False):
 
 
 @api_view(["POST"])
+@authentication_classes([LegacyMultipartUserKeyAuthentication])
 @handle_errors
 def create_character_from_reference(request, project_id):
     user = get_user_from_request(request)
@@ -722,6 +726,7 @@ def references_correct(request, project_id, character_id, reference_id):
 
 
 @api_view(["POST"])
+@authentication_classes([LegacyMultipartUserKeyAuthentication])
 @handle_errors
 def references_upload(request, project_id, character_id):
     user = get_user_from_request(request)

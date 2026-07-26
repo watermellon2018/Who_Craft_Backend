@@ -1,4 +1,3 @@
-import uuid
 from rest_framework import serializers
 from django.contrib.auth.models import User
 
@@ -24,6 +23,5 @@ class UserSerializer(serializers.ModelSerializer):
 class UserKeySerializer(serializers.ModelSerializer):
     class Meta:
         model = UserKey
-        # `user` FK omitted: exposing the linked auth.User PK has no client use
-        # and gives attackers a stable identifier to correlate against.
-        fields = ['key']
+        fields = ["expires_at", "refresh_expires_at", "revoked_at"]
+        read_only_fields = fields

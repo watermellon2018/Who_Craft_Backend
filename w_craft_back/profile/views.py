@@ -7,7 +7,6 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from w_craft_back.auth.models import UserKey
 from .models import UserAsset, UserProfile
 from .serializers import (
     ProfileMeUpdateSerializer,
@@ -25,21 +24,11 @@ from .services import (
 
 
 def _get_user_from_request(request):
-    """Return the calling ``User`` or ``None``.
-
-    Token is resolved via ``auth.utils.extract_user_token`` which prefers the
-    ``X-User-Token`` header and falls back to the request body. The deprecated
-    query-string fallback was removed to prevent token leakage into logs.
-    """
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from w_craft_back.auth.utils import extract_user_token
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related('user').get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError, DjangoValidationError):
-        return None
+    """Return the Django user established by DRF authentication."""
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _get_or_create_profile(user: User) -> UserProfile:

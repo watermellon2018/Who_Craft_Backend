@@ -95,20 +95,11 @@ def _read_inputs(request) -> tuple[str, str, str, Optional[object], Optional[str
 
 
 def _get_user_for_request(request):
-    """Best-effort resolution of the calling user without raising for
-    anonymous requests — those keep the legacy behavior of using the
-    env/registry default model.
-    """
-    from w_craft_back.auth.models import UserKey
-    from w_craft_back.auth.utils import extract_user_token
-
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related('user').get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError):
-        return None
+    """Return the Django user established by DRF authentication."""
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _validate(description: str, style: str, poster_format: str) -> Optional[Response]:

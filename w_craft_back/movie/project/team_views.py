@@ -17,8 +17,6 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from w_craft_back.auth.models import UserKey
-from w_craft_back.auth.utils import extract_user_token
 from w_craft_back.movie.project import policy, team_service
 from w_craft_back.movie.project import team_errors as errors
 from w_craft_back.movie.project.dashboard_models import ProjectMemberRole
@@ -44,13 +42,10 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 def _resolve_user(request) -> Optional[User]:
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related("user").get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError):
-        return None
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _unauthorized():

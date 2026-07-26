@@ -21,6 +21,11 @@ class ProjectOwnershipMigrationTests(TransactionTestCase):
         executor.migrate(self.migrate_to)
         self.apps = executor.loader.project_state(self.migrate_to).apps
 
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
     def _seed_legacy_state(self, apps):
         User = apps.get_model("auth", "User")
         UserKey = apps.get_model("w_craft_back", "UserKey")
