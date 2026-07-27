@@ -57,6 +57,11 @@ from w_craft_back.movie.project.permissions import (
     user_can_edit_project,
     user_has_project_access,
 )
+from w_craft_back.storage_gateway import (
+    MediaTooLarge,
+    StorageGatewayError,
+    normalize_image_bytes,
+)
 from w_craft_back.services.image_generation import (
     ImageProviderError,
     resolve_provider_for_user,
@@ -310,11 +315,23 @@ def generate_poster(
         reference_mime_type = (
             (reference_asset.metadata or {}).get("mime_type") or "image/png"
         )
-    if (
-        reference_image_bytes is not None
-        and len(reference_image_bytes) > max_input_bytes()
-    ):
-        raise PosterImageTooLarge("Reference image exceeds the byte limit")
+    if reference_image_bytes is not None:
+        try:
+            normalized_reference = normalize_image_bytes(
+                reference_image_bytes,
+                max_bytes=max_input_bytes(),
+            )
+        except MediaTooLarge as exc:
+            raise PosterImageTooLarge(
+                "Reference image exceeds the byte limit"
+            ) from exc
+        except StorageGatewayError as exc:
+            raise PosterError(
+                "Reference image is invalid",
+                code="INVALID_REFERENCE_IMAGE",
+            ) from exc
+        reference_image_bytes = normalized_reference.data
+        reference_mime_type = normalized_reference.mime_type
 
     key = _service_idempotency_key(idempotency_key)
     fingerprint = request_fingerprint(

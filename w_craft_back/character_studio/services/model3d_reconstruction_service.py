@@ -254,10 +254,12 @@ def reconstruction_state(character: StudioCharacter, *, ensure: bool = False) ->
 def ensure_reconstruction(
     character: StudioCharacter,
     *,
+    actor=None,
     force_retry: bool = False,
 ) -> dict:
     """Create at most one active job for the character's selected references."""
     locked_character = StudioCharacter.objects.select_for_update().get(pk=character.pk)
+    operation_actor = actor or locked_character.user
     references = _selected_references(locked_character)
     if not references:
         return _state(locked_character, references)
@@ -306,6 +308,7 @@ def ensure_reconstruction(
         character=locked_character,
         project=locked_character.project,
         user=locked_character.user,
+        actor=operation_actor,
         job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
         status=GenerationJobStatus.QUEUED,
         variant_count=1,
@@ -332,7 +335,7 @@ def ensure_reconstruction(
     CharacterAsset.objects.create(
         character=locked_character,
         project=locked_character.project,
-        user=locked_character.user,
+        user=operation_actor,
         asset_type=CharacterAssetType.MODEL_3D,
         image_url=f"{media_url}{relative_path}",
         storage_path=relative_path,
@@ -360,9 +363,13 @@ def ensure_reconstruction(
     return _state(locked_character, references)
 
 
-def retry_reconstruction(character: StudioCharacter) -> dict:
+def retry_reconstruction(character: StudioCharacter, *, actor=None) -> dict:
     """Retry a failed reconstruction without duplicating active/ready work."""
-    return ensure_reconstruction(character, force_retry=True)
+    return ensure_reconstruction(
+        character,
+        actor=actor,
+        force_retry=True,
+    )
 
 
 def _backend_root() -> Path:

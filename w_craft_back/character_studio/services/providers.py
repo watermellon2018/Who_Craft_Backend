@@ -2,12 +2,16 @@ from abc import ABC, abstractmethod
 import base64
 import logging
 import os
-from pathlib import Path
+import time
 from typing import Any, Dict, List
 
 import requests
 from requests import HTTPError
-from django.conf import settings
+
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    store_image_bytes,
+)
 
 
 class ProviderUserFacingError(RuntimeError):
@@ -29,6 +33,33 @@ CONTENT_BLOCKED_MESSAGE = (
     "Измените описание персонажа: уберите двусмысленные, сексуализированные "
     "или жестокие детали, особенно если персонаж несовершеннолетний."
 )
+
+
+def _provider_timeout(job) -> float:
+    timeout = float(getattr(job, "timeout_seconds", 120))
+    deadline = getattr(job, "provider_deadline", None)
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Provider operation exceeded its end-to-end timeout.")
+    return max(0.1, min(timeout, remaining))
+
+
+def _provider_heartbeat(job) -> None:
+    callback = getattr(job, "provider_heartbeat", None)
+    if callable(callback) and callback() is False:
+        raise RuntimeError("Generation lease was lost during provider execution.")
+
+
+def _store_provider_image(payload: bytes, *, namespace: str):
+    try:
+        return store_image_bytes(payload, namespace=namespace)
+    except StorageGatewayError as exc:
+        raise ProviderUserFacingError(
+            "Провайдер вернул недопустимое изображение.",
+            error_code="PROVIDER_BAD_IMAGE",
+        ) from exc
 
 
 class AIImageProvider(ABC):
@@ -85,41 +116,48 @@ class MockProvider(AIImageProvider):
     # Minimal valid PNG (1x1 transparent pixel) so identity-anchored downstream
     # generation can read the mock asset's bytes off disk.
     _PLACEHOLDER_PNG = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+        "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
 
     def _variants(self, job, compiled_prompt, variant_count, prefix):
         safe_count = max(1, min(int(variant_count or 4), 4))
         variants = []
-        image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
-        label = image_type.replace("_", "+")
+        image_type = compiled_prompt.get("metadata", {}).get(
+            "image_type",
+            "portrait",
+        )
         for index in range(safe_count):
-            seed = abs(hash(f"{job.job_id}:{index}:{prefix}:{image_type}")) % 100000000
-            storage_path = (
-                f"mock/characters/{job.character_id}/{job.job_id}/{image_type}_{index}.png"
+            seed = abs(
+                hash(f"{job.job_id}:{index}:{prefix}:{image_type}")
+            ) % 100000000
+            stored = _store_provider_image(
+                self._PLACEHOLDER_PNG,
+                namespace=(
+                    f"mock/characters/{job.character_id}/{job.job_id}/"
+                    f"{image_type}"
+                ),
             )
-            # Persist a real (tiny) PNG to disk so that downstream image-to-image
-            # flows (identity-anchored generation) can read the bytes back.
-            abs_path = Path(settings.MEDIA_ROOT) / storage_path
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_bytes(self._PLACEHOLDER_PNG)
             variants.append(
                 {
                     "variant_index": index,
-                    "image_url": (
-                        "https://placehold.co/768x1024/1b1d22/fab005"
-                        f"?text={label}+{index + 1}"
-                    ),
-                    "storage_path": storage_path,
-                    "width": 768,
-                    "height": 1024,
-                    "mime_type": "image/png",
+                    "image_url": "",
+                    "storage_path": stored.storage_key,
+                    "width": stored.width,
+                    "height": stored.height,
+                    "mime_type": stored.mime_type,
                     "seed": seed,
                     "model_name": self.model_name,
                     "model_version": self.model_version,
                     "prompt": compiled_prompt["positive_prompt"],
                     "negative_prompt": compiled_prompt["negative_prompt"],
-                    "metadata": {"provider": "mock", "prefix": prefix, "image_type": image_type},
+                    "metadata": {
+                        "provider": "mock",
+                        "prefix": prefix,
+                        "image_type": image_type,
+                        "sha256": stored.sha256,
+                        "size_bytes": stored.size_bytes,
+                    },
                 }
             )
         return variants
@@ -137,11 +175,16 @@ def get_image_provider(name="mock"):
 
     raw = (name or "mock").strip()
     lower = raw.lower()
+    if lower == "mock":
+        return MockProvider()
     if lower in {"gemini", "google", "imagen"}:
         return GeminiProvider()
     if raw in MODEL_REGISTRY:
         return LiteLLMCharacterProvider(raw)
-    return MockProvider()
+    raise ProviderUserFacingError(
+        f"Unknown image generation provider: {raw}.",
+        error_code="PROVIDER_CONFIGURATION_ERROR",
+    )
 
 
 class LiteLLMCharacterProvider(AIImageProvider):
@@ -218,7 +261,9 @@ class LiteLLMCharacterProvider(AIImageProvider):
                 reference_image_bytes,
                 mime_type=mime_type or "image/png",
                 variant_count=count,
+                timeout=_provider_timeout(job),
             )
+            _provider_heartbeat(job)
         except ImageProviderError as exc:
             raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
         except Exception as exc:  # noqa: BLE001
@@ -228,12 +273,15 @@ class LiteLLMCharacterProvider(AIImageProvider):
         # Top-up if the model returned fewer variants than asked (same pattern as _generate).
         while len(images) < count:
             try:
+                _provider_heartbeat(job)
                 extra = self.provider.generate_with_reference(
                     prompt,
                     reference_image_bytes,
                     mime_type=mime_type or "image/png",
                     variant_count=1,
+                    timeout=_provider_timeout(job),
                 )
+                _provider_heartbeat(job)
             except Exception:  # noqa: BLE001
                 break
             if not extra:
@@ -259,7 +307,9 @@ class LiteLLMCharacterProvider(AIImageProvider):
                 prompt,
                 aspect_ratio=self.aspect_ratio,
                 variant_count=count,
+                timeout=_provider_timeout(job),
             )
+            _provider_heartbeat(job)
         except ImageProviderError as exc:
             raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
         except Exception as exc:  # noqa: BLE001
@@ -270,11 +320,14 @@ class LiteLLMCharacterProvider(AIImageProvider):
         # by repeating extra generations (cheaper than failing).
         while len(images) < count:
             try:
+                _provider_heartbeat(job)
                 extra = self.provider.generate(
                     prompt,
                     aspect_ratio=self.aspect_ratio,
                     variant_count=1,
+                    timeout=_provider_timeout(job),
                 )
+                _provider_heartbeat(job)
             except Exception:  # noqa: BLE001
                 break
             if not extra:
@@ -288,30 +341,22 @@ class LiteLLMCharacterProvider(AIImageProvider):
 
     def _persist_variants(self, job, images, *, prompt, prefix, image_type):
         variants: List[Dict[str, Any]] = []
-        media_url = settings.MEDIA_URL or "/media/"
-        if not media_url.startswith("/"):
-            media_url = "/" + media_url
-
-        for idx, png_bytes in enumerate(images):
-            image_rel_path = (
-                Path("character-studio")
-                / "jobs"
-                / str(job.job_id)
-                / f"{prefix}_{image_type}_{idx}.png"
+        for idx, image_bytes in enumerate(images):
+            stored = _store_provider_image(
+                image_bytes,
+                namespace=(
+                    f"character-studio/jobs/{job.job_id}/"
+                    f"{prefix}-{image_type}"
+                ),
             )
-            abs_path = Path(settings.MEDIA_ROOT) / image_rel_path
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_bytes(png_bytes)
-
-            image_url = f"{media_url}{image_rel_path.as_posix()}"
             variants.append(
                 {
                     "variant_index": idx,
-                    "image_url": image_url,
-                    "storage_path": str(image_rel_path.as_posix()),
-                    "width": 768,
-                    "height": 1024,
-                    "mime_type": "image/png",
+                    "image_url": "",
+                    "storage_path": stored.storage_key,
+                    "width": stored.width,
+                    "height": stored.height,
+                    "mime_type": stored.mime_type,
                     "seed": None,
                     "model_name": self.model_name,
                     "model_version": self.model_version,
@@ -324,6 +369,8 @@ class LiteLLMCharacterProvider(AIImageProvider):
                         "mode": self.spec.mode,
                         "prefix": prefix,
                         "image_type": image_type,
+                        "sha256": stored.sha256,
+                        "size_bytes": stored.size_bytes,
                     },
                 }
             )
@@ -422,7 +469,12 @@ class GeminiProvider(AIImageProvider):
         # Ignore broken local proxy env vars in Windows/dev environments.
         session = requests.Session()
         session.trust_env = False
-        prompt = self._prepare_prompt(session, prompt)
+        prompt = self._prepare_prompt(
+            session,
+            prompt,
+            timeout_seconds=_provider_timeout(job),
+        )
+        _provider_heartbeat(job)
         payload: Dict[str, Any] = {
             "instances": [{"prompt": prompt}],
             "parameters": {
@@ -442,8 +494,9 @@ class GeminiProvider(AIImageProvider):
             url,
             headers=self._headers(),
             json=payload,
-            timeout=120,
+            timeout=_provider_timeout(job),
         )
+        _provider_heartbeat(job)
         try:
             resp.raise_for_status()
         except HTTPError as exc:
@@ -465,57 +518,60 @@ class GeminiProvider(AIImageProvider):
 
         variants: List[Dict[str, Any]] = []
         for idx, pred in enumerate(predictions[:count]):
-            b64 = (
+            encoded = (
                 pred.get("bytesBase64Encoded")
                 or pred.get("image", {}).get("bytesBase64Encoded")
                 or pred.get("imageBytes")
             )
-            if not b64:
+            if not encoded:
                 raise RuntimeError(
                     f"Gemini/Imagen prediction missing base64 image bytes: {pred}"
                 )
-
-            image_rel_path = (
-                Path("character-studio")
-                / "jobs"
-                / str(job.job_id)
-                / f"{prefix}_{image_type}_{idx}.png"
+            try:
+                image_bytes = base64.b64decode(encoded, validate=True)
+            except (ValueError, base64.binascii.Error) as exc:
+                raise ProviderUserFacingError(
+                    "Провайдер вернул некорректное изображение.",
+                    error_code="PROVIDER_BAD_IMAGE",
+                ) from exc
+            stored = _store_provider_image(
+                image_bytes,
+                namespace=(
+                    f"character-studio/jobs/{job.job_id}/"
+                    f"{prefix}-{image_type}"
+                ),
             )
-            abs_path = Path(settings.MEDIA_ROOT) / image_rel_path
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_bytes(base64.b64decode(b64))
-
-            # Django serves MEDIA_URL with static() in development.
-            media_url = settings.MEDIA_URL or "/media/"
-            if not media_url.startswith("/"):
-                media_url = "/" + media_url
-            image_url = f"{media_url}{image_rel_path.as_posix()}"
-
             variants.append(
                 {
                     "variant_index": idx,
-                    "image_url": image_url,
-                    "storage_path": str(image_rel_path.as_posix()),
-                    "width": pred.get("width"),
-                    "height": pred.get("height"),
-                    "mime_type": "image/png",
+                    "image_url": "",
+                    "storage_path": stored.storage_key,
+                    "width": stored.width,
+                    "height": stored.height,
+                    "mime_type": stored.mime_type,
                     "seed": pred.get("seed"),
                     "model_name": self.model_name,
                     "model_version": self.model_version,
                     "prompt": prompt,
                     "negative_prompt": negative_prompt,
-                    "metadata": {"provider": "gemini", "prefix": prefix, "image_type": image_type},
+                    "metadata": {
+                        "provider": "gemini",
+                        "prefix": prefix,
+                        "image_type": image_type,
+                        "sha256": stored.sha256,
+                        "size_bytes": stored.size_bytes,
+                    },
                 }
             )
-
-        # Fill missing width/height with a common default.
-        for item in variants:
-            item["width"] = item["width"] or 768
-            item["height"] = item["height"] or 1024
-
         return variants
 
-    def _prepare_prompt(self, session, prompt: str) -> str:
+    def _prepare_prompt(
+        self,
+        session,
+        prompt: str,
+        *,
+        timeout_seconds: int,
+    ) -> str:
         if not self.translate_prompt or not self._contains_non_ascii(prompt):
             return prompt
 
@@ -542,7 +598,7 @@ class GeminiProvider(AIImageProvider):
             url,
             headers=self._headers(),
             json=payload,
-            timeout=60,
+            timeout=min(timeout_seconds, 60),
         )
         try:
             response.raise_for_status()

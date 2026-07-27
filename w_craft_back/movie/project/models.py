@@ -45,6 +45,7 @@ class Project(models.Model):
         default=ProjectStatus.DRAFT,
     )
     is_favorite = models.BooleanField(default=False)
+    generation_settings = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
     archived_at = models.DateTimeField(null=True, blank=True)

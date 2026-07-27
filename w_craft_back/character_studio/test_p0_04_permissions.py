@@ -16,6 +16,7 @@ from w_craft_back.character_studio.services.errors import PermissionDeniedError
 from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
+from w_craft_back.character_studio.services.providers import MockProvider
 from w_craft_back.character_studio.services.permissions import (
     get_project_for_action,
 )
@@ -181,7 +182,7 @@ class CharacterStudioPermissionMatrixTests(TestCase):
         def asset(token):
             upload = SimpleUploadedFile(
                 "reference.png",
-                b"\x89PNG\r\n\x1a\npermission-test",
+                MockProvider._PLACEHOLDER_PNG,
                 content_type="image/png",
             )
             return self.client.post(

@@ -1,33 +1,27 @@
-"""Reference image upload validation.
-
-Centralized so all poster endpoints (and any future asset endpoints that
-accept the same kinds of files) get identical accept rules.
-"""
+"""Canonical reference-image validation shared by all poster endpoints."""
 
 from __future__ import annotations
 
 import os
-from typing import Iterable, Optional
+from typing import Optional
+
+from w_craft_back.storage_gateway import (
+    InvalidImage,
+    MediaTooLarge,
+    NormalizedImage,
+    StorageGatewayError,
+    UnsupportedMedia,
+    normalize_image_upload,
+)
 
 
-# Browsers report JPGs as ``image/jpeg`` reliably, but a few older clients
-# and OS configurations send the unofficial ``image/jpg`` variant. Accept
-# both so the FE doesn't have to special-case extensions.
-ALLOWED_IMAGE_MIME_TYPES: frozenset[str] = frozenset({
-    "image/jpeg",
-    "image/jpg",
-    "image/png",
-    "image/webp",
-})
-
-ALLOWED_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-})
-
-REFERENCE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+ALLOWED_IMAGE_MIME_TYPES: frozenset[str] = frozenset(
+    {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+)
+ALLOWED_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp"}
+)
+REFERENCE_MAX_BYTES = 10 * 1024 * 1024
 
 
 class ReferenceImageValidationError(ValueError):
@@ -43,39 +37,31 @@ def _ext_of(filename: Optional[str]) -> str:
     return os.path.splitext(filename.lower())[1]
 
 
-def validate_reference_image(uploaded_file) -> None:
-    """Raise ``ReferenceImageValidationError`` if the file is not acceptable.
+def validate_reference_image(uploaded_file) -> NormalizedImage | None:
+    """Decode and canonicalize an image; never trust its name or MIME header."""
 
-    Validates by extension first (most reliable on the wire) and only
-    rejects on MIME type when the client *did* set one and it disagrees —
-    a missing/empty content_type is tolerated, since some legacy clients
-    forget the header.
-    """
     if uploaded_file is None:
-        return
-
-    name = getattr(uploaded_file, "name", "") or ""
-    ext = _ext_of(name)
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise ReferenceImageValidationError(
-            "Поддерживаются только PNG, JPG, JPEG или WEBP.",
-            code="INVALID_REFERENCE_EXTENSION",
+        return None
+    try:
+        normalized = normalize_image_upload(
+            uploaded_file,
+            max_bytes=REFERENCE_MAX_BYTES,
         )
-
-    content_type = (getattr(uploaded_file, "content_type", "") or "").lower()
-    if content_type and content_type not in ALLOWED_IMAGE_MIME_TYPES:
-        raise ReferenceImageValidationError(
-            "Неподдерживаемый тип изображения.",
-            code="INVALID_REFERENCE_MIME",
-        )
-
-    size = getattr(uploaded_file, "size", None)
-    if size is not None and size > REFERENCE_MAX_BYTES:
+    except MediaTooLarge as exc:
         raise ReferenceImageValidationError(
             "Максимальный размер изображения — 10 MB.",
             code="REFERENCE_FILE_TOO_LARGE",
-        )
+        ) from exc
+    except (InvalidImage, UnsupportedMedia, StorageGatewayError) as exc:
+        raise ReferenceImageValidationError(
+            "Файл не является допустимым PNG, JPEG или WEBP изображением.",
+            code="INVALID_REFERENCE_IMAGE",
+        ) from exc
+    uploaded_file._storage_gateway_normalized = normalized
+    return normalized
 
 
 def is_acceptable_image_filename(filename: str) -> bool:
+    """UI hint only; the security decision is made from decoded bytes."""
+
     return _ext_of(filename) in ALLOWED_IMAGE_EXTENSIONS

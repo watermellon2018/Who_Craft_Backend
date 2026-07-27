@@ -17,6 +17,7 @@ from django.db import transaction
 from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -28,6 +29,7 @@ from w_craft_back.movie.project import (
     team_service,
 )
 from w_craft_back.movie.project.dashboard_models import (
+    ProjectAsset,
     ProjectMember,
     ProjectMemberRole,
     ProjectProgress,
@@ -59,6 +61,7 @@ from w_craft_back.movie.project.script_workspace import (
     characters_collection_payload,
     scene_payload,
 )
+from w_craft_back.storage_gateway import signed_url_for_file
 
 from w_craft_back.movie.properties.models import Audience, Genre
 
@@ -378,6 +381,7 @@ class ProjectListCreateView(APIView):
                 description=data.get("description", "") or synopsis,
                 status=data.get("status", ProjectStatus.DRAFT),
                 is_favorite=data.get("is_favorite", False),
+                generation_settings=data.get("generation_settings", {}),
                 # legacy required fields
                 user_id=_legacy_userkey_id(user),
                 format=data.get("format", "") or "",
@@ -708,7 +712,7 @@ class ProjectLocationsView(_ProjectScopedView):
 
 
 class ProjectAssetsView(_ProjectScopedView):
-    parser_classes = []  # default parsers; multipart works out of the box
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, project_id: int):
         user, project, err = self._editable_project(request, project_id)
@@ -742,9 +746,70 @@ class ProjectAssetsView(_ProjectScopedView):
             return _mutation_error_response(exc)
 
         return Response(
-            {"id": asset.id, "asset_type": asset.asset_type},
+            {
+                "id": asset.id,
+                "asset_type": asset.asset_type,
+                "mime_type": asset.metadata.get("mime_type"),
+                "size_bytes": asset.metadata.get("size_bytes"),
+                "url": signed_url_for_file(
+                    asset.file,
+                    request,
+                    project=project,
+                ),
+            },
             status=status.HTTP_201_CREATED,
         )
+
+
+class ProjectAssetDetailView(_ProjectScopedView):
+    """Issue signed downloads and delete assets through project policy."""
+
+    def get(self, request, project_id: int, asset_id: int):
+        _user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        asset = ProjectAsset.objects.filter(
+            pk=asset_id,
+            project=project,
+        ).first()
+        if asset is None:
+            return Response(
+                {"detail": "Not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            {
+                "id": asset.id,
+                "asset_type": asset.asset_type,
+                "title": asset.title,
+                "mime_type": asset.metadata.get("mime_type"),
+                "size_bytes": asset.metadata.get("size_bytes"),
+                "url": signed_url_for_file(
+                    asset.file,
+                    request,
+                    project=project,
+                ),
+            }
+        )
+
+    def delete(self, request, project_id: int, asset_id: int):
+        user, project, err = self._editable_project(request, project_id)
+        if err:
+            return err
+        try:
+            project_mutations.delete_project_entity(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                model=ProjectAsset,
+                object_id=asset_id,
+            )
+        except (
+            ProjectAsset.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+        ) as exc:
+            return _mutation_error_response(exc)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProjectGenerationJobsView(_ProjectScopedView):

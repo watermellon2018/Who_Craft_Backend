@@ -1,0 +1,477 @@
+"""Durable transaction boundaries for character image generation jobs."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timedelta
+import hashlib
+import json
+import os
+import re
+import uuid
+
+from django.db import IntegrityError, transaction
+from django.utils import timezone
+
+from w_craft_back.character_studio.models import (
+    CharacterGenerationJob,
+    GenerationJobStatus,
+    GenerationJobType,
+    StudioCharacter,
+)
+from w_craft_back.character_studio.services.errors import (
+    ConflictError,
+    ValidationError,
+)
+
+
+DEFAULT_TIMEOUT_SECONDS = 120
+MAX_TIMEOUT_SECONDS = 600
+LEASE_GRACE_SECONDS = 30
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+TERMINAL_STATUSES = {
+    GenerationJobStatus.COMPLETED,
+    GenerationJobStatus.FAILED,
+    GenerationJobStatus.CANCELLED,
+}
+IMAGE_GENERATION_JOB_TYPES = tuple(
+    value
+    for value in GenerationJobType.values
+    if value != GenerationJobType.MODEL3D_RECONSTRUCTION
+)
+
+
+@dataclass(frozen=True)
+class JobLease:
+    job_id: uuid.UUID
+    token: uuid.UUID
+    timeout_seconds: int
+
+
+def configured_timeout_seconds() -> int:
+    raw = os.getenv(
+        "CHARACTER_STUDIO_PROVIDER_TIMEOUT_SECONDS",
+        str(DEFAULT_TIMEOUT_SECONDS),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_TIMEOUT_SECONDS
+    return max(5, min(value, MAX_TIMEOUT_SECONDS))
+
+
+def _clean_payload(payload: dict | None) -> dict:
+    cleaned = dict(payload or {})
+    for key in (
+        "_idempotency_key",
+        "token",
+        "token_user",
+        "user_key",
+        "key",
+    ):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _request_hash(
+    *,
+    character,
+    job_type,
+    region,
+    variant_count,
+    request_payload,
+    compiled,
+    provider_operation,
+    provider,
+) -> str:
+    value = {
+        "character_id": str(character.character_id),
+        "job_type": str(job_type),
+        "region": str(region),
+        "variant_count": int(variant_count),
+        "request_payload": _clean_payload(request_payload),
+        "compiled": {
+            "positive_prompt": compiled.get("positive_prompt", ""),
+            "negative_prompt": compiled.get("negative_prompt", ""),
+            "edit_instruction": compiled.get("edit_instruction", ""),
+            "metadata": compiled.get("metadata", {}),
+        },
+        "provider_operation": provider_operation,
+        "provider": provider,
+        "policy_version": 1,
+    }
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _provider_name(project, actor) -> str:
+    project_settings = (
+        project.generation_settings
+        if isinstance(project.generation_settings, dict)
+        else {}
+    )
+    project_preference = (
+        project_settings.get("image_generation_model")
+        or project_settings.get("provider")
+        or ""
+    )
+    actor_preference = ""
+    try:
+        django_user = getattr(actor, "user", None)
+        profile = getattr(django_user, "profile", None) if django_user else None
+        actor_preference = (
+            getattr(profile, "image_generation_model", "") or ""
+        ).strip()
+    except Exception:  # noqa: BLE001 - preference lookup is best-effort
+        actor_preference = ""
+    return (
+        str(project_preference).strip()
+        or actor_preference
+        or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
+        or "mock"
+    )[:100]
+
+
+def validate_idempotency_key(value) -> str:
+    key = str(value or "").strip()
+    if key and not IDEMPOTENCY_KEY_PATTERN.fullmatch(key):
+        raise ValidationError(
+            "Idempotency-Key must be 1-128 characters using letters, "
+            "numbers, '.', '_', ':' or '-'."
+        )
+    return key
+
+
+def _clear_lease(job) -> None:
+    job.lease_token = None
+    job.lease_expires_at = None
+
+
+def _recover_locked(job, now) -> bool:
+    if (
+        job.status != GenerationJobStatus.PROCESSING
+        or job.lease_expires_at is None
+        or job.lease_expires_at > now
+    ):
+        return False
+    if job.provider_started_at is not None:
+        job.status = GenerationJobStatus.FAILED
+        job.error_code = "PROVIDER_OUTCOME_UNKNOWN"
+        job.error_message = (
+            "The worker lease expired after the provider call started. "
+            "Automatic retry is disabled to prevent a duplicate paid call."
+        )
+        job.failed_at = now
+        _clear_lease(job)
+        job.save()
+        return True
+    if job.attempts >= job.max_attempts:
+        job.status = GenerationJobStatus.FAILED
+        job.error_code = "MAX_ATTEMPTS_EXCEEDED"
+        job.error_message = "Generation worker exhausted its safe retry attempts."
+        job.failed_at = now
+        _clear_lease(job)
+        job.save()
+        return True
+    job.status = GenerationJobStatus.QUEUED
+    job.progress = 0
+    job.error_code = ""
+    job.error_message = ""
+    _clear_lease(job)
+    job.save()
+    return True
+
+
+@transaction.atomic
+def enqueue_job(
+    *,
+    actor,
+    character,
+    job_type,
+    region,
+    variant_count,
+    request_payload,
+    compiled,
+    provider_operation,
+) -> CharacterGenerationJob:
+    """Create or reuse a queued job while holding only a short character lock."""
+    locked_character = (
+        StudioCharacter.objects.select_for_update(of=("self",))
+        .select_related("project", "user")
+        .get(pk=character.pk)
+    )
+    payload = _clean_payload(request_payload)
+    idempotency_key = validate_idempotency_key(
+        (request_payload or {}).get("_idempotency_key")
+    )
+    provider = _provider_name(locked_character.project, actor)
+    request_hash = _request_hash(
+        character=locked_character,
+        job_type=job_type,
+        region=region,
+        variant_count=variant_count,
+        request_payload=payload,
+        compiled=compiled,
+        provider_operation=provider_operation,
+        provider=provider,
+    )
+    if idempotency_key:
+        existing = CharacterGenerationJob.objects.filter(
+            project=locked_character.project,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ConflictError(
+                    "Idempotency-Key was already used for a different request."
+                )
+            return existing
+
+    now = timezone.now()
+    active_jobs = CharacterGenerationJob.objects.select_for_update().filter(
+        character=locked_character,
+        request_hash=request_hash,
+        status__in=[
+            GenerationJobStatus.QUEUED,
+            GenerationJobStatus.PROCESSING,
+        ],
+    )
+    for active_job in active_jobs:
+        _recover_locked(active_job, now)
+        active_job.refresh_from_db()
+        if active_job.status in (
+            GenerationJobStatus.QUEUED,
+            GenerationJobStatus.PROCESSING,
+        ):
+            return active_job
+        if (
+            not idempotency_key
+            and active_job.error_code == "PROVIDER_OUTCOME_UNKNOWN"
+        ):
+            return active_job
+
+    if not idempotency_key:
+        ambiguous_job = (
+            CharacterGenerationJob.objects.filter(
+                character=locked_character,
+                request_hash=request_hash,
+                status=GenerationJobStatus.FAILED,
+                error_code="PROVIDER_OUTCOME_UNKNOWN",
+            )
+            .order_by("-failed_at", "-created_at")
+            .first()
+        )
+        if ambiguous_job is not None:
+            return ambiguous_job
+
+    image_type = payload.get("image_type")
+    if image_type:
+        conflicting_job = (
+            CharacterGenerationJob.objects.select_for_update()
+            .filter(
+                character=locked_character,
+                status__in=[
+                    GenerationJobStatus.QUEUED,
+                    GenerationJobStatus.PROCESSING,
+                ],
+                request_payload__image_type=image_type,
+            )
+            .exclude(request_hash=request_hash)
+            .first()
+        )
+        if conflicting_job is not None:
+            _recover_locked(conflicting_job, now)
+            conflicting_job.refresh_from_db()
+            if conflicting_job.status in (
+                GenerationJobStatus.QUEUED,
+                GenerationJobStatus.PROCESSING,
+            ):
+                raise ConflictError(
+                    "Generation already running for this image type."
+                )
+
+    values = {
+        "character": locked_character,
+        "project": locked_character.project,
+        "user": locked_character.user,
+        "actor": actor,
+        "job_type": job_type,
+        "status": GenerationJobStatus.QUEUED,
+        "region": region,
+        "variant_count": variant_count,
+        "request_payload": payload,
+        "request_hash": request_hash,
+        "idempotency_key": idempotency_key,
+        "compiled_prompt": compiled.get("positive_prompt", ""),
+        "negative_prompt": compiled.get("negative_prompt", ""),
+        "edit_instruction": compiled.get("edit_instruction", ""),
+        "compiled_metadata": compiled.get("metadata", {}),
+        "preserve_options": compiled.get("metadata", {}).get("preserve", {}),
+        "provider": provider,
+        "provider_operation": provider_operation,
+        "timeout_seconds": configured_timeout_seconds(),
+    }
+    if not idempotency_key:
+        return CharacterGenerationJob.objects.create(**values)
+    try:
+        with transaction.atomic():
+            return CharacterGenerationJob.objects.create(**values)
+    except IntegrityError:
+        existing = CharacterGenerationJob.objects.get(
+            project=locked_character.project,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+        if existing.request_hash != request_hash:
+            raise ConflictError(
+                "Idempotency-Key was already used for a different request."
+            )
+        return existing
+
+
+@transaction.atomic
+def claim_job(job_id) -> JobLease | None:
+    """Claim a queued job without retaining the transaction for provider I/O."""
+    job = CharacterGenerationJob.objects.select_for_update().get(job_id=job_id)
+    now = timezone.now()
+    _recover_locked(job, now)
+    job.refresh_from_db()
+    if job.status in TERMINAL_STATUSES:
+        return None
+    if job.status == GenerationJobStatus.PROCESSING:
+        return None
+    if job.actor_id is None:
+        job.status = GenerationJobStatus.FAILED
+        job.error_code = "GENERATION_ACTOR_MISSING"
+        job.error_message = "The generation actor no longer exists."
+        job.failed_at = now
+        job.save()
+        return None
+    if job.attempts >= job.max_attempts:
+        job.status = GenerationJobStatus.FAILED
+        job.error_code = "MAX_ATTEMPTS_EXCEEDED"
+        job.error_message = "Generation worker exhausted its safe retry attempts."
+        job.failed_at = now
+        job.save()
+        return None
+
+    token = uuid.uuid4()
+    job.status = GenerationJobStatus.PROCESSING
+    job.progress = 10
+    job.attempts += 1
+    job.lease_token = token
+    job.heartbeat_at = now
+    job.lease_expires_at = now + timedelta(
+        seconds=job.timeout_seconds + LEASE_GRACE_SECONDS
+    )
+    job.provider_started_at = None
+    if job.started_at is None:
+        job.started_at = now
+    job.error_code = ""
+    job.error_message = ""
+    job.save()
+    return JobLease(job.job_id, token, job.timeout_seconds)
+
+
+@transaction.atomic
+def mark_provider_started(lease: JobLease) -> bool:
+    job = CharacterGenerationJob.objects.select_for_update().get(
+        job_id=lease.job_id
+    )
+    if (
+        job.status != GenerationJobStatus.PROCESSING
+        or job.lease_token != lease.token
+    ):
+        return False
+    now = timezone.now()
+    job.provider_started_at = now
+    job.heartbeat_at = now
+    job.lease_expires_at = now + timedelta(
+        seconds=lease.timeout_seconds + LEASE_GRACE_SECONDS
+    )
+    job.save()
+    return True
+
+
+@transaction.atomic
+def heartbeat_job(lease: JobLease) -> bool:
+    job = CharacterGenerationJob.objects.select_for_update().get(
+        job_id=lease.job_id
+    )
+    if (
+        job.status != GenerationJobStatus.PROCESSING
+        or job.lease_token != lease.token
+    ):
+        return False
+    now = timezone.now()
+    job.heartbeat_at = now
+    job.lease_expires_at = now + timedelta(
+        seconds=lease.timeout_seconds + LEASE_GRACE_SECONDS
+    )
+    job.save(update_fields=["heartbeat_at", "lease_expires_at", "updated_at"])
+    return True
+
+
+@transaction.atomic
+def fail_job(lease: JobLease, *, error_code: str, error_message: str):
+    job = CharacterGenerationJob.objects.select_for_update().get(
+        job_id=lease.job_id
+    )
+    if (
+        job.status != GenerationJobStatus.PROCESSING
+        or job.lease_token != lease.token
+    ):
+        return job
+    job.status = GenerationJobStatus.FAILED
+    job.error_code = (error_code or "GENERATION_FAILED")[:100]
+    job.error_message = str(error_message or "Generation failed.")
+    job.failed_at = timezone.now()
+    job.progress = 0
+    _clear_lease(job)
+    job.save()
+    return job
+
+
+@transaction.atomic
+def recover_stale_jobs(*, limit: int = 100) -> dict:
+    """Return recoverable image jobs, including queued crash-gap work."""
+    now = timezone.now()
+    batch_limit = max(1, min(int(limit), 1000))
+    expired_jobs = list(
+        CharacterGenerationJob.objects.select_for_update()
+        .filter(
+            job_type__in=IMAGE_GENERATION_JOB_TYPES,
+            status=GenerationJobStatus.PROCESSING,
+            lease_expires_at__isnull=False,
+            lease_expires_at__lte=now,
+        )
+        .order_by("lease_expires_at")[:batch_limit]
+    )
+    ready = []
+    failed = []
+    for job in expired_jobs:
+        _recover_locked(job, now)
+        job.refresh_from_db()
+        target = ready if job.status == GenerationJobStatus.QUEUED else failed
+        target.append(str(job.job_id))
+
+    remaining = batch_limit - len(expired_jobs)
+    if remaining > 0:
+        queued_jobs = (
+            CharacterGenerationJob.objects.select_for_update()
+            .filter(
+                job_type__in=IMAGE_GENERATION_JOB_TYPES,
+                status=GenerationJobStatus.QUEUED,
+            )
+            .exclude(job_id__in=ready)
+            .order_by("created_at")[:remaining]
+        )
+        ready.extend(str(job.job_id) for job in queued_jobs)
+    return {"requeued": ready, "failed": failed}

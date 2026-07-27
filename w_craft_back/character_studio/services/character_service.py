@@ -4,7 +4,7 @@ from copy import deepcopy
 from django.core.exceptions import ObjectDoesNotExist
 
 logger = logging.getLogger(__name__)
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
@@ -17,6 +17,7 @@ from w_craft_back.character_studio.models import (
     CharacterStatus,
     CharacterType,
     RevisionChangeType,
+    StudioCharacter,
 )
 from w_craft_back.character_studio.repositories.repositories import (
     AppearanceRepository,
@@ -25,7 +26,15 @@ from w_craft_back.character_studio.repositories.repositories import (
     OutfitRepository,
     VariantRepository,
 )
-from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, ValidationError
+from w_craft_back.character_studio.services.errors import (
+    ConflictError,
+    IdentityLockedError,
+    NotFoundError,
+    ValidationError,
+)
+from w_craft_back.character_studio.services.generation_lifecycle import (
+    validate_idempotency_key,
+)
 from w_craft_back.character_studio.services.permissions import (
     get_editable_project,
     get_project_for_action,
@@ -130,26 +139,104 @@ class CharacterService:
         )
         return character
 
-    @transaction.atomic
-    def create_character_from_reference(self, user, project, payload, uploaded_file):
-        """Create a character and persist the user-uploaded reference image.
-
-        Generation is not started here — the caller is expected to enqueue a
-        :class:`CharacterGenerationService.create_reference_variants` job
-        afterwards. If that fails, character + reference still survive (job is
-        marked failed) so the user can retry from the character page.
-        """
+    def create_character_from_reference(
+        self,
+        user,
+        project,
+        payload,
+        uploaded_file,
+        *,
+        idempotency_key="",
+        request_hash="",
+    ):
+        """Create or replay the character + uploaded-reference aggregate."""
         if not uploaded_file:
             raise ValidationError("reference_image is required.")
-        # Defer the asset import to avoid a circular import via services.__init__.
+        project = get_editable_project(user, project.id)
+        idempotency_key = validate_idempotency_key(idempotency_key)
+        if idempotency_key and len(request_hash or "") != 64:
+            raise ValidationError("A valid request hash is required.")
+
+        replay = self._reference_creation_replay(
+            user,
+            project,
+            idempotency_key,
+            request_hash,
+        )
+        if replay is not None:
+            return replay
+
         from w_craft_back.character_studio.services.asset_service import (
             CharacterAssetService,
         )
 
-        character = self.create_character(user, project, payload)
-        reference_asset = CharacterAssetService().save_uploaded_source_reference(
-            character, user, uploaded_file
+        try:
+            with transaction.atomic():
+                character = self.create_character(user, project, payload)
+                if idempotency_key:
+                    character.creation_idempotency_key = idempotency_key
+                    character.creation_request_hash = request_hash
+                    character.save(
+                        update_fields=[
+                            "creation_idempotency_key",
+                            "creation_request_hash",
+                            "updated_at",
+                        ]
+                    )
+                reference_asset = (
+                    CharacterAssetService().save_uploaded_source_reference(
+                        character,
+                        user,
+                        uploaded_file,
+                    )
+                )
+                return character, reference_asset
+        except IntegrityError:
+            if not idempotency_key:
+                raise
+            replay = self._reference_creation_replay(
+                user,
+                project,
+                idempotency_key,
+                request_hash,
+            )
+            if replay is None:
+                raise
+            return replay
+
+    @staticmethod
+    def _reference_creation_replay(
+        user,
+        project,
+        idempotency_key,
+        request_hash,
+    ):
+        if not idempotency_key:
+            return None
+        character = (
+            StudioCharacter.objects.filter(
+                project=project,
+                user=user,
+                creation_idempotency_key=idempotency_key,
+            )
+            .order_by("created_at")
+            .first()
         )
+        if character is None:
+            return None
+        if character.creation_request_hash != request_hash:
+            raise ConflictError(
+                "Idempotency-Key was already used for a different request."
+            )
+        reference_asset = (
+            character.assets.filter(
+                asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+            )
+            .order_by("created_at")
+            .first()
+        )
+        if reference_asset is None:
+            raise ConflictError("Reference character creation is incomplete.")
         return character, reference_asset
 
     def _get_character_for_action(

@@ -8,6 +8,7 @@ from w_craft_back.movie.project.views import (
     update_info_project,
 )
 from w_craft_back.movie.project.dashboard_views import (
+    ProjectAssetDetailView,
     ProjectAssetsView,
     ProjectCharactersView,
     ProjectDashboardView,
@@ -59,6 +60,11 @@ urlpatterns = [
     path('<int:project_id>/music/', ProjectMusicView.as_view(), name='project-music'),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
+    path(
+        '<int:project_id>/assets/<int:asset_id>/',
+        ProjectAssetDetailView.as_view(),
+        name='project-asset-detail',
+    ),
     path('<int:project_id>/generation-jobs/', ProjectGenerationJobsView.as_view(), name='project-generation-jobs'),
 
     # Concurrent-edit-guarded entity detail endpoints (GET/PATCH with version).

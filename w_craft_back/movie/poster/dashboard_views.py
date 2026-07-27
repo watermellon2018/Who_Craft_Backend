@@ -103,10 +103,20 @@ def _prepare_reference_upload(request) -> None:
 def _read_reference(uploaded_file) -> bytes | None:
     if uploaded_file is None:
         return None
-    payload = uploaded_file.read(max_input_bytes() + 1)
-    if len(payload) > max_input_bytes():
-        raise PosterImageTooLarge("Reference image exceeds the byte limit")
-    return payload
+    normalized = getattr(uploaded_file, "_storage_gateway_normalized", None)
+    if normalized is None:
+        from w_craft_back.movie.poster.file_validation import (
+            ReferenceImageValidationError,
+            validate_reference_image,
+        )
+
+        try:
+            normalized = validate_reference_image(uploaded_file)
+        except ReferenceImageValidationError as exc:
+            raise PosterError(exc.message, code=exc.code) from exc
+    if normalized is None:
+        return None
+    return normalized.data
 
 
 class _AuthedView(APIView):
@@ -178,7 +188,11 @@ class ProjectPosterGenerateView(_AuthedView):
                 idempotency_key=idempotency_key,
                 reference_image_bytes=reference_bytes,
                 reference_mime_type=(
-                    getattr(reference, "content_type", "") or "image/png"
+                    getattr(
+                        getattr(reference, "_storage_gateway_normalized", None),
+                        "mime_type",
+                        "image/png",
+                    )
                 ),
                 reference_image_url=data.get("reference_image_url") or "",
                 reference_image_asset_id=data.get("reference_image_asset_id"),

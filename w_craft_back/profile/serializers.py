@@ -2,6 +2,8 @@ import re
 
 from rest_framework import serializers
 
+from w_craft_back.storage_gateway import signed_url_for_file
+
 from .models import UserProfile, UserSocialLink, USERNAME_RE
 
 
@@ -70,12 +72,7 @@ class ProfileMeUpdateSerializer(serializers.Serializer):
 
 
 def _abs_media_url(request, image_field):
-    if not image_field:
-        return None
-    try:
-        return request.build_absolute_uri(image_field.url) if request else image_field.url
-    except Exception:
-        return None
+    return signed_url_for_file(image_field, request)
 
 
 def serialize_profile_me(profile: UserProfile, request) -> dict:

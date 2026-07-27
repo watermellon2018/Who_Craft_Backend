@@ -8,15 +8,12 @@ without touching the views.
 from __future__ import annotations
 
 from datetime import timedelta
-from io import BytesIO
 from typing import Any, Optional
 
 from django.contrib.auth.models import User
-from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from PIL import Image
 
 from w_craft_back.movie.poster.errors import (
     IdempotencyConflict,
@@ -44,38 +41,42 @@ from w_craft_back.movie.poster.models import (
 )
 from w_craft_back.movie.project.dashboard_models import ProjectAsset
 from w_craft_back.movie.project.models import Project
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    delete_storage_key,
+    signed_url_for_asset,
+    signed_url_for_file,
+    store_image_bytes,
+)
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def _absolute_url(request, image_field) -> Optional[str]:
-    """Mirror of services._absolute_url for the project module — kept local
-    so this module doesn't reach into project.services for a private helper."""
-    if not image_field:
-        return None
-    try:
-        url = image_field.url
-    except (ValueError, AttributeError):
-        return None
-    if request is None:
-        return url
-    return request.build_absolute_uri(url)
-
-
 def _variant_image_url(variant: PosterVariant, request=None) -> Optional[str]:
+    project = variant.project if request is not None else None
     return (
-        _absolute_url(request, variant.image)
-        or variant.image_url
-        or None
+        signed_url_for_file(variant.image, request, project=project)
+        or signed_url_for_asset(
+            storage_key=None,
+            legacy_url=variant.image_url,
+            request=request,
+            project=project,
+        )
     )
 
 
 def _variant_thumbnail_url(variant: PosterVariant, request=None) -> Optional[str]:
+    project = variant.project if request is not None else None
     return (
-        _absolute_url(request, variant.thumbnail)
-        or variant.thumbnail_url
+        signed_url_for_file(variant.thumbnail, request, project=project)
+        or signed_url_for_asset(
+            storage_key=None,
+            legacy_url=variant.thumbnail_url,
+            request=request,
+            project=project,
+        )
         or _variant_image_url(variant, request)
     )
 
@@ -179,7 +180,15 @@ def resolve_reference_asset(
     one tenant can't point at another's file."""
     if not asset_id:
         return None
-    return ProjectAsset.objects.filter(project=project, pk=asset_id).first()
+    asset = ProjectAsset.objects.filter(
+        project=project,
+        pk=asset_id,
+        asset_type__in={"image", "reference", "storyboard"},
+    ).first()
+    if asset is None:
+        return None
+    mime_type = str((asset.metadata or {}).get("mime_type") or "")
+    return asset if mime_type in {"image/jpeg", "image/png", "image/webp"} else None
 
 
 def _expire_stale_jobs(user: User, now) -> None:
@@ -352,7 +361,7 @@ def soft_delete_variant(*, variant: PosterVariant) -> ProjectPoster:
 
     with transaction.atomic():
         PosterVariant.objects.filter(pk=variant.pk).update(
-            is_deleted=True, is_selected=False
+            is_deleted=True, is_selected=False, updated_at=timezone.now()
         )
 
         if poster.selected_variant_id == variant.id:
@@ -417,97 +426,87 @@ def mark_generation_processing(
         return locked
 
 
-def _generated_image_metadata(image_bytes: bytes) -> tuple[str, str, int, int]:
-    if not isinstance(image_bytes, bytes) or not image_bytes:
-        raise InvalidProviderImage(
-            "Provider returned an empty or invalid image payload"
-        )
-    if len(image_bytes) > max_output_bytes():
-        raise InvalidProviderImage("Provider image exceeds the output byte limit")
-    try:
-        with Image.open(BytesIO(image_bytes)) as image:
-            image_format = (image.format or "").upper()
-            width, height = image.size
-            if width <= 0 or height <= 0 or width * height > max_output_pixels():
-                raise InvalidProviderImage(
-                    "Provider image dimensions exceed the safety limit"
-                )
-            image.verify()
-    except (Image.DecompressionBombError, OSError) as exc:
-        raise InvalidProviderImage("Provider returned invalid image bytes") from exc
-
-    suffix_by_format = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
-    suffix = suffix_by_format.get(image_format)
-    mime_type = Image.MIME.get(image_format)
-    if suffix is None or mime_type is None:
-        raise InvalidProviderImage("Provider returned an unsupported image format")
-    return mime_type, suffix, width, height
-
-
 def complete_generation(
     job: PosterGenerationJob,
     image_bytes_list: list[bytes],
 ) -> list[PosterVariant]:
-    """Persist provider results and complete the job exactly once."""
-    with transaction.atomic():
-        locked = (
-            PosterGenerationJob.objects
-            .select_for_update(of=("self",))
-            .select_related("poster", "project", "user")
-            .get(pk=job.pk)
-        )
-        if locked.status == PosterJobStatus.COMPLETED:
-            return list(locked.variants.order_by("variant_index"))
-        if locked.status in (PosterJobStatus.FAILED, PosterJobStatus.CANCELLED):
-            return []
+    """Normalize/store provider results, then commit metadata exactly once."""
 
-        created: list[PosterVariant] = []
-        for index, image_bytes in enumerate(image_bytes_list):
-            mime_type, suffix, width, height = _generated_image_metadata(image_bytes)
-            variant = PosterVariant(
-                job=locked,
-                poster=locked.poster,
-                project=locked.project,
-                user=locked.user,
-                variant_index=index,
-                width=width,
-                height=height,
-                file_size_bytes=len(image_bytes),
-                mime_type=mime_type,
+    prepared = []
+    persisted = False
+    try:
+        for image_bytes in image_bytes_list:
+            try:
+                prepared.append(
+                    store_image_bytes(
+                        image_bytes,
+                        namespace=f"projects/{job.project_id}/posters/variants",
+                        max_bytes=max_output_bytes(),
+                        max_pixels=max_output_pixels(),
+                    )
+                )
+            except StorageGatewayError as exc:
+                raise InvalidProviderImage(str(exc)) from exc
+
+        with transaction.atomic():
+            locked = (
+                PosterGenerationJob.objects
+                .select_for_update(of=("self",))
+                .select_related("poster", "project", "user")
+                .get(pk=job.pk)
             )
-            variant.image.save(
-                f"poster_job_{locked.id}_v{index}.{suffix}",
-                ContentFile(image_bytes),
-                save=False,
+            if locked.status == PosterJobStatus.COMPLETED:
+                return list(locked.variants.order_by("variant_index"))
+            if locked.status in (PosterJobStatus.FAILED, PosterJobStatus.CANCELLED):
+                return []
+
+            created: list[PosterVariant] = []
+            for index, stored in enumerate(prepared):
+                variant = PosterVariant(
+                    job=locked,
+                    poster=locked.poster,
+                    project=locked.project,
+                    user=locked.user,
+                    variant_index=index,
+                    width=stored.width,
+                    height=stored.height,
+                    file_size_bytes=stored.size_bytes,
+                    mime_type=stored.mime_type,
+                )
+                variant.image.name = stored.storage_key
+                variant.save()
+                created.append(variant)
+
+            locked.status = PosterJobStatus.COMPLETED
+            locked.completed_at = timezone.now()
+            locked.lease_expires_at = None
+            locked.save(
+                update_fields=[
+                    "status",
+                    "completed_at",
+                    "lease_expires_at",
+                    "updated_at",
+                ]
             )
-            variant.save()
-            created.append(variant)
 
-        locked.status = PosterJobStatus.COMPLETED
-        locked.completed_at = timezone.now()
-        locked.lease_expires_at = None
-        locked.save(
-            update_fields=[
-                "status",
-                "completed_at",
-                "lease_expires_at",
-                "updated_at",
-            ]
-        )
-
-        poster = locked.poster
-        poster.status = ProjectPosterStatus.READY
-        if created:
-            first = created[0]
-            PosterVariant.objects.filter(
-                poster=poster,
-                is_selected=True,
-            ).update(is_selected=False)
-            PosterVariant.objects.filter(pk=first.pk).update(is_selected=True)
-            first.is_selected = True
-            poster.selected_variant = first
-        poster.save(update_fields=["selected_variant", "status", "updated_at"])
-        return created
+            poster = locked.poster
+            poster.status = ProjectPosterStatus.READY
+            if created:
+                first = created[0]
+                PosterVariant.objects.filter(
+                    poster=poster,
+                    is_selected=True,
+                ).update(is_selected=False)
+                PosterVariant.objects.filter(pk=first.pk).update(is_selected=True)
+                first.is_selected = True
+                poster.selected_variant = first
+            poster.save(update_fields=["selected_variant", "status", "updated_at"])
+            persisted = True
+            return created
+    finally:
+        if not persisted:
+            for stored in prepared:
+                delete_storage_key(stored.storage_key)
 
 
 def fail_generation(

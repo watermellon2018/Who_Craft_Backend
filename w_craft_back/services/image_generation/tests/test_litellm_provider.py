@@ -25,6 +25,7 @@ from w_craft_back.services.image_generation.litellm_provider import (
     _extract_image_api,
 )
 from w_craft_back.services.image_generation.registry import MODEL_REGISTRY
+from w_craft_back.storage_gateway import normalize_image_bytes
 
 
 def _install_litellm_stub(image_generation=None, completion=None, exceptions=None):
@@ -38,7 +39,11 @@ def _install_litellm_stub(image_generation=None, completion=None, exceptions=Non
     return module
 
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nfake"
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+NORMALIZED_PNG_BYTES = normalize_image_bytes(PNG_BYTES).data
 PNG_B64 = base64.b64encode(PNG_BYTES).decode("ascii")
 
 
@@ -47,12 +52,12 @@ class ExtractorTest(TestCase):
         resp = {"data": [{"b64_json": PNG_B64}, {"b64_json": PNG_B64}]}
         images = _extract_image_api(resp)
         self.assertEqual(len(images), 2)
-        self.assertEqual(images[0], PNG_BYTES)
+        self.assertEqual(images[0], NORMALIZED_PNG_BYTES)
 
     def test_extract_image_api_data_url(self):
         resp = {"data": [{"url": f"data:image/png;base64,{PNG_B64}"}]}
         images = _extract_image_api(resp)
-        self.assertEqual(images[0], PNG_BYTES)
+        self.assertEqual(images[0], NORMALIZED_PNG_BYTES)
 
     def test_extract_image_api_rejects_remote_url(self):
         with self.assertRaises(ImageProviderError) as cm:
@@ -97,7 +102,7 @@ class ExtractorTest(TestCase):
             content="",
         ))])
         images = _extract_chat_images(resp)
-        self.assertEqual(images, [PNG_BYTES])
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
 
     def test_extract_chat_images_from_content_parts(self):
         resp = {
@@ -118,7 +123,7 @@ class ExtractorTest(TestCase):
             ]
         }
         images = _extract_chat_images(resp)
-        self.assertEqual(images, [PNG_BYTES])
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
 
     def test_extract_chat_images_empty_raises_bad_response(self):
         resp = {
@@ -152,7 +157,7 @@ class GenerateTest(TestCase):
         provider = LiteLLMProvider(MODEL_REGISTRY["gemini-imagen-4"])
         images = provider.generate("a cat", aspect_ratio="1:1", variant_count=1)
 
-        self.assertEqual(images, [PNG_BYTES])
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
         self.assertEqual(captured["model"], "gemini/imagen-4.0-generate-001")
         self.assertEqual(captured["prompt"], "a cat")
         self.assertEqual(captured["n"], 1)
@@ -182,7 +187,7 @@ class GenerateTest(TestCase):
         provider = LiteLLMProvider(MODEL_REGISTRY["gemini-flash-image"])
         images = provider.generate("a dog", aspect_ratio="3:4")
 
-        self.assertEqual(images, [PNG_BYTES])
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
         self.assertEqual(captured["model"], "gemini/gemini-2.5-flash-image")
         self.assertEqual(captured["modalities"], ["image", "text"])
 
@@ -212,9 +217,9 @@ class EditTest(TestCase):
         _install_litellm_stub(completion=fake_completion)
 
         provider = LiteLLMProvider(MODEL_REGISTRY["gemini-flash-image"])
-        result = provider.edit(b"raw-bytes", "edit it", mime_type="image/png")
+        result = provider.edit(PNG_BYTES, "edit it", mime_type="image/png")
 
-        self.assertEqual(result, PNG_BYTES)
+        self.assertEqual(result, NORMALIZED_PNG_BYTES)
         content = captured["messages"][0]["content"]
         # first part = image, second part = instruction
         self.assertEqual(content[0]["type"], "image_url")

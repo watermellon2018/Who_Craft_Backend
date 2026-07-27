@@ -11,7 +11,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.db import IntegrityError, close_old_connections, transaction
 from django.db.models.deletion import ProtectedError
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -448,6 +448,7 @@ class LinkInvitationTests(TestCase):
     def _invite_url(self):
         return f"/api/projects/{self.project.id}/team/invitations/"
 
+    @override_settings(FRONTEND_BASE_URL="http://frontend.test:3000")
     def test_create_link_invitation_returns_token_once(self):
         resp = self.client.post(
             self._invite_url(),
@@ -460,6 +461,10 @@ class LinkInvitationTests(TestCase):
         self.assertIn("token", body)
         self.assertIn("inviteUrl", body)
         self.token = body["token"]
+        self.assertEqual(
+            body["inviteUrl"],
+            f"http://frontend.test:3000/invite/{self.token}",
+        )
         # Token is NOT stored raw.
         inv = ProjectInvitation.objects.get(pk=body["id"])
         self.assertNotEqual(inv.token_hash, self.token)

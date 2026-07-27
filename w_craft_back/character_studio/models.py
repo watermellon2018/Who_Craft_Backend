@@ -172,6 +172,16 @@ class StudioCharacter(models.Model):
         blank=True,
         related_name="studio_characters",
     )
+    creation_idempotency_key = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+    )
+    creation_request_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+    )
     name = models.CharField(max_length=255)
     character_type = models.CharField(max_length=32, choices=CharacterType.choices, default=CharacterType.HUMAN)
     role = models.CharField(max_length=100, blank=True, default="", choices=CharacterRole.choices)
@@ -268,7 +278,12 @@ class StudioCharacter(models.Model):
             models.CheckConstraint(
                 check=Q(character_type__in=CharacterType.values),
                 name="chk_studio_character_type",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["project", "user", "creation_idempotency_key"],
+                condition=~Q(creation_idempotency_key=""),
+                name="uniq_char_create_idempotency",
+            ),
         ]
 
     def clean(self) -> None:
@@ -571,25 +586,48 @@ class CharacterGenerationJob(models.Model):
         blank=True,
         related_name="character_generation_jobs",
     )
+    actor = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="requested_character_generation_jobs",
+    )
     job_type = models.CharField(max_length=64, choices=GenerationJobType.choices)
     status = models.CharField(max_length=32, choices=GenerationJobStatus.choices, default=GenerationJobStatus.QUEUED)
     region = models.CharField(max_length=32, choices=CharacterRegion.choices, default=CharacterRegion.FULL_CHARACTER)
     variant_count = models.PositiveSmallIntegerField(default=4)
     request_payload = models.JSONField(default=dict, blank=True)
+    request_hash = models.CharField(max_length=64, blank=True, default="")
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
     compiled_prompt = models.TextField(blank=True, default="")
     negative_prompt = models.TextField(blank=True, default="")
     edit_instruction = models.TextField(blank=True, default="")
     preserve_options = models.JSONField(default=dict, blank=True)
+    compiled_metadata = models.JSONField(default=dict, blank=True)
     provider = models.CharField(max_length=100, blank=True, default="mock")
+    provider_operation = models.CharField(
+        max_length=32,
+        blank=True,
+        default="generate",
+    )
     model_name = models.CharField(max_length=100, blank=True, default="")
     model_version = models.CharField(max_length=100, blank=True, default="")
     progress = models.PositiveSmallIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=100, blank=True, default="")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    timeout_seconds = models.PositiveIntegerField(default=120)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     failed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "character_generation_jobs"
@@ -597,6 +635,10 @@ class CharacterGenerationJob(models.Model):
             models.Index(fields=["character"], name="character_g_charact_18486e_idx"),
             models.Index(fields=["project"], name="character_g_project_a65b63_idx"),
             models.Index(fields=["status"], name="character_g_status_a1b6e0_idx"),
+            models.Index(
+                fields=["status", "lease_expires_at"],
+                name="char_job_status_lease_idx",
+            ),
         ]
         constraints = [
             models.CheckConstraint(
@@ -606,6 +648,15 @@ class CharacterGenerationJob(models.Model):
             models.CheckConstraint(
                 check=Q(variant_count__in=[1, 2, 4]),
                 name="chk_generation_variant_count",
+            ),
+            models.CheckConstraint(
+                check=Q(attempts__lte=models.F("max_attempts")),
+                name="chk_generation_attempts",
+            ),
+            models.UniqueConstraint(
+                fields=["project", "actor", "idempotency_key"],
+                condition=~Q(idempotency_key=""),
+                name="uniq_char_job_idempotency",
             ),
         ]
 

@@ -1,7 +1,9 @@
 import base64
+import io
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from PIL import Image
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
@@ -87,7 +89,9 @@ class ProjectImagePayloadTests(TestCase):
         )
 
         self.assertIsNotNone(image)
-        self.assertEqual(image.read(), base64.b64decode(_PNG_1X1))
+        with Image.open(io.BytesIO(image.read())) as decoded:
+            self.assertEqual(decoded.format, "PNG")
+            self.assertEqual(decoded.size, (1, 1))
 
     def test_rejects_spoofed_or_oversized_payload(self):
         spoofed = decode_project_image_data_url(

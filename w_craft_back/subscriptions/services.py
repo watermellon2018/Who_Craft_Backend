@@ -344,12 +344,9 @@ def list_user_subscriptions(user_id: int, limit: int, offset: int) -> dict:
 def _build_avatar_url(image_field_value) -> Optional[str]:
     if not image_field_value:
         return None
-    from django.conf import settings
-    media = getattr(settings, 'MEDIA_URL', '/media/')
-    path = str(image_field_value)
-    if path.startswith('http://') or path.startswith('https://'):
-        return path
-    return f'{media}{path}'
+    from w_craft_back.storage_gateway import signed_media_url
+
+    return signed_media_url(str(image_field_value))
 
 
 def _serialize_subscription_row(sub: ChannelSubscription) -> dict:

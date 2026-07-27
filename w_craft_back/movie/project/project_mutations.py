@@ -35,6 +35,11 @@ from w_craft_back.movie.project.script_workspace import (
     replace_scene_characters,
     script_text_from_blocks,
 )
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    delete_storage_key,
+    store_project_upload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +135,13 @@ def update_project_settings(
     )
     previous_status = project.status
 
-    for field in ("title", "description", "status", "is_favorite"):
+    for field in (
+        "title",
+        "description",
+        "status",
+        "is_favorite",
+        "generation_settings",
+    ):
         if field in data:
             setattr(project, field, data[field])
     if "description" in data:
@@ -183,7 +194,13 @@ def update_project_settings(
     )
     non_status_changed = any(
         field in data
-        for field in ("title", "description", "is_favorite", "tags") + editor_fields
+        for field in (
+            "title",
+            "description",
+            "is_favorite",
+            "tags",
+            "generation_settings",
+        ) + editor_fields
     )
 
     if status_changed and new_status == ProjectStatus.ARCHIVED:
@@ -393,7 +410,6 @@ def create_location(
     return location
 
 
-@transaction.atomic
 def create_project_asset(
     *,
     actor: User,
@@ -403,26 +419,57 @@ def create_project_asset(
     asset_type: str,
     title: str,
 ) -> ProjectAsset:
-    """Store an asset whose lifecycle is owned by the project."""
+    """Validate/store a project-owned asset outside the metadata transaction."""
+
     _require_action(action, policy.Action.EDIT_CONTENT)
     project = get_project_for_action(
-        actor=actor, project_id=project_id, action=action, lock=True
+        actor=actor,
+        project_id=project_id,
+        action=action,
     )
-    asset = ProjectAsset.objects.create(
-        project=project,
-        uploaded_by=actor,
-        file=upload,
-        asset_type=asset_type,
-        title=title,
-    )
-    record_activity(
-        project,
-        actor,
-        "asset_uploaded",
-        title=title or upload.name,
-        description=asset_type,
-        metadata={"asset_id": asset.id, "asset_type": asset_type},
-    )
+    try:
+        stored = store_project_upload(
+            upload,
+            project_id=project.id,
+            asset_type=asset_type,
+        )
+    except StorageGatewayError as exc:
+        raise ValidationError({"file": [exc.message]}) from exc
+
+    try:
+        with transaction.atomic():
+            project = get_project_for_action(
+                actor=actor,
+                project_id=project_id,
+                action=action,
+                lock=True,
+            )
+            asset = ProjectAsset(
+                project=project,
+                uploaded_by=actor,
+                asset_type=asset_type,
+                title=title,
+                metadata={
+                    "mime_type": stored.mime_type,
+                    "size_bytes": stored.size_bytes,
+                    "sha256": stored.sha256,
+                    "width": stored.width,
+                    "height": stored.height,
+                },
+            )
+            asset.file.name = stored.storage_key
+            asset.save()
+            record_activity(
+                project,
+                actor,
+                "asset_uploaded",
+                title=title or f"Asset {asset.id}",
+                description=asset_type,
+                metadata={"asset_id": asset.id, "asset_type": asset_type},
+            )
+    except Exception:
+        delete_storage_key(stored.storage_key)
+        raise
     return asset
 
 

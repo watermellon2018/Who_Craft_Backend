@@ -21,6 +21,8 @@ from w_craft_back.movie.project.dashboard_models import (
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
 
+PROJECT_ANNOTATION_MAX_LENGTH = 800
+PROJECT_SYNOPSIS_MAX_LENGTH = 2000
 
 # --------------------------------------------------------------------------- #
 # Project create / update
@@ -68,6 +70,27 @@ def _audience_field():
     )
 
 
+class ProjectGenerationSettingsSerializer(serializers.Serializer):
+    image_generation_model = serializers.CharField(
+        max_length=100,
+        allow_blank=True,
+        required=False,
+    )
+
+    def validate_image_generation_model(self, value):
+        from w_craft_back.services.image_generation import MODEL_REGISTRY
+
+        normalized = (value or "").strip()
+        legacy = {"mock", "gemini", "google", "imagen"}
+        if (
+            normalized
+            and normalized not in MODEL_REGISTRY
+            and normalized.lower() not in legacy
+        ):
+            raise serializers.ValidationError("Unknown image generation model.")
+        return normalized
+
+
 class ProjectCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(allow_blank=True, required=False, default="")
@@ -83,6 +106,10 @@ class ProjectCreateSerializer(serializers.Serializer):
         default=ProjectStatus.DRAFT,
     )
     is_favorite = serializers.BooleanField(required=False, default=False)
+    generation_settings = ProjectGenerationSettingsSerializer(
+        required=False,
+        default=dict,
+    )
 
     # Editor fields (legacy columns).
     format = serializers.ChoiceField(
@@ -91,14 +118,22 @@ class ProjectCreateSerializer(serializers.Serializer):
     genre = _genre_field()
     audience = _audience_field()
     annotation = serializers.CharField(
-        max_length=2000, allow_blank=True, required=False, default=""
+        max_length=PROJECT_ANNOTATION_MAX_LENGTH,
+        allow_blank=True,
+        required=False,
+        default="",
     )
     synopsis = serializers.CharField(
-        max_length=5000, allow_blank=True, required=False, default=""
+        max_length=PROJECT_SYNOPSIS_MAX_LENGTH,
+        allow_blank=True,
+        required=False,
+        default="",
     )
     # Base64 data URL for poster upload (kept compatible with the old endpoint).
     poster_image_data = serializers.CharField(
-        allow_blank=True, required=False, default=""
+        allow_blank=True,
+        required=False,
+        default=""
     )
 
     def validate_title(self, value):
@@ -113,6 +148,7 @@ class ProjectUpdateSerializer(serializers.Serializer):
     description = serializers.CharField(allow_blank=True, required=False)
     status = serializers.ChoiceField(choices=ProjectStatus.choices, required=False)
     is_favorite = serializers.BooleanField(required=False)
+    generation_settings = ProjectGenerationSettingsSerializer(required=False)
     tags = serializers.ListField(
         child=serializers.CharField(max_length=50),
         required=False,
@@ -125,10 +161,14 @@ class ProjectUpdateSerializer(serializers.Serializer):
     genre = _genre_field()
     audience = _audience_field()
     annotation = serializers.CharField(
-        max_length=2000, allow_blank=True, required=False
+        max_length=PROJECT_ANNOTATION_MAX_LENGTH,
+        allow_blank=True,
+        required=False,
     )
     synopsis = serializers.CharField(
-        max_length=5000, allow_blank=True, required=False
+        max_length=PROJECT_SYNOPSIS_MAX_LENGTH,
+        allow_blank=True,
+        required=False,
     )
     poster_image_data = serializers.CharField(allow_blank=True, required=False)
     # Pass an empty string explicitly to clear the poster.
@@ -181,7 +221,9 @@ class _SceneWriteSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(allow_blank=True, required=False)
     script_text = serializers.CharField(
-        allow_blank=True, required=False, trim_whitespace=False
+        allow_blank=True,
+        required=False,
+        trim_whitespace=False
     )
     script_blocks = ScriptBlockSerializer(many=True, required=False)
     location_id = serializers.IntegerField(required=False, allow_null=True)
@@ -192,7 +234,9 @@ class _SceneWriteSerializer(serializers.Serializer):
     mood = serializers.CharField(max_length=100, allow_blank=True, required=False)
     scene_type = serializers.ChoiceField(choices=SceneType.choices, required=False)
     notes = serializers.CharField(
-        allow_blank=True, required=False, trim_whitespace=False
+        allow_blank=True,
+        required=False,
+        trim_whitespace=False
     )
     camera_settings = serializers.JSONField(required=False)
     character_ids = serializers.ListField(

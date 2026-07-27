@@ -20,8 +20,12 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls.resolvers import URLPattern
 
+from w_craft_back.api_contract import openapi_schema_view
+from w_craft_back.storage_gateway import serve_signed_media
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/schema/openapi.json', openapi_schema_view, name='openapi-schema'),
     path('api/character/', include('w_craft_back.characters.display_tree.urls')),
     path('api/auth/', include('w_craft_back.auth.urls')),
     path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
@@ -30,17 +34,17 @@ urlpatterns = [
     path('api/', include('w_craft_back.character_studio.urls')),
     path('api/profile/', include('w_craft_back.profile.urls')),
     path('api/', include('w_craft_back.subscriptions.urls')),
+    path('api/media/<path:token>', serve_signed_media, name='signed-media'),
 
 ]
 
 
 def development_static_urlpatterns() -> list[URLPattern]:
-    """Return local static and media routes only when Django debug mode is on."""
+    """Return local static routes only; media always uses signed delivery."""
     if not settings.DEBUG:
         return []
     return [
         *static(settings.STATIC_URL, document_root=settings.STATIC_ROOT),
-        *static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT),
     ]
 
 

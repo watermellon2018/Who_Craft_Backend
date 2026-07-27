@@ -53,7 +53,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'mptt',
-    'w_craft_back',
+    'w_craft_back.apps.WCraftBackConfig',
     'corsheaders',
     'rest_framework',
 ]
@@ -91,6 +91,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'w_craft_back.api_errors.ApiErrorEnvelopeMiddleware',
 ]
 
 ROOT_URLCONF = 'backend.urls'
@@ -252,7 +253,25 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_ROOT = Path(
     os.getenv("MEDIA_ROOT", BASE_DIR.parent / "w_craft_data" / "media")
 )
+SIGNED_MEDIA_BASE_URL = os.getenv("SIGNED_MEDIA_BASE_URL", "")
+SIGNED_MEDIA_TTL_SECONDS = int(os.getenv("SIGNED_MEDIA_TTL_SECONDS", "300"))
+MEDIA_ORPHAN_RETENTION_HOURS = int(
+    os.getenv("MEDIA_ORPHAN_RETENTION_HOURS", "168")
+)
+MEDIA_REMOTE_FETCH_ALLOW_HTTP = (
+    os.getenv("MEDIA_REMOTE_FETCH_ALLOW_HTTP", "false").lower() == "true"
+)
+IMAGE_PROVIDER_FETCH_TIMEOUT_SECONDS = float(
+    os.getenv("IMAGE_PROVIDER_FETCH_TIMEOUT_SECONDS", "15")
+)
+IMAGE_PROVIDER_MAX_OUTPUT_BYTES = int(
+    os.getenv("IMAGE_PROVIDER_MAX_OUTPUT_BYTES", str(20 * 1024 * 1024))
+)
+IMAGE_PROVIDER_MAX_OUTPUT_PIXELS = int(
+    os.getenv("IMAGE_PROVIDER_MAX_OUTPUT_PIXELS", "20000000")
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 
 # Per-character 3D reconstruction. The web process stays in the lightweight
 # ``backend`` environment; the detached worker invokes these tools through the

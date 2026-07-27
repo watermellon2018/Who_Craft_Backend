@@ -1,8 +1,8 @@
+import hashlib
+import json
 import logging
-import uuid
-from pathlib import Path
 
-from django.conf import settings
+from django.db import transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, authentication_classes
@@ -30,6 +30,9 @@ from w_craft_back.character_studio.services.errors import (
     NotFoundError,
     ValidationError,
 )
+from w_craft_back.character_studio.services.generation_lifecycle import (
+    validate_idempotency_key,
+)
 from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
 )
@@ -55,6 +58,11 @@ from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
 )
 from w_craft_back.movie.project.policy import Action
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    delete_storage_key,
+    store_normalized_image,
+)
 from w_craft_back.character_studio.services.serialization import (
     asset_dict,
     character_dict,
@@ -71,6 +79,19 @@ logger = logging.getLogger(__name__)
 def payload(request):
     data = request.data or {}
     return data.get("data", data)
+
+
+def generation_payload(request):
+    data = payload(request)
+    data = data.copy() if hasattr(data, "copy") else dict(data)
+    idempotency_key = (
+        request.headers.get("Idempotency-Key")
+        or request.META.get("HTTP_IDEMPOTENCY_KEY")
+        or ""
+    ).strip()
+    if idempotency_key:
+        data["_idempotency_key"] = idempotency_key
+    return data
 
 
 def ok(data=None, status=200):
@@ -158,6 +179,28 @@ def _form_bool(request, key, default=False):
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _reference_creation_request_hash(uploaded, character, generation):
+    digest = hashlib.sha256()
+    uploaded.seek(0)
+    for chunk in uploaded.chunks():
+        digest.update(chunk)
+    uploaded.seek(0)
+    canonical = json.dumps(
+        {
+            "version": 1,
+            "character": character,
+            "generation": generation,
+            "file_sha256": digest.hexdigest(),
+            "content_type": getattr(uploaded, "content_type", ""),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 @api_view(["POST"])
 @authentication_classes([LegacyMultipartUserKeyAuthentication])
 @handle_errors
@@ -188,18 +231,13 @@ def create_character_from_reference(request, project_id):
         or _form_value(request, "short_description") or "",
     }
 
-    logger.info(
-        "create_character_from_reference start:"
-        " project_id=%s name_len=%d size=%s mime=%s",
-        project_id, len(char_payload["name"] or ""), getattr(uploaded, "size", "?"),
-        getattr(uploaded, "content_type", "?"),
+    idempotency_key = validate_idempotency_key(
+        request.headers.get("Idempotency-Key")
+        or request.META.get("HTTP_IDEMPOTENCY_KEY")
+        or ""
     )
-
-    character, reference_asset = CharacterService().create_character_from_reference(
-        user, project, char_payload, uploaded
-    )
-
     generation_params = {
+        "_idempotency_key": idempotency_key,
         "variant_count": _form_int(request, "variants_count")
         or _form_int(request, "variant_count") or 1,
         "preserve_identity": _form_bool(request, "use_image_as_identity", default=True)
@@ -209,6 +247,35 @@ def create_character_from_reference(request, project_id):
         "text_refinement": _form_value(request, "refinement")
         or _form_value(request, "text_refinement") or "",
     }
+    request_hash = (
+        _reference_creation_request_hash(
+            uploaded,
+            char_payload,
+            {
+                key: value
+                for key, value in generation_params.items()
+                if key != "_idempotency_key"
+            },
+        )
+        if idempotency_key
+        else ""
+    )
+
+    logger.info(
+        "create_character_from_reference start:"
+        " project_id=%s name_len=%d size=%s mime=%s",
+        project_id, len(char_payload["name"] or ""), getattr(uploaded, "size", "?"),
+        getattr(uploaded, "content_type", "?"),
+    )
+
+    character, reference_asset = CharacterService().create_character_from_reference(
+        user,
+        project,
+        char_payload,
+        uploaded,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
     job = CharacterGenerationService().create_reference_variants(
         user, project_id, character.character_id, reference_asset, generation_params
     )
@@ -217,6 +284,16 @@ def create_character_from_reference(request, project_id):
         "create_character_from_reference done: character_id=%s job_id=%s job_status=%s",
         character.character_id, job.job_id, job.status,
     )
+
+    if (
+        job.status == "failed"
+        and job.error_code == "PROVIDER_OUTCOME_UNKNOWN"
+    ):
+        raise CharacterStudioError(
+            message=job.error_message,
+            error_code=job.error_code,
+            status_code=503,
+        )
 
     # If the generation kickoff failed (provider unavailable, model can't accept
     # image input, etc.), we don't want to leave a half-created character with no
@@ -242,9 +319,9 @@ def create_character_from_reference(request, project_id):
             )
         if ref_path:
             try:
-                (Path(settings.MEDIA_ROOT) / ref_path).unlink(missing_ok=True)
-            except OSError:
-                logger.warning("Could not unlink reference file %s", ref_path)
+                delete_storage_key(ref_path)
+            except (OSError, StorageGatewayError):
+                logger.warning("Could not delete reference file %s", ref_path)
         logger.info(
             "create_character_from_reference rolled back: project_id=%s error_code=%s",
             project_id, error_code,
@@ -282,7 +359,7 @@ def character_detail(request, project_id, character_id):
 @handle_errors
 def generate_initial_variants(request, project_id, character_id):
     user = get_user_from_request(request)
-    data = payload(request)
+    data = generation_payload(request)
     service = CharacterGenerationService()
     logger.info(
         "generate_initial_variants start: project_id=%s character_id=%s",
@@ -324,7 +401,7 @@ def generate_initial_variants(request, project_id, character_id):
 def generate_edit_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     job = CharacterGenerationService().generate_edit_variants(
-        user, project_id, character_id, payload(request),
+        user, project_id, character_id, generation_payload(request),
     )
     deps = CharacterGenerationService.dependent_image_types(
         job.request_payload.get("image_type"),
@@ -343,7 +420,7 @@ def generate_edit_variants(request, project_id, character_id):
 def zone_edit(request, project_id, character_id):
     user = get_user_from_request(request)
     primary_job, secondary_jobs = CharacterGenerationService().generate_zone_edit(
-        user, project_id, character_id, payload(request)
+        user, project_id, character_id, generation_payload(request)
     )
     deps = CharacterGenerationService.dependent_image_types(
         primary_job.request_payload.get("image_type")
@@ -471,7 +548,7 @@ def set_default_outfit(request, project_id, character_id, outfit_id):
 @handle_errors
 def generate_outfit_variants(request, project_id, character_id, outfit_id):
     user = get_user_from_request(request)
-    data = payload(request)
+    data = generation_payload(request)
     data["region"] = "outfit"
     data.setdefault("controls", {})
     data["controls"]["outfit_id"] = str(outfit_id)
@@ -489,44 +566,41 @@ def upload_outfit_reference(request, project_id, character_id, outfit_id):
         user, project_id, character_id,
     )
     outfit = _get_user_outfit(character, outfit_id)
-
     uploaded = request.FILES.get("file")
     try:
-        mime, ext = validate_image_upload(uploaded)
+        validate_image_upload(uploaded)
+        stored = store_normalized_image(
+            uploaded._storage_gateway_normalized,
+            namespace=f"character-studio/outfits/{character_id}/{outfit_id}",
+        )
     except UploadValidationError as exc:
         return JsonResponse(
             {"error_code": exc.error_code, "message": exc.message},
             status=exc.status,
         )
-
-    rel_path = (
-        f"character-studio/outfits/{character_id}/{outfit_id}/"
-        f"{uuid.uuid4().hex}.{ext}"
-    )
-    abs_path = Path(settings.MEDIA_ROOT) / rel_path
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    with abs_path.open("wb") as fh:
-        for chunk in uploaded.chunks():
-            fh.write(chunk)
-
-    media_url = getattr(settings, "MEDIA_URL", "/media/")
-    if not media_url.endswith("/"):
-        media_url += "/"
-    image_url = f"{media_url}{rel_path}"
-
-    asset = CharacterAsset.objects.create(
-        character=character,
-        project=character.project,
-        user=user,
-        asset_type=CharacterAssetType.OUTFIT_REFERENCE,
-        image_url=image_url,
-        storage_path=rel_path,
-        mime_type=mime,
-        source="upload",
-    )
-
-    outfit.reference_image = asset
-    outfit.save(update_fields=["reference_image", "updated_at"])
+    try:
+        with transaction.atomic():
+            asset = CharacterAsset.objects.create(
+                character=character,
+                project=character.project,
+                user=user,
+                asset_type=CharacterAssetType.OUTFIT_REFERENCE,
+                image_url="",
+                storage_path=stored.storage_key,
+                width=stored.width,
+                height=stored.height,
+                mime_type=stored.mime_type,
+                source="upload",
+                metadata={
+                    "sha256": stored.sha256,
+                    "size_bytes": stored.size_bytes,
+                },
+            )
+            outfit.reference_image = asset
+            outfit.save(update_fields=["reference_image", "updated_at"])
+    except Exception:
+        delete_storage_key(stored.storage_key)
+        raise
     return ok(asset_dict(asset), status=201)
 
 
@@ -554,38 +628,38 @@ def upload_clothing_reference(request, project_id, character_id):
     character = CharacterService().get_editable_character(
         user, project_id, character_id,
     )
-
     uploaded = request.FILES.get("file")
     try:
-        mime, ext = validate_image_upload(uploaded)
+        validate_image_upload(uploaded)
+        stored = store_normalized_image(
+            uploaded._storage_gateway_normalized,
+            namespace=f"character-studio/clothing-refs/{character_id}",
+        )
     except UploadValidationError as exc:
         return JsonResponse(
             {"error_code": exc.error_code, "message": exc.message},
             status=exc.status,
         )
-
-    rel_path = f"character-studio/clothing-refs/{character_id}/{uuid.uuid4().hex}.{ext}"
-    abs_path = Path(settings.MEDIA_ROOT) / rel_path
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    with abs_path.open("wb") as fh:
-        for chunk in uploaded.chunks():
-            fh.write(chunk)
-
-    media_url = getattr(settings, "MEDIA_URL", "/media/")
-    if not media_url.endswith("/"):
-        media_url += "/"
-    image_url = f"{media_url}{rel_path}"
-
-    asset = CharacterAsset.objects.create(
-        character=character,
-        project=character.project,
-        user=user,
-        asset_type=CharacterAssetType.CLOTHING_REFERENCE,
-        image_url=image_url,
-        storage_path=rel_path,
-        mime_type=mime,
-        source="upload",
-    )
+    try:
+        asset = CharacterAsset.objects.create(
+            character=character,
+            project=character.project,
+            user=user,
+            asset_type=CharacterAssetType.CLOTHING_REFERENCE,
+            image_url="",
+            storage_path=stored.storage_key,
+            width=stored.width,
+            height=stored.height,
+            mime_type=stored.mime_type,
+            source="upload",
+            metadata={
+                "sha256": stored.sha256,
+                "size_bytes": stored.size_bytes,
+            },
+        )
+    except Exception:
+        delete_storage_key(stored.storage_key)
+        raise
     return ok(asset_dict(asset), status=201)
 
 
@@ -663,7 +737,7 @@ def references_collection(request, project_id, character_id):
 @handle_errors
 def references_generate(request, project_id, character_id):
     user = get_user_from_request(request)
-    data = payload(request)
+    data = generation_payload(request)
     job = CharacterGenerationService().generate_reference(
         user, project_id, character_id, data,
     )
@@ -693,7 +767,7 @@ def references_generate_missing(request, project_id, character_id):
     no duplicate jobs are created.
     """
     user = get_user_from_request(request)
-    data = payload(request)
+    data = generation_payload(request)
     result = CharacterGenerationService().generate_missing_references(
         user, project_id, character_id, data,
     )
@@ -712,7 +786,7 @@ def references_generate_missing(request, project_id, character_id):
 @handle_errors
 def references_correct(request, project_id, character_id, reference_id):
     user = get_user_from_request(request)
-    data = payload(request)
+    data = generation_payload(request)
     job = CharacterGenerationService().correct_reference(
         user, project_id, character_id, reference_id, data,
     )
@@ -843,7 +917,7 @@ def references_proceed_to_3d(request, project_id, character_id):
         change_summary="references_locked",
         snapshot={"references": locked_ids, "stage": "references_locked"},
     )
-    reconstruction = ensure_reconstruction(character)
+    reconstruction = ensure_reconstruction(character, actor=user)
     return ok({
         "can_proceed": True,
         "next_stage": "3d_model",
@@ -876,7 +950,7 @@ def model3d_state(request, project_id, character_id):
         # the first time, load the saved state every time after.
         return ok({
             "params": character.model3d_params or {},
-            "reconstruction": reconstruction_state(character, ensure=True),
+            "reconstruction": reconstruction_state(character),
             "autofit_done": character.model3d_autofit_done,
             "autofit_version": character.model3d_autofit_version,
             "updated_at": character.updated_at.isoformat(),
@@ -912,7 +986,10 @@ def model3d_reconstruction_retry(request, project_id, character_id):
     )
     if character.status != CharacterStatus.REFERENCES_LOCKED:
         raise ValidationError("References must be locked before 3D reconstruction.")
-    return ok({"reconstruction": retry_reconstruction(character)}, status=202)
+    return ok(
+        {"reconstruction": retry_reconstruction(character, actor=user)},
+        status=202,
+    )
 
 
 @api_view(["POST"])

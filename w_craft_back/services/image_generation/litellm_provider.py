@@ -20,6 +20,12 @@ from typing import Any
 
 from django.conf import settings
 
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    fetch_remote_image,
+    normalize_image_bytes,
+)
+
 from .errors import (
     CODE_BAD_RESPONSE,
     CODE_EDIT_NOT_SUPPORTED,
@@ -70,46 +76,35 @@ def _decode_b64_or_data_url(value: str) -> bytes:
             message="Провайдер вернул изображение в неподдерживаемом формате.",
             http_status=502,
         )
-    if value.startswith(("http://", "https://")):
-        raise ImageProviderError(
-            code=CODE_BAD_RESPONSE,
-            message=(
-                "Провайдер вернул небезопасную удалённую ссылку "
-                "вместо изображения."
-            ),
-            http_status=502,
-        )
-    match = _DATA_URL_RE.match(value)
-    if match and not match.group("mime").lower().startswith("image/"):
-        raise ImageProviderError(
-            code=CODE_BAD_RESPONSE,
-            message="Провайдер вернул data URL не с изображением.",
-            http_status=502,
-        )
-    payload = match.group("data") if match else value
     limit = _provider_output_limit()
-    max_encoded_length = ((limit + 2) // 3) * 4 + 16
-    if len(payload) > max_encoded_length:
-        raise ImageProviderError(
-            code=CODE_BAD_RESPONSE,
-            message="Изображение провайдера превышает допустимый размер.",
-            http_status=502,
-        )
     try:
-        decoded = base64.b64decode(payload, validate=False)
-    except (binascii.Error, ValueError) as exc:  # pragma: no cover
+        if value.startswith(("http://", "https://")):
+            return fetch_remote_image(value, max_bytes=limit).data
+        match = _DATA_URL_RE.match(value)
+        if match and not match.group("mime").lower().startswith("image/"):
+            raise ImageProviderError(
+                code=CODE_BAD_RESPONSE,
+                message="Провайдер вернул data URL не с изображением.",
+                http_status=502,
+            )
+        payload = match.group("data") if match else value
+        max_encoded_length = ((limit + 2) // 3) * 4 + 16
+        if len(payload) > max_encoded_length:
+            raise ImageProviderError(
+                code=CODE_BAD_RESPONSE,
+                message="Изображение провайдера превышает допустимый размер.",
+                http_status=502,
+            )
+        decoded = base64.b64decode(payload, validate=True)
+        return normalize_image_bytes(decoded, max_bytes=limit).data
+    except ImageProviderError:
+        raise
+    except (binascii.Error, ValueError, StorageGatewayError) as exc:
         raise ImageProviderError(
             code=CODE_BAD_RESPONSE,
-            message="Провайдер вернул некорректные base64-данные.",
+            message="Провайдер вернул недопустимое изображение.",
             http_status=502,
         ) from exc
-    if len(decoded) > limit:
-        raise ImageProviderError(
-            code=CODE_BAD_RESPONSE,
-            message="Изображение провайдера превышает допустимый размер.",
-            http_status=502,
-        )
-    return decoded
 
 
 def _provider_output_count_limit() -> int:

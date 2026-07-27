@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -544,14 +545,11 @@ class Model3DReconstructionTests(TestCase):
                 self.assertEqual(job.progress, 100)
                 ready = reconstruction_state(self.character)
                 self.assertEqual(ready["status"], "ready")
-                self.assertEqual(
-                    ready["model_url"],
-                    f"http://testserver/media/{asset.storage_path}",
+                self.assertTrue(
+                    urlparse(ready["model_url"]).path.startswith("/api/media/")
                 )
-                self.assertEqual(
-                    ready["hair_url"],
-                    "http://testserver/media/"
-                    f"{Path(asset.storage_path).with_name('hair.glb').as_posix()}",
+                self.assertTrue(
+                    urlparse(ready["hair_url"]).path.startswith("/api/media/")
                 )
                 self.assertEqual(ready["assets"]["hair"]["source"], "generated")
                 self.assertEqual(

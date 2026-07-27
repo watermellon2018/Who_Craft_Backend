@@ -1,7 +1,8 @@
 from django.db import transaction
 from django.utils import timezone
-import os
+import hashlib
 import logging
+import time
 
 from w_craft_back.character_studio.models import (
     CharacterAsset,
@@ -19,6 +20,15 @@ from w_craft_back.character_studio.repositories.repositories import (
 from w_craft_back.character_studio.services.asset_service import CharacterAssetService
 from w_craft_back.character_studio.services.character_service import CharacterService
 from w_craft_back.character_studio.services.errors import NotFoundError, ValidationError
+from w_craft_back.character_studio.services.generation_lifecycle import (
+    JobLease,
+    claim_job,
+    enqueue_job,
+    fail_job,
+    heartbeat_job,
+    mark_provider_started,
+    recover_stale_jobs,
+)
 from w_craft_back.character_studio.services.prompt_compiler import CharacterPromptCompiler
 from w_craft_back.character_studio.services.providers import ProviderUserFacingError, get_image_provider
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
@@ -113,7 +123,6 @@ class CharacterGenerationService:
         self.compiler = CharacterPromptCompiler()
         self.safety = CharacterSafetyService()
 
-    @transaction.atomic
     def create_initial_variants(self, user, project_id, character_id, params):
         character = self.characters.get_generation_character(
             user, project_id, character_id,
@@ -152,12 +161,21 @@ class CharacterGenerationService:
                 image_type=image_type,
             )
         params = {**params, "image_type": image_type, "activate_image": params.get("activate_image", True)}
-        return self._run_job(character, GenerationJobType.INITIAL_VARIANTS, region, variant_count, params, compiled)
+        return self._run_job(
+            user,
+            character,
+            GenerationJobType.INITIAL_VARIANTS,
+            region,
+            variant_count,
+            params,
+            compiled,
+        )
 
     def create_initial_image_set(self, user, project_id, character_id, params):
         image_types = params.get("image_types") or self.INITIAL_IMAGE_TYPES
         image_types = [self._validate_image_type(image_type) for image_type in image_types]
         jobs = []
+        base_idempotency_key = (params or {}).get("_idempotency_key")
         for image_type in image_types:
             job = self.create_initial_variants(
                 user,
@@ -167,6 +185,10 @@ class CharacterGenerationService:
                     **params,
                     "image_type": image_type,
                     "variant_count": params.get("variant_count", 1),
+                    "_idempotency_key": self._scoped_idempotency_key(
+                        base_idempotency_key,
+                        image_type,
+                    ),
                 },
             )
             jobs.append(job)
@@ -174,7 +196,6 @@ class CharacterGenerationService:
                 break
         return jobs
 
-    @transaction.atomic
     def generate_zone_edit(self, user, project_id, character_id, payload):
         """Localized rectangular zone edit on portrait/full_body/scene.
 
@@ -228,8 +249,17 @@ class CharacterGenerationService:
             "activate_image": True,
             "variant_count": 1,
         }
+        primary_payload["_idempotency_key"] = (payload or {}).get(
+            "_idempotency_key"
+        )
         job = self._run_job(
-            character, GenerationJobType.EDIT_VARIANTS, region, 1, primary_payload, compiled
+            user,
+            character,
+            GenerationJobType.EDIT_VARIANTS,
+            region,
+            1,
+            primary_payload,
+            compiled,
         )
         return job, []
 
@@ -251,7 +281,6 @@ class CharacterGenerationService:
             raise ValidationError("selection must be within [0, 1] (x+width and y+height <= 1).")
         return {"x": x, "y": y, "width": width, "height": height}
 
-    @transaction.atomic
     def generate_reference(self, user, project_id, character_id, params):
         """Generate (or regenerate) a single reference view.
 
@@ -285,19 +314,6 @@ class CharacterGenerationService:
         character = self.characters.get_generation_character(
             user, project_id, character_id,
         )
-
-        # Conflict guard: another in-flight job for this same image_type would
-        # produce racing results and identical asset_type rows. Reject the new
-        # request with 409 instead of silently double-generating.
-        active_job_exists = CharacterGenerationJob.objects.filter(
-            character=character,
-            status__in=[GenerationJobStatus.QUEUED, GenerationJobStatus.PROCESSING],
-            request_payload__image_type=image_type,
-        ).exists()
-        if active_job_exists:
-            raise ValidationError(
-                "Generation already running for this reference_type.",
-            )
 
         correction_prompt = (params.get("correction_prompt") or "").strip()
         preserve_identity = bool(params.get("preserve_identity", True))
@@ -336,6 +352,7 @@ class CharacterGenerationService:
                 "preserve_identity": preserve_identity,
             }
             return self._run_job(
+                user,
                 character,
                 GenerationJobType.INITIAL_VARIANTS,
                 region,
@@ -394,6 +411,7 @@ class CharacterGenerationService:
             "activate_image": params.get("activate_image", False),
         }
         return self._run_job_with_reference(
+            user,
             character,
             request_payload,
             compiled,
@@ -409,9 +427,9 @@ class CharacterGenerationService:
           - generating placeholder/asset OR active job -> skip (already_generating)
           - otherwise: create a generation job through generate_reference()
 
-        Each per-type call runs in its own transaction (generate_reference is
-        @transaction.atomic) so a partial failure on one type does not roll back
-        successfully created jobs for the other types.
+        Each per-type call owns an independent enqueue/provider/finalize
+        lifecycle, so a failure on one type does not roll back successfully
+        completed jobs for the other types.
         """
         from w_craft_back.character_studio.services.asset_service import (
             REFERENCE_UI_TO_ASSET_TYPE,
@@ -437,6 +455,7 @@ class CharacterGenerationService:
         latest_ready = self.assets.latest_ready_by_reference_type(character)
         created_jobs = []
         skipped = []
+        base_idempotency_key = params.get("_idempotency_key")
 
         for ui_type in requested_types:
             asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_type]
@@ -461,6 +480,10 @@ class CharacterGenerationService:
                     {
                         "reference_type": ui_type,
                         "preserve_identity": preserve_identity,
+                        "_idempotency_key": self._scoped_idempotency_key(
+                            base_idempotency_key,
+                            ui_type,
+                        ),
                     },
                 )
                 created_jobs.append({"reference_type": ui_type, "job_id": str(job.job_id)})
@@ -474,7 +497,6 @@ class CharacterGenerationService:
 
         return {"created_jobs": created_jobs, "skipped": skipped}
 
-    @transaction.atomic
     def correct_reference(self, user, project_id, character_id, reference_id, params):
         """Apply a textual correction to an existing reference and create a NEW
         version. The previous version is preserved (status stays ready) so the
@@ -505,10 +527,10 @@ class CharacterGenerationService:
                 "reference_type": ui_type,
                 "correction_prompt": correction_prompt,
                 "preserve_identity": params.get("preserve_identity", True),
+                "_idempotency_key": (params or {}).get("_idempotency_key"),
             },
         )
 
-    @transaction.atomic
     def generate_edit_variants(self, user, project_id, character_id, edit_request):
         character = self.characters.get_generation_character(
             user, project_id, character_id,
@@ -547,6 +569,7 @@ class CharacterGenerationService:
             identity_asset = self.characters.get_identity_asset(character)
         if identity_asset is not None:
             return self._run_identity_anchored_edit(
+                actor=user,
                 character=character,
                 image_type=image_type,
                 region=region,
@@ -570,10 +593,26 @@ class CharacterGenerationService:
             image_type=image_type,
         )
         edit_request = {**edit_request, "image_type": image_type, "activate_image": edit_request.get("activate_image", True)}
-        return self._run_job(character, GenerationJobType.EDIT_VARIANTS, region, variant_count, edit_request, compiled)
+        return self._run_job(
+            user,
+            character,
+            GenerationJobType.EDIT_VARIANTS,
+            region,
+            variant_count,
+            edit_request,
+            compiled,
+        )
 
     def _run_identity_anchored_edit(
-        self, *, character, image_type, region, identity_asset, variant_count, edit_request
+        self,
+        *,
+        actor,
+        character,
+        image_type,
+        region,
+        identity_asset,
+        variant_count,
+        edit_request,
     ):
         """Edit a non-portrait view (full_body/scene/...) using identity asset as image input.
 
@@ -613,7 +652,13 @@ class CharacterGenerationService:
             payload = {**edit_request, "image_type": image_type,
                        "activate_image": edit_request.get("activate_image", True)}
             return self._run_job(
-                character, GenerationJobType.EDIT_VARIANTS, region, variant_count, payload, compiled,
+                actor,
+                character,
+                GenerationJobType.EDIT_VARIANTS,
+                region,
+                variant_count,
+                payload,
+                compiled,
             )
         mime_type = identity_asset.mime_type or "image/png"
         preserve_identity = bool(edit_request.get("preserve_identity", True))
@@ -645,6 +690,7 @@ class CharacterGenerationService:
             character.character_id, image_type, identity_asset.asset_id,
         )
         return self._run_job_with_reference(
+            actor,
             character,
             request_payload,
             compiled,
@@ -715,8 +761,10 @@ class CharacterGenerationService:
             "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
             "reference_asset_id": str(reference_asset.asset_id),
             "activate_image": params.get("activate_image", True),
+            "_idempotency_key": (params or {}).get("_idempotency_key"),
         }
         return self._run_job_with_reference(
+            user,
             character,
             request_payload,
             compiled,
@@ -726,285 +774,355 @@ class CharacterGenerationService:
 
     def _run_job_with_reference(
         self,
+        actor,
         character,
         request_payload,
         compiled,
-        reference_bytes,
-        mime_type,
+        reference_bytes=None,
+        mime_type=None,
         job_type=GenerationJobType.REFERENCE_VARIANTS,
     ):
-        self.safety.validate_generated_prompt(compiled["positive_prompt"])
-        user_pref = ""
-        try:
-            # character.user is a UserKey; UserProfile is attached to the
-            # underlying Django User (UserKey.user.profile).
-            django_user = getattr(character.user, "user", None)
-            profile = getattr(django_user, "profile", None) if django_user else None
-            user_pref = (
-                getattr(profile, "image_generation_model", "") or ""
-            ).strip()
-        except Exception:  # noqa: BLE001
-            user_pref = ""
-        provider_name = (
-            (request_payload or {}).get("provider")
-            or user_pref
-            or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
-            or "mock"
-        )
-        variant_count = request_payload["variant_count"]
-        image_type = request_payload.get("image_type") or CharacterImageType.PORTRAIT
-        region = self.IMAGE_TYPE_TO_REGION.get(image_type, "full_character")
-
-        job = self.jobs.create(
+        return self._enqueue_and_execute(
+            actor=actor,
             character=character,
-            project=character.project,
-            user=character.user,
             job_type=job_type,
-            status=GenerationJobStatus.QUEUED,
+            region=self.IMAGE_TYPE_TO_REGION.get(
+                request_payload.get("image_type"),
+                "full_character",
+            ),
+            variant_count=request_payload["variant_count"],
+            request_payload=request_payload,
+            compiled=compiled,
+            provider_operation="reference",
+            reference_bytes=reference_bytes,
+            mime_type=mime_type,
+        )
+
+    def _run_job(
+        self,
+        actor,
+        character,
+        job_type,
+        region,
+        variant_count,
+        request_payload,
+        compiled,
+    ):
+        provider_operation = (
+            "generate"
+            if job_type == GenerationJobType.INITIAL_VARIANTS
+            else "edit"
+        )
+        return self._enqueue_and_execute(
+            actor=actor,
+            character=character,
+            job_type=job_type,
             region=region,
             variant_count=variant_count,
             request_payload=request_payload,
-            compiled_prompt=compiled["positive_prompt"],
-            negative_prompt=compiled["negative_prompt"],
-            edit_instruction="",
-            preserve_options=compiled["metadata"].get("preserve", {}),
-            provider=provider_name,
-        )
-        job.status = GenerationJobStatus.PROCESSING
-        job.progress = 40
-        job.started_at = timezone.now()
-        job.save()
-        self.logger.info(
-            "_run_job_with_reference: job_id=%s character_id=%s provider=%s reference_asset=%s",
-            job.job_id,
-            character.character_id,
-            provider_name,
-            request_payload.get("reference_asset_id"),
+            compiled=compiled,
+            provider_operation=provider_operation,
         )
 
-        provider = get_image_provider(provider_name)
+    def _enqueue_and_execute(
+        self,
+        *,
+        actor,
+        character,
+        job_type,
+        region,
+        variant_count,
+        request_payload,
+        compiled,
+        provider_operation,
+        reference_bytes=None,
+        mime_type=None,
+    ):
+        self.safety.validate_generated_prompt(compiled["positive_prompt"])
+        job = enqueue_job(
+            actor=actor,
+            character=character,
+            job_type=job_type,
+            region=region,
+            variant_count=variant_count,
+            request_payload=request_payload,
+            compiled=compiled,
+            provider_operation=provider_operation,
+        )
+        return self.execute_queued_job(
+            job.job_id,
+            reference_bytes=reference_bytes,
+            mime_type=mime_type,
+        )
+
+    def execute_queued_job(
+        self,
+        job_id,
+        *,
+        reference_bytes=None,
+        mime_type=None,
+    ):
+        """Run provider I/O outside transactions, fenced by a durable lease."""
+        lease = claim_job(job_id)
+        if lease is None:
+            return CharacterGenerationJob.objects.get(job_id=job_id)
+
+        job = (
+            CharacterGenerationJob.objects.select_related(
+                "actor",
+                "actor__user",
+                "character",
+                "character__project",
+            )
+            .get(job_id=job_id)
+        )
+        compiled = {
+            "positive_prompt": job.compiled_prompt,
+            "negative_prompt": job.negative_prompt,
+            "edit_instruction": job.edit_instruction,
+            "metadata": dict(job.compiled_metadata or {}),
+        }
+        provider = None
         try:
-            results = provider.generate_from_reference(
-                job, compiled, reference_bytes, mime_type, variant_count
-            )
-            asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(
-                image_type, CharacterAssetType.INITIAL_VARIANT
-            )
-            first_asset = None
-            for item in results:
-                metadata = {
-                    **(item.get("metadata") or {}),
-                    "image_type": image_type,
-                    "job_type": job_type,
-                    "reference_asset_id": request_payload.get("reference_asset_id"),
-                    "source_identity_asset_id": request_payload.get(
-                        "source_identity_asset_id"
-                    ) or request_payload.get("reference_asset_id"),
-                    "preserve_identity": request_payload.get("preserve_identity", True),
-                }
-                asset_kwargs = dict(
-                    image_url=item["image_url"],
-                    storage_path=item["storage_path"],
-                    width=item["width"],
-                    height=item["height"],
-                    mime_type=item["mime_type"],
-                    source=provider_name,
-                    source_job_id=job.job_id,
-                    generation_prompt=item["prompt"],
-                    negative_prompt=item["negative_prompt"],
-                    model_name=item["model_name"],
-                    model_version=item["model_version"],
-                    seed=item["seed"],
-                    metadata=metadata,
-                    safety_status="passed",
+            if job.provider_operation == "reference" and reference_bytes is None:
+                reference_bytes, mime_type = self._load_reference_input(job)
+            provider = get_image_provider(job.provider)
+            if not mark_provider_started(lease):
+                return CharacterGenerationJob.objects.get(job_id=job_id)
+            job.provider_deadline = time.monotonic() + lease.timeout_seconds
+            job.provider_heartbeat = lambda: heartbeat_job(lease)
+            if job.provider_operation == "reference":
+                results = provider.generate_from_reference(
+                    job,
+                    compiled,
+                    reference_bytes,
+                    mime_type or "image/png",
+                    job.variant_count,
                 )
-                correction = (request_payload.get("correction_prompt") or "").strip()
-                if correction:
-                    asset_kwargs["correction_prompt"] = correction
-                asset = self.assets.save_asset(
-                    job.user,
-                    Action.RUN_GENERATION,
-                    character,
-                    asset_type,
-                    **asset_kwargs,
+            elif job.provider_operation == "generate":
+                results = provider.generate_character_variants(
+                    job,
+                    compiled,
+                    job.variant_count,
                 )
-                first_asset = first_asset or asset
-                variant = self.variants.create(
-                    job=job,
-                    character=character,
-                    asset=asset,
-                    variant_index=item["variant_index"],
-                    region=region,
-                    controls_snapshot=request_payload,
-                    appearance_snapshot=compiled["metadata"],
-                    image_url=item["image_url"],
-                    prompt=item["prompt"],
-                    negative_prompt=item["negative_prompt"],
-                    seed=item["seed"],
-                    model_name=item["model_name"],
+            elif job.provider_operation == "edit":
+                results = provider.edit_character_region(
+                    job,
+                    compiled,
+                    job.variant_count,
                 )
-                asset.source_variant_id = variant.variant_id
-                asset.save(update_fields=["source_variant_id"])
-            if first_asset and request_payload.get("activate_image", True):
-                self._activate_image(character, first_asset, image_type, request_payload)
-            job.status = GenerationJobStatus.COMPLETED
-            job.progress = 100
-            job.model_name = provider.model_name
-            job.model_version = provider.model_version
-            job.completed_at = timezone.now()
-            job.save()
-            self.logger.info(
-                "_run_job_with_reference completed: job_id=%s character_id=%s",
-                job.job_id, character.character_id,
+            else:
+                raise ValidationError(
+                    f"Unsupported provider operation: {job.provider_operation}."
+                )
+
+            results = list(results or [])
+            if not results:
+                raise RuntimeError("Image provider returned no variants.")
+            heartbeat_job(lease)
+            self._complete_job(
+                lease,
+                results=results,
+                provider=provider,
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception(
-                "Reference-based character generation failed "
-                "(provider=%s job_id=%s)", provider_name, job.job_id,
+                "Character generation failed (provider=%s job_id=%s)",
+                job.provider,
+                job.job_id,
             )
-            job.status = GenerationJobStatus.FAILED
-            job.error_code = getattr(exc, "error_code", "REFERENCE_GENERATION_FAILED")
-            job.error_message = (
-                exc.user_message if isinstance(exc, ProviderUserFacingError) else str(exc)
+            fail_job(
+                lease,
+                error_code=getattr(exc, "error_code", "GENERATION_FAILED"),
+                error_message=(
+                    exc.user_message
+                    if isinstance(exc, ProviderUserFacingError)
+                    else str(exc)
+                ),
             )
-            job.failed_at = timezone.now()
-            job.save()
-        return job
+        return CharacterGenerationJob.objects.get(job_id=job_id)
 
-    def _run_job(self, character, job_type, region, variant_count, request_payload, compiled):
-        self.safety.validate_generated_prompt(compiled["positive_prompt"])
-        # Resolution order: explicit override on the request > user's saved
-        # ``UserProfile.image_generation_model`` > env default > "mock".
-        user_pref = ""
+    def _load_reference_input(self, job):
+        from pathlib import Path
+
+        from django.conf import settings
+
+        reference_asset_id = (job.request_payload or {}).get(
+            "reference_asset_id"
+        )
+        if not reference_asset_id:
+            raise ValidationError("Reference asset is missing from the job.")
         try:
-            # character.user is a UserKey; UserProfile is attached to the
-            # underlying Django User (UserKey.user.profile).
-            django_user = getattr(character.user, "user", None)
-            profile = getattr(django_user, "profile", None) if django_user else None
-            user_pref = (
-                getattr(profile, "image_generation_model", "") or ""
-            ).strip()
-        except Exception:  # noqa: BLE001 — profile lookup is best-effort
-            user_pref = ""
-        provider_name = (
-            (request_payload or {}).get("provider")
-            or user_pref
-            or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
-            or "mock"
+            asset = CharacterAsset.objects.get(
+                asset_id=reference_asset_id,
+                character_id=job.character_id,
+                project_id=job.project_id,
+            )
+        except CharacterAsset.DoesNotExist as exc:
+            raise ValidationError(
+                "Reference asset no longer belongs to this project."
+            ) from exc
+        try:
+            reference_bytes = (
+                Path(settings.MEDIA_ROOT) / asset.storage_path
+            ).read_bytes()
+        except OSError as exc:
+            raise ValidationError(
+                "Reference image file is missing on storage."
+            ) from exc
+        return reference_bytes, asset.mime_type or "image/png"
+
+    @transaction.atomic
+    def _complete_job(self, lease: JobLease, *, results, provider):
+        """Persist assets and terminal state in one short fenced transaction."""
+        job = (
+            CharacterGenerationJob.objects.select_for_update(of=("self",))
+            .select_related("actor", "character", "character__project")
+            .get(job_id=lease.job_id)
         )
-        job = self.jobs.create(
-            character=character,
-            project=character.project,
-            user=character.user,
-            job_type=job_type,
-            status=GenerationJobStatus.QUEUED,
-            region=region,
-            variant_count=variant_count,
-            request_payload=request_payload,
-            compiled_prompt=compiled["positive_prompt"],
-            negative_prompt=compiled["negative_prompt"],
-            edit_instruction=compiled["edit_instruction"],
-            preserve_options=compiled["metadata"].get("preserve", {}),
-            provider=provider_name,
+        if (
+            job.status != GenerationJobStatus.PROCESSING
+            or job.lease_token != lease.token
+        ):
+            return job
+
+        character = job.character
+        request_payload = dict(job.request_payload or {})
+        compiled_metadata = dict(job.compiled_metadata or {})
+        image_type = (
+            request_payload.get("image_type")
+            or CharacterImageType.PORTRAIT
         )
-        job.status = GenerationJobStatus.PROCESSING
-        job.progress = 40
-        job.started_at = timezone.now()
+        reference_mode = job.provider_operation == "reference"
+        if reference_mode:
+            default_asset_type = CharacterAssetType.INITIAL_VARIANT
+        elif job.job_type == GenerationJobType.INITIAL_VARIANTS:
+            default_asset_type = CharacterAssetType.INITIAL_VARIANT
+        else:
+            default_asset_type = CharacterAssetType.EDIT_VARIANT
+        asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(
+            image_type,
+            default_asset_type,
+        )
+
+        first_asset = None
+        correction_prompt = (
+            request_payload.get("correction_prompt") or ""
+        ).strip()
+        for item in results:
+            metadata = {
+                **(item.get("metadata") or {}),
+                "image_type": image_type,
+                "job_type": job.job_type,
+                "edit_instruction": job.edit_instruction,
+            }
+            if reference_mode:
+                metadata.update(
+                    {
+                        "reference_asset_id": request_payload.get(
+                            "reference_asset_id"
+                        ),
+                        "source_identity_asset_id": request_payload.get(
+                            "source_identity_asset_id"
+                        )
+                        or request_payload.get("reference_asset_id"),
+                        "preserve_identity": request_payload.get(
+                            "preserve_identity",
+                            True,
+                        ),
+                    }
+                )
+            for key in ("edit_type", "selection", "instruction"):
+                if request_payload.get(key):
+                    metadata[key] = request_payload[key]
+            if correction_prompt:
+                metadata["correction_prompt"] = correction_prompt
+                metadata["preserve_identity"] = bool(
+                    request_payload.get("preserve_identity", False)
+                )
+
+            asset_kwargs = {
+                "image_url": item["image_url"],
+                "storage_path": item["storage_path"],
+                "width": item["width"],
+                "height": item["height"],
+                "mime_type": item["mime_type"],
+                "source": job.provider,
+                "source_job_id": job.job_id,
+                "generation_prompt": item["prompt"],
+                "negative_prompt": item["negative_prompt"],
+                "model_name": item["model_name"],
+                "model_version": item["model_version"],
+                "seed": item["seed"],
+                "metadata": metadata,
+                "safety_status": "passed",
+            }
+            if correction_prompt:
+                asset_kwargs["correction_prompt"] = correction_prompt
+            asset = self.assets.save_asset(
+                job.actor,
+                Action.RUN_GENERATION,
+                character,
+                asset_type,
+                **asset_kwargs,
+            )
+            first_asset = first_asset or asset
+            controls_snapshot = (
+                request_payload
+                if reference_mode
+                else request_payload.get("controls", request_payload)
+            )
+            variant = self.variants.create(
+                job=job,
+                character=character,
+                asset=asset,
+                variant_index=item["variant_index"],
+                region=job.region,
+                controls_snapshot=controls_snapshot,
+                appearance_snapshot=compiled_metadata,
+                image_url=item["image_url"],
+                prompt=item["prompt"],
+                negative_prompt=item["negative_prompt"],
+                seed=item["seed"],
+                model_name=item["model_name"],
+            )
+            asset.source_variant_id = variant.variant_id
+            asset.save(update_fields=["source_variant_id"])
+
+        if first_asset and request_payload.get("activate_image", True):
+            self._activate_image(
+                character,
+                first_asset,
+                image_type,
+                request_payload,
+            )
+        job.status = GenerationJobStatus.COMPLETED
+        job.progress = 100
+        job.model_name = getattr(provider, "model_name", "")
+        job.model_version = getattr(provider, "model_version", "")
+        job.completed_at = timezone.now()
+        job.heartbeat_at = job.completed_at
+        job.lease_token = None
+        job.lease_expires_at = None
         job.save()
         self.logger.info(
-            "_run_job: job_id=%s job_type=%s character_id=%s provider=%s image_type=%s region=%s",
-            job.job_id, job_type, character.character_id, provider_name,
-            request_payload.get("image_type", "?"), region,
+            "Character generation completed: job_id=%s character_id=%s",
+            job.job_id,
+            character.character_id,
         )
-        self.logger.debug("_run_job prompt: %s", compiled["positive_prompt"][:300])
-        provider = get_image_provider(provider_name)
-        try:
-            image_type = request_payload.get("image_type") or CharacterImageType.PORTRAIT
-            if job_type == GenerationJobType.INITIAL_VARIANTS:
-                results = provider.generate_character_variants(job, compiled, variant_count)
-                asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(image_type, CharacterAssetType.INITIAL_VARIANT)
-            else:
-                results = provider.edit_character_region(job, compiled, variant_count)
-                asset_type = self.IMAGE_TYPE_TO_ASSET_TYPE.get(image_type, CharacterAssetType.EDIT_VARIANT)
-            first_asset = None
-            correction_prompt = (request_payload.get("correction_prompt") or "").strip()
-            preserve_identity = bool(request_payload.get("preserve_identity", False))
-            for item in results:
-                metadata = {
-                    **(item.get("metadata") or {}),
-                    "image_type": image_type,
-                    "job_type": job_type,
-                    "edit_instruction": compiled.get("edit_instruction", ""),
-                }
-                edit_type = request_payload.get("edit_type")
-                if edit_type:
-                    metadata["edit_type"] = edit_type
-                if request_payload.get("selection"):
-                    metadata["selection"] = request_payload["selection"]
-                if request_payload.get("instruction"):
-                    metadata["instruction"] = request_payload["instruction"]
-                if correction_prompt:
-                    metadata["correction_prompt"] = correction_prompt
-                    metadata["preserve_identity"] = preserve_identity
-                asset_kwargs = dict(
-                    image_url=item["image_url"],
-                    storage_path=item["storage_path"],
-                    width=item["width"],
-                    height=item["height"],
-                    mime_type=item["mime_type"],
-                    source=provider_name,
-                    source_job_id=job.job_id,
-                    generation_prompt=item["prompt"],
-                    negative_prompt=item["negative_prompt"],
-                    model_name=item["model_name"],
-                    model_version=item["model_version"],
-                    seed=item["seed"],
-                    metadata=metadata,
-                    safety_status="passed",
-                )
-                if correction_prompt:
-                    asset_kwargs["correction_prompt"] = correction_prompt
-                asset = self.assets.save_asset(
-                    job.user,
-                    Action.RUN_GENERATION,
-                    character,
-                    asset_type,
-                    **asset_kwargs,
-                )
-                first_asset = first_asset or asset
-                variant = self.variants.create(
-                    job=job,
-                    character=character,
-                    asset=asset,
-                    variant_index=item["variant_index"],
-                    region=region,
-                    controls_snapshot=request_payload.get("controls", request_payload),
-                    appearance_snapshot=compiled["metadata"],
-                    image_url=item["image_url"],
-                    prompt=item["prompt"],
-                    negative_prompt=item["negative_prompt"],
-                    seed=item["seed"],
-                    model_name=item["model_name"],
-                )
-                asset.source_variant_id = variant.variant_id
-                asset.save(update_fields=["source_variant_id"])
-            if first_asset and request_payload.get("activate_image", True):
-                self._activate_image(character, first_asset, image_type, request_payload)
-            job.status = GenerationJobStatus.COMPLETED
-            job.progress = 100
-            job.model_name = provider.model_name
-            job.model_version = provider.model_version
-            job.completed_at = timezone.now()
-            job.save()
-            self.logger.info("_run_job completed: job_id=%s character_id=%s", job.job_id, character.character_id)
-        except Exception as exc:
-            self.logger.exception("Character generation failed (provider=%s job_id=%s)", provider_name, job.job_id)
-            job.status = GenerationJobStatus.FAILED
-            job.error_code = getattr(exc, "error_code", "GENERATION_FAILED")
-            job.error_message = exc.user_message if isinstance(exc, ProviderUserFacingError) else str(exc)
-            job.failed_at = timezone.now()
-            job.save()
         return job
+
+    @staticmethod
+    def recover_stale_jobs(*, limit=100):
+        return recover_stale_jobs(limit=limit)
+
+    @staticmethod
+    def _scoped_idempotency_key(base_key, scope):
+        base = str(base_key or "").strip()
+        if not base:
+            return ""
+        digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
+        return f"{base[:90]}:{digest}:{scope}"[:128]
 
     def _reference_ids(self, character):
         active_assets = [

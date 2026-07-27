@@ -42,6 +42,10 @@ from w_craft_back.views.views import (
 )
 from w_craft_back.services.image_generation import resolve_provider_for_user
 from w_craft_back.services.image_generation.errors import map_to_provider_error
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    normalize_image_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,13 +236,23 @@ def edite_generative_poster(request):
         except ValueError:
             pass
 
+    max_bytes = 10 * 1024 * 1024
+    if len(img_url) > 4 * ((max_bytes + 2) // 3) + 16:
+        return _error_json(
+            "POSTER_EDIT_INVALID_IMAGE",
+            "Изображение для правки превышает лимит.",
+            http_status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
     try:
-        img_bytes = base64.b64decode(img_url)
-    except (ValueError, base64.binascii.Error):
+        decoded = base64.b64decode(img_url, validate=True)
+        normalized_input = normalize_image_bytes(decoded, max_bytes=max_bytes)
+    except (ValueError, base64.binascii.Error, StorageGatewayError):
         return _error_json(
             "POSTER_EDIT_INVALID_IMAGE",
             "Не удалось декодировать изображение для правки.",
         )
+    img_bytes = normalized_input.data
+    mime_type = normalized_input.mime_type
 
     user = _get_user_for_request(request)
     try:
@@ -253,7 +267,15 @@ def edite_generative_poster(request):
     except Exception as exc:  # noqa: BLE001
         return _provider_error_response(map_to_provider_error(exc))
 
+    try:
+        normalized_output = normalize_image_bytes(edited_bytes)
+    except StorageGatewayError:
+        return _error_json(
+            "POSTER_EDIT_INVALID_PROVIDER_IMAGE",
+            "Провайдер вернул недопустимое изображение.",
+            http_status=status.HTTP_502_BAD_GATEWAY,
+        )
     logger.info("Image was edited.")
-    # ``img2response`` accepts the legacy ``{"b64_json": ...}`` shape and
-    # returns the same base64-PNG ``HttpResponse`` the FE already consumes.
-    return img2response({"b64_json": base64.b64encode(edited_bytes).decode("ascii")})
+    return img2response(
+        {"b64_json": base64.b64encode(normalized_output.data).decode("ascii")}
+    )

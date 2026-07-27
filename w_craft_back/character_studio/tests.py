@@ -53,6 +53,7 @@ from w_craft_back.character_studio.services.prompt_compiler import (
 )
 from w_craft_back.character_studio.services.providers import (
     GeminiProvider,
+    MockProvider,
     ProviderContentBlockedError,
 )
 from w_craft_back.character_studio.services.revision_service import (
@@ -434,7 +435,7 @@ class GenerationFlowTests(CharacterStudioTestCase):
         )
         self.assertEqual(portrait_image.asset.source_job_id, portrait_job.job_id)
         self.assertEqual(full_body_image.asset.source_job_id, full_body_job.job_id)
-        self.assertNotEqual(portrait_image.image_url, full_body_image.image_url)
+        self.assertNotEqual(portrait_image.storage_path, full_body_image.storage_path)
 
         generation.generate_edit_variants(
             self.user_key,
@@ -486,7 +487,7 @@ class GenerationFlowTests(CharacterStudioTestCase):
 
 class GeminiProviderTests(TestCase):
     def test_predict_request_uses_documented_imagen_payload(self):
-        image_bytes = base64.b64encode(b"png-bytes").decode("ascii")
+        image_bytes = base64.b64encode(MockProvider._PLACEHOLDER_PNG).decode("ascii")
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
@@ -534,10 +535,7 @@ class GeminiProviderTests(TestCase):
         self.assertTrue(
             variants[0]["storage_path"].startswith("character-studio/jobs/")
         )
-        self.assertEqual(
-            variants[0]["image_url"],
-            f"/media/{variants[0]['storage_path']}",
-        )
+        self.assertEqual(variants[0]["image_url"], "")
 
     def test_http_error_includes_google_response_without_api_key(self):
         response = Mock()
@@ -588,7 +586,7 @@ class GeminiProviderTests(TestCase):
         image_response.raise_for_status.return_value = None
         image_response.json.return_value = {
             "predictions": [
-                {"bytesBase64Encoded": base64.b64encode(b"png-bytes").decode("ascii")},
+                {"bytesBase64Encoded": base64.b64encode(MockProvider._PLACEHOLDER_PNG).decode("ascii")},
             ],
         }
         session = Mock()
@@ -1303,8 +1301,8 @@ class ReferencesStageTests(CharacterStudioTestCase):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         png_bytes = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
-            "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+            "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             upload = SimpleUploadedFile(
@@ -1553,8 +1551,8 @@ class ReferencesStageTests(CharacterStudioTestCase):
 
 
 PNG_1X1_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
-    "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
 

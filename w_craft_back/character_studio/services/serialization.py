@@ -1,5 +1,6 @@
 from django.forms.models import model_to_dict
-from django.conf import settings
+
+from w_craft_back.storage_gateway import signed_url_for_asset
 
 
 def value_to_json(value):
@@ -20,17 +21,21 @@ def model_dict(instance, fields=None):
 
 
 def public_url(value):
+    """Sign legacy local media URLs; retain non-storage external URLs."""
+
     if not value or not isinstance(value, str):
         return value
-    if value.startswith(("http://", "https://", "data:")):
-        return value
-    if not value.startswith("/"):
-        return value
+    signed = signed_url_for_asset(storage_key=None, legacy_url=value)
+    return signed or value
 
-    base_url = getattr(settings, "PUBLIC_BASE_URL", "").rstrip("/")
-    if not base_url:
-        return value
-    return f"{base_url}{value}"
+
+def _character_asset_url(asset):
+    if asset is None:
+        return None
+    return signed_url_for_asset(
+        storage_key=asset.storage_path,
+        legacy_url=asset.image_url,
+    )
 
 
 def appearance_dict(appearance):
@@ -41,7 +46,7 @@ def outfit_dict(outfit):
     data = model_dict(outfit)
     if data:
         ref = outfit.reference_image
-        data["reference_image_url"] = public_url(ref.image_url) if ref else None
+        data["reference_image_url"] = _character_asset_url(ref)
         data["reference_image_asset_id"] = str(ref.asset_id) if ref else None
     return data
 
@@ -49,7 +54,7 @@ def outfit_dict(outfit):
 def asset_dict(asset):
     data = model_dict(asset)
     if data:
-        data["image_url"] = public_url(data.get("image_url"))
+        data["image_url"] = _character_asset_url(asset)
     return data
 
 
@@ -78,8 +83,8 @@ def reference_dict(asset, reference_type):
         "reference_type": reference_type,
         "status": asset.status,
         "asset_id": str(asset.asset_id),
-        "image_url": public_url(asset.image_url),
-        "thumbnail_url": public_url(asset.image_url),
+        "image_url": _character_asset_url(asset),
+        "thumbnail_url": _character_asset_url(asset),
         "is_primary": bool(asset.is_primary),
         "version": int(asset.version or 1),
         "source": asset.source or "",
@@ -96,7 +101,13 @@ def character_image_dict(image):
         data["image_id"] = str(image.image_id)
         data["character_id"] = str(image.character_id)
         data["asset_id"] = str(image.asset_id) if image.asset_id else None
-        data["image_url"] = public_url(data.get("image_url"))
+        data["image_url"] = (
+            _character_asset_url(image.asset)
+            or signed_url_for_asset(
+                storage_key=image.storage_path,
+                legacy_url=image.image_url,
+            )
+        )
         data["created_at"] = value_to_json(image.created_at)
         data["updated_at"] = value_to_json(image.updated_at)
     return data
@@ -109,7 +120,13 @@ def variant_dict(variant):
         data["job_id"] = str(variant.job_id)
         data["character_id"] = str(variant.character_id)
         data["asset_id"] = str(variant.asset_id) if variant.asset_id else None
-        data["image_url"] = public_url(data.get("image_url"))
+        data["image_url"] = (
+            _character_asset_url(variant.asset)
+            or signed_url_for_asset(
+                storage_key=None,
+                legacy_url=variant.image_url,
+            )
+        )
         data["created_at"] = value_to_json(variant.created_at)
         data["applied_at"] = value_to_json(variant.applied_at)
     return data
@@ -131,6 +148,8 @@ def revision_dict(revision):
 
 def character_dict(character, include_related=False):
     data = model_dict(character)
+    data.pop("creation_idempotency_key", None)
+    data.pop("creation_request_hash", None)
     data["character_id"] = str(character.character_id)
     data["project_id"] = character.project_id
     data["user_id"] = character.user_id
@@ -170,7 +189,6 @@ def references_payload(character, readiness):
     layout is stable regardless of which assets exist yet.
     """
     from w_craft_back.character_studio.services.asset_service import (
-        ASSET_TYPE_TO_REFERENCE_UI,
         REFERENCE_UI_ORDER,
         REFERENCE_UI_TO_ASSET_TYPE,
     )
@@ -226,14 +244,31 @@ def references_payload(character, readiness):
 
 def job_dict(job, include_variants=True):
     data = model_dict(job)
+    for internal_field in (
+        "lease_token",
+        "request_hash",
+        "idempotency_key",
+        "compiled_prompt",
+        "negative_prompt",
+        "edit_instruction",
+        "compiled_metadata",
+        "provider_started_at",
+    ):
+        data.pop(internal_field, None)
     data["job_id"] = str(job.job_id)
     data["character_id"] = str(job.character_id)
     data["project_id"] = job.project_id
+    # ``user`` remains legacy character-creator attribution; ``actor`` is the
+    # collaborator who authorized and started this concrete paid operation.
     data["user_id"] = job.user_id
+    data["creator_id"] = job.user_id
+    data["actor_id"] = job.actor_id
     data["created_at"] = value_to_json(job.created_at)
     data["started_at"] = value_to_json(job.started_at)
     data["completed_at"] = value_to_json(job.completed_at)
     data["failed_at"] = value_to_json(job.failed_at)
+    data["lease_expires_at"] = value_to_json(job.lease_expires_at)
+    data["heartbeat_at"] = value_to_json(job.heartbeat_at)
     if include_variants:
         data["variants"] = [variant_dict(variant) for variant in job.variants.order_by("variant_index")]
     return data

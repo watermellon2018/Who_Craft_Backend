@@ -7,6 +7,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from w_craft_back.storage_gateway import signed_url_for_file
+
 from .models import UserAsset, UserProfile
 from .serializers import (
     ProfileMeUpdateSerializer,
@@ -105,8 +107,8 @@ class DashboardView(APIView):
         completion = profile.get_profile_completion()
 
         display_name = profile.display_name or user.username
-        avatar_url = request.build_absolute_uri(profile.avatar.url) if profile.avatar else None
-        cover_url = request.build_absolute_uri(profile.cover.url) if profile.cover else None
+        avatar_url = signed_url_for_file(profile.avatar, request)
+        cover_url = signed_url_for_file(profile.cover, request)
 
         genres = profile.favorite_genres or ['Киберпанк', 'Научная фантастика', 'Фэнтези', 'Документальный', 'Триллер', 'Драма']
         interests = profile.interests or ['Кино', 'ИИ', 'Сторителлинг', 'Визуальные эффекты']

@@ -1,17 +1,19 @@
-"""Bounded decoding for project poster data URLs."""
+"""Bounded decode and canonical re-encode for project poster data URLs."""
 
 from __future__ import annotations
 
 import base64
 import binascii
-import io
 import re
 import uuid
-import warnings
 from typing import Optional
 
 from django.core.files.base import ContentFile
-from PIL import Image, UnidentifiedImageError
+
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    normalize_image_bytes,
+)
 
 
 MAX_PROJECT_IMAGE_BYTES = 5 * 1024 * 1024
@@ -21,11 +23,6 @@ _DATA_URL_RE = re.compile(
     r"^data:(?P<mime>image/(?:jpeg|png|webp));base64,(?P<data>.+)$",
     re.IGNORECASE | re.DOTALL,
 )
-_EXTENSIONS = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-}
 
 
 def decode_project_image_data_url(
@@ -34,55 +31,31 @@ def decode_project_image_data_url(
     owner_id,
     title: str,
 ) -> Optional[ContentFile]:
-    """Decode an allowed image data URL without unbounded base64 allocation."""
+    """Decode, verify magic/decode, and return metadata-free image bytes."""
+
+    del owner_id, title
     if not isinstance(data_url, str) or not data_url:
         return None
     if len(data_url) > _MAX_ENCODED_BYTES + 64:
         return None
-
     match = _DATA_URL_RE.fullmatch(data_url.strip())
     if match is None:
         return None
     encoded = match.group("data")
     if len(encoded) > _MAX_ENCODED_BYTES:
         return None
-
     try:
         raw = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
+        normalized = normalize_image_bytes(
+            raw,
+            max_bytes=MAX_PROJECT_IMAGE_BYTES,
+            max_pixels=MAX_PROJECT_IMAGE_PIXELS,
+        )
+    except (binascii.Error, ValueError, StorageGatewayError):
         return None
-    if len(raw) > MAX_PROJECT_IMAGE_BYTES:
+    if normalized.mime_type != match.group("mime").lower():
         return None
-
-    mime = match.group("mime").lower()
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(raw)) as image:
-                width, height = image.size
-                image.verify()
-                actual_format = (image.format or "").upper()
-    except (
-        Image.DecompressionBombError,
-        Image.DecompressionBombWarning,
-        OSError,
-        UnidentifiedImageError,
-        ValueError,
-    ):
-        return None
-    if width * height > MAX_PROJECT_IMAGE_PIXELS:
-        return None
-    expected_format = {
-        "image/jpeg": "JPEG",
-        "image/png": "PNG",
-        "image/webp": "WEBP",
-    }[mime]
-    if actual_format != expected_format:
-        return None
-
-    safe_title = re.sub(r"[^\w\-.]+", "_", title or "project")[:60]
-    filename = (
-        f"{owner_id or 'anon'}/{safe_title}/{uuid.uuid4()}."
-        f"{_EXTENSIONS[mime]}"
+    return ContentFile(
+        normalized.data,
+        name=f"{uuid.uuid4().hex}.{normalized.extension}",
     )
-    return ContentFile(raw, name=filename)

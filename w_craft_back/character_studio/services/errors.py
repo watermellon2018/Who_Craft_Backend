@@ -30,6 +30,12 @@ class ValidationError(CharacterStudioError):
     message = "Invalid request."
 
 
+class ConflictError(ValidationError):
+    error_code = "GENERATION_CONFLICT"
+    status_code = 409
+    message = "A conflicting generation request already exists."
+
+
 class SafetyRejectedError(CharacterStudioError):
     error_code = "SAFETY_REJECTED"
     status_code = 400
@@ -39,7 +45,10 @@ class SafetyRejectedError(CharacterStudioError):
 class IdentityLockedError(CharacterStudioError):
     error_code = "IDENTITY_LOCKED"
     status_code = 409
-    message = "This change may alter the locked identity. Create a new version or unlock identity."
+    message = (
+        "This change may alter the locked identity. "
+        "Create a new version or unlock identity."
+    )
 
 
 class IdentityAssetRequiredError(CharacterStudioError):
@@ -49,4 +58,3 @@ class IdentityAssetRequiredError(CharacterStudioError):
         "Сначала выберите портрет персонажа или загрузите референс — "
         "без identity-источника нельзя сгенерировать этот ракурс."
     )
-
