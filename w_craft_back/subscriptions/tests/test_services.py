@@ -1,5 +1,7 @@
+from unittest.mock import patch
+
 from django.contrib.auth.models import User
-from django.db import connection
+from django.db import IntegrityError, connection
 from django.test import TestCase
 
 from w_craft_back.profile.models import UserProfile
@@ -47,6 +49,46 @@ class SubscribeServiceTest(TestCase):
             ).count(),
             1,
         )
+
+    def test_concurrent_unique_conflict_returns_winning_subscription(self):
+        services.subscribe(self.alice, self.bob.id)
+        existing = ChannelSubscription.objects.get(
+            subscriber=self.alice,
+            subscribed_to=self.bob,
+            deleted_at__isnull=True,
+        )
+
+        with (
+            patch(
+                'w_craft_back.subscriptions.services._get_active_subscription',
+                side_effect=[None, existing],
+            ),
+            patch.object(
+                ChannelSubscription.objects,
+                'create',
+                side_effect=IntegrityError('concurrent active subscription'),
+            ),
+        ):
+            state = services.subscribe(self.alice, self.bob.id)
+
+        self.assertTrue(state.is_subscribed)
+        self.assertEqual(_refresh_profile(self.bob).subscribers_count, 1)
+        self.assertEqual(_refresh_profile(self.alice).subscriptions_count, 1)
+
+    def test_unrelated_integrity_error_is_not_swallowed(self):
+        with (
+            patch(
+                'w_craft_back.subscriptions.services._get_active_subscription',
+                side_effect=[None, None],
+            ),
+            patch.object(
+                ChannelSubscription.objects,
+                'create',
+                side_effect=IntegrityError('unexpected constraint'),
+            ),
+        ):
+            with self.assertRaises(IntegrityError):
+                services.subscribe(self.alice, self.bob.id)
 
     def test_resubscribe_after_unsubscribe_restores_active_row(self):
         services.subscribe(self.alice, self.bob.id)

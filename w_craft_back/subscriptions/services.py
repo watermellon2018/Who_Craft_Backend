@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
@@ -47,52 +47,103 @@ def _ensure_target(current_user: User, target_user_id: int) -> User:
     return target
 
 
-def _ensure_profile(user: User) -> UserProfile:
-    """Ensure ``UserProfile`` exists and return it locked for update.
+def _lock_profiles(*users: User) -> None:
+    """Create and lock profile counter rows in deterministic user-id order."""
+    ordered_users = sorted(
+        {user.id: user for user in users}.values(),
+        key=lambda user: user.id,
+    )
+    for user in ordered_users:
+        UserProfile.objects.get_or_create(user=user)
+    list(
+        UserProfile.objects.select_for_update()
+        .filter(user_id__in=[user.id for user in ordered_users])
+        .order_by('user_id')
+    )
 
-    Called from inside ``@transaction.atomic`` blocks, so the row stays locked
-    until commit. Two concurrent subscribe() calls thus serialize on the
-    counter row instead of racing to double-increment.
-    """
-    UserProfile.objects.get_or_create(user=user)
-    return UserProfile.objects.select_for_update().get(user=user)
+
+def _get_active_subscription(
+    current_user: User,
+    target: User,
+) -> ChannelSubscription | None:
+    return (
+        ChannelSubscription.objects.select_for_update()
+        .filter(
+            subscriber=current_user,
+            subscribed_to=target,
+            deleted_at__isnull=True,
+        )
+        .first()
+    )
+
+
+def _activate_subscription(
+    current_user: User,
+    target: User,
+) -> tuple[ChannelSubscription, bool]:
+    """Return the active row and whether this transaction activated it."""
+    active = _get_active_subscription(current_user, target)
+    if active is not None:
+        return active, False
+
+    deleted = (
+        ChannelSubscription.objects.select_for_update()
+        .filter(
+            subscriber=current_user,
+            subscribed_to=target,
+            deleted_at__isnull=False,
+        )
+        .order_by('-created_at')
+        .first()
+    )
+
+    try:
+        # Keep the constraint error inside a savepoint so the outer transaction
+        # can load the row committed by the concurrent winner.
+        with transaction.atomic():
+            if deleted is None:
+                active = ChannelSubscription.objects.create(
+                    subscriber=current_user,
+                    subscribed_to=target,
+                    notifications_enabled=True,
+                    is_favorite=False,
+                )
+            else:
+                deleted.deleted_at = None
+                deleted.notifications_enabled = True
+                deleted.is_favorite = False
+                deleted.save(
+                    update_fields=[
+                        'deleted_at',
+                        'notifications_enabled',
+                        'is_favorite',
+                        'updated_at',
+                    ],
+                )
+                active = deleted
+    except IntegrityError:
+        active = _get_active_subscription(current_user, target)
+        if active is None:
+            raise
+        return active, False
+
+    return active, True
 
 
 @transaction.atomic
 def subscribe(current_user: User, target_user_id: int) -> SubscriptionState:
     """Create or restore a subscription. Counters update only on real state change."""
     target = _ensure_target(current_user, target_user_id)
-
-    sub = (
-        ChannelSubscription.objects
-        .select_for_update()
-        .filter(subscriber=current_user, subscribed_to=target)
-        .order_by('-created_at')
-        .first()
-    )
-
-    became_active = False
-    if sub is None:
-        sub = ChannelSubscription.objects.create(
-            subscriber=current_user,
-            subscribed_to=target,
-            notifications_enabled=True,
-            is_favorite=False,
-        )
-        became_active = True
-    elif sub.deleted_at is not None:
-        sub.deleted_at = None
-        sub.notifications_enabled = True
-        sub.is_favorite = False
-        sub.save(update_fields=['deleted_at', 'notifications_enabled', 'is_favorite', 'updated_at'])
-        became_active = True
-    # else: already active — no counter change, idempotent.
+    _lock_profiles(current_user, target)
+    sub, became_active = _activate_subscription(current_user, target)
 
     if became_active:
-        _ensure_profile(current_user)
-        _ensure_profile(target)
-        UserProfile.objects.filter(user=target).update(subscribers_count=F('subscribers_count') + 1)
-        UserProfile.objects.filter(user=current_user).update(subscriptions_count=F('subscriptions_count') + 1)
+        UserProfile.objects.filter(user=target).update(
+            subscribers_count=F('subscribers_count') + 1,
+        )
+        UserProfile.objects.filter(user=current_user).update(
+            subscriptions_count=F('subscriptions_count') + 1,
+        )
 
     return SubscriptionState(
         target_user_id=target.id,
