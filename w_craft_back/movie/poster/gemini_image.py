@@ -4,8 +4,7 @@ Mirrors the working pattern from ``character_studio.services.providers``:
 REST POST to the Generative Language API with ``x-goog-api-key`` and an
 ``instances``/``parameters`` body.
 
-Returns the decoded PNG bytes so callers can hand them to the existing
-``img2response`` helper without caring about the provider underneath.
+Returns decoded PNG bytes for the unified image-provider adapter.
 """
 
 from __future__ import annotations
