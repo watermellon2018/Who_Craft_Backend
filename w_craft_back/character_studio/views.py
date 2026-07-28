@@ -31,7 +31,8 @@ from w_craft_back.character_studio.services.errors import (
     ValidationError,
 )
 from w_craft_back.character_studio.services.generation_lifecycle import (
-    validate_idempotency_key,
+    build_generation_preview,
+    require_idempotency_key,
 )
 from w_craft_back.character_studio.services.generation_service import (
     CharacterGenerationService,
@@ -84,13 +85,12 @@ def payload(request):
 def generation_payload(request):
     data = payload(request)
     data = data.copy() if hasattr(data, "copy") else dict(data)
-    idempotency_key = (
+    idempotency_key = require_idempotency_key(
         request.headers.get("Idempotency-Key")
         or request.META.get("HTTP_IDEMPOTENCY_KEY")
         or ""
-    ).strip()
-    if idempotency_key:
-        data["_idempotency_key"] = idempotency_key
+    )
+    data["_idempotency_key"] = idempotency_key
     return data
 
 
@@ -231,7 +231,7 @@ def create_character_from_reference(request, project_id):
         or _form_value(request, "short_description") or "",
     }
 
-    idempotency_key = validate_idempotency_key(
+    idempotency_key = require_idempotency_key(
         request.headers.get("Idempotency-Key")
         or request.META.get("HTTP_IDEMPOTENCY_KEY")
         or ""
@@ -353,6 +353,25 @@ def character_detail(request, project_id, character_id):
         user, project_id, character_id, payload(request),
     )
     return ok(character_dict(character, include_related=True))
+
+
+@api_view(["GET"])
+@handle_errors
+def generation_preview(request, project_id, character_id):
+    user = get_user_from_request(request)
+    character = CharacterService().get_generation_character(
+        user, project_id, character_id
+    )
+    image_types = [
+        value.strip()
+        for value in (request.GET.get("image_types") or "").split(",")
+        if value.strip()
+    ]
+    return ok(
+        build_generation_preview(
+            actor=user, character=character, image_types=image_types
+        )
+    )
 
 
 @api_view(["POST"])

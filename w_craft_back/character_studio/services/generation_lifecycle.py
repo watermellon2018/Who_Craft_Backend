@@ -4,25 +4,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
 import re
 import uuid
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
+from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import (
     CharacterGenerationJob,
+    CharacterGenerationGuard,
+    CharacterImageType,
     GenerationJobStatus,
     GenerationJobType,
     StudioCharacter,
 )
 from w_craft_back.character_studio.services.errors import (
     ConflictError,
+    GenerationBudgetExceededError,
+    GenerationConcurrencyLimitError,
+    IdempotencyKeyRequiredError,
     ValidationError,
 )
+from w_craft_back.movie.project.models import Project
 
 
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -39,6 +49,14 @@ IMAGE_GENERATION_JOB_TYPES = tuple(
     for value in GenerationJobType.values
     if value != GenerationJobType.MODEL3D_RECONSTRUCTION
 )
+ACTIVE_JOB_STATUSES = (
+    GenerationJobStatus.QUEUED,
+    GenerationJobStatus.PROCESSING,
+)
+DEFAULT_MAX_ACTIVE_GLOBAL = 4
+DEFAULT_MAX_ACTIVE_PER_PROJECT = 2
+DEFAULT_DAILY_BUDGET_PER_USER = 50
+DEFAULT_DAILY_BUDGET_PER_PROJECT = 100
 
 
 @dataclass(frozen=True)
@@ -58,6 +76,59 @@ def configured_timeout_seconds() -> int:
     except (TypeError, ValueError):
         value = DEFAULT_TIMEOUT_SECONDS
     return max(5, min(value, MAX_TIMEOUT_SECONDS))
+
+
+def _configured_value(name: str, default: object = None) -> object:
+    value = getattr(settings, name, None)
+    if value is None:
+        value = os.getenv(name)
+    return default if value in (None, "") else value
+
+
+def _configured_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(_configured_value(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def max_active_jobs_global() -> int:
+    return _configured_positive_int(
+        "CHARACTER_STUDIO_MAX_ACTIVE_GLOBAL", DEFAULT_MAX_ACTIVE_GLOBAL
+    )
+
+
+def max_active_jobs_per_project() -> int:
+    return _configured_positive_int(
+        "CHARACTER_STUDIO_MAX_ACTIVE_PER_PROJECT", DEFAULT_MAX_ACTIVE_PER_PROJECT
+    )
+
+
+def daily_budget_per_user() -> int:
+    return _configured_positive_int(
+        "CHARACTER_STUDIO_DAILY_BUDGET_PER_USER", DEFAULT_DAILY_BUDGET_PER_USER
+    )
+
+
+def daily_budget_per_project() -> int:
+    return _configured_positive_int(
+        "CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT",
+        DEFAULT_DAILY_BUDGET_PER_PROJECT,
+    )
+
+
+def estimated_cost_per_call(provider: str) -> Decimal | None:
+    if provider.strip().lower() == "mock":
+        return Decimal("0")
+    raw = _configured_value("CHARACTER_STUDIO_ESTIMATED_COST_USD_PER_CALL")
+    if raw in (None, ""):
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def _clean_payload(payload: dict | None) -> dict:
@@ -148,6 +219,13 @@ def validate_idempotency_key(value) -> str:
     return key
 
 
+def require_idempotency_key(value) -> str:
+    key = validate_idempotency_key(value)
+    if not key:
+        raise IdempotencyKeyRequiredError()
+    return key
+
+
 def _clear_lease(job) -> None:
     job.lease_token = None
     job.lease_expires_at = None
@@ -186,6 +264,137 @@ def _recover_locked(job, now) -> bool:
     _clear_lease(job)
     job.save()
     return True
+
+
+def _usage_snapshot(
+    actor: UserKey,
+    project: Project,
+    now,
+) -> dict[str, int]:
+    paid_jobs = (
+        CharacterGenerationJob.objects.filter(
+            created_at__gte=now - timedelta(hours=24),
+            job_type__in=IMAGE_GENERATION_JOB_TYPES,
+        )
+        .exclude(provider__iexact="mock")
+        .filter(
+            Q(provider_started_at__isnull=False)
+            | Q(status__in=ACTIVE_JOB_STATUSES)
+        )
+    )
+    return {
+        "user": paid_jobs.filter(actor=actor).count(),
+        "project": paid_jobs.filter(project=project).count(),
+    }
+
+
+def build_generation_preview(
+    *,
+    actor: UserKey,
+    character: StudioCharacter,
+    image_types: list[str],
+) -> dict[str, object]:
+    normalized_types: list[str] = []
+    for raw_image_type in image_types:
+        image_type = str(raw_image_type or "").strip()
+        if image_type not in CharacterImageType.values:
+            raise ValidationError(f"Unknown image_type: {image_type}.")
+        if image_type not in normalized_types:
+            normalized_types.append(image_type)
+    if not normalized_types:
+        raise ValidationError("At least one image_type is required.")
+
+    provider = _provider_name(character.project, actor)
+    now = timezone.now()
+    usage = _usage_snapshot(actor, character.project, now)
+    active_jobs = CharacterGenerationJob.objects.filter(
+        job_type__in=IMAGE_GENERATION_JOB_TYPES,
+        status__in=ACTIVE_JOB_STATUSES,
+    )
+    call_count = len(normalized_types)
+    unit_cost = estimated_cost_per_call(provider)
+    estimated_cost = (
+        None if unit_cost is None else format(unit_cost * call_count, "f")
+    )
+    return {
+        "provider": provider,
+        "mode": "offline" if provider.strip().lower() == "mock" else "paid",
+        "image_types": normalized_types,
+        "provider_call_count": call_count,
+        "estimated_cost_usd": estimated_cost,
+        "budgets": {
+            "user": {
+                "used": usage["user"],
+                "limit": daily_budget_per_user(),
+            },
+            "project": {
+                "used": usage["project"],
+                "limit": daily_budget_per_project(),
+            },
+        },
+        "concurrency": {
+            "global": {
+                "active": active_jobs.count(),
+                "limit": max_active_jobs_global(),
+            },
+            "project": {
+                "active": active_jobs.filter(project=character.project).count(),
+                "limit": max_active_jobs_per_project(),
+            },
+        },
+    }
+
+
+def _lock_generation_scope(actor: UserKey, project: Project) -> None:
+    guard, _ = CharacterGenerationGuard.objects.get_or_create(key="global")
+    CharacterGenerationGuard.objects.select_for_update().get(pk=guard.pk)
+    Project.objects.select_for_update().get(pk=project.pk)
+    UserKey.objects.select_for_update().get(pk=actor.pk)
+
+
+def _recover_stale_active_jobs(now) -> None:
+    stale_jobs = CharacterGenerationJob.objects.select_for_update().filter(
+        job_type__in=IMAGE_GENERATION_JOB_TYPES,
+        status=GenerationJobStatus.PROCESSING,
+        lease_expires_at__lte=now,
+    )
+    for stale_job in stale_jobs:
+        _recover_locked(stale_job, now)
+
+
+def _enforce_generation_limits(
+    *,
+    actor: UserKey,
+    project: Project,
+    provider: str,
+    now,
+) -> None:
+    _lock_generation_scope(actor, project)
+    _recover_stale_active_jobs(now)
+    active_jobs = CharacterGenerationJob.objects.filter(
+        job_type__in=IMAGE_GENERATION_JOB_TYPES,
+        status__in=ACTIVE_JOB_STATUSES,
+    )
+    if active_jobs.count() >= max_active_jobs_global():
+        raise GenerationConcurrencyLimitError(
+            "Global Character Studio concurrency limit reached."
+        )
+    if active_jobs.filter(project=project).count() >= max_active_jobs_per_project():
+        raise GenerationConcurrencyLimitError(
+            "Project Character Studio concurrency limit reached."
+        )
+    if provider.strip().lower() == "mock":
+        return
+
+    usage = _usage_snapshot(actor, project, now)
+    if usage["user"] >= daily_budget_per_user():
+        raise GenerationBudgetExceededError(
+            "User Character Studio daily budget is exhausted."
+        )
+    if usage["project"] >= daily_budget_per_project():
+        raise GenerationBudgetExceededError(
+            "Project Character Studio daily budget is exhausted."
+        )
 
 
 @transaction.atomic
@@ -270,6 +479,12 @@ def enqueue_job(
         )
         if ambiguous_job is not None:
             return ambiguous_job
+    _enforce_generation_limits(
+        actor=actor,
+        project=locked_character.project,
+        provider=provider,
+        now=now,
+    )
 
     image_type = payload.get("image_type")
     if image_type:

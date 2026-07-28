@@ -20,9 +20,14 @@ from w_craft_back.character_studio.models import (
     GenerationJobType,
     StudioCharacter,
 )
-from w_craft_back.character_studio.services.errors import ValidationError
+from w_craft_back.character_studio.services.errors import (
+    GenerationBudgetExceededError,
+    GenerationConcurrencyLimitError,
+    ValidationError,
+)
 from w_craft_back.character_studio.services.generation_lifecycle import (
     JobLease,
+    build_generation_preview,
     claim_job,
     fail_job,
     recover_stale_jobs,
@@ -210,6 +215,199 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
             "compiled_metadata",
         ):
             self.assertNotIn(internal_field, polling.json())
+
+    def test_generation_view_requires_idempotency_key_before_provider_call(self):
+        character = self.create_character()
+        provider = CountingProvider()
+        client = APIClient()
+
+        with patch(PROVIDER_FACTORY, return_value=provider):
+            response = client.post(
+                (
+                    f"/api/projects/{self.project.id}/characters/"
+                    f"{character.character_id}/generate-initial-variants"
+                ),
+                {"variant_count": 1},
+                format="json",
+                HTTP_X_USER_TOKEN=str(self.user_key.key),
+            )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()["error_code"], "IDEMPOTENCY_KEY_REQUIRED")
+        self.assertEqual(provider.calls, 0)
+
+    def test_generation_preview_has_no_provider_side_effect(self):
+        character = self.create_character()
+        self.project.generation_settings = {"image_generation_model": "mock"}
+        self.project.save(update_fields=["generation_settings"])
+        client = APIClient()
+
+        with patch(PROVIDER_FACTORY) as provider_factory:
+            response = client.get(
+                (
+                    f"/api/projects/{self.project.id}/characters/"
+                    f"{character.character_id}/generation-preview"
+                ),
+                {"image_types": "portrait,full_body,scene"},
+                HTTP_X_USER_TOKEN=str(self.user_key.key),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["provider"], "mock")
+        self.assertEqual(response.json()["mode"], "offline")
+        self.assertEqual(response.json()["provider_call_count"], 3)
+        self.assertEqual(response.json()["estimated_cost_usd"], "0")
+        provider_factory.assert_not_called()
+
+    @override_settings(CHARACTER_STUDIO_MAX_ACTIVE_PER_PROJECT=1)
+    def test_project_concurrency_limit_blocks_new_provider_call(self):
+        character = self.create_character()
+        CharacterGenerationJob.objects.create(
+            character=character,
+            project=self.project,
+            user=self.user_key,
+            actor=self.user_key,
+            job_type=GenerationJobType.EDIT_VARIANTS,
+            status=GenerationJobStatus.QUEUED,
+            variant_count=1,
+            provider="mock",
+        )
+        provider = CountingProvider()
+
+        with patch(PROVIDER_FACTORY, return_value=provider):
+            with self.assertRaises(GenerationConcurrencyLimitError):
+                CharacterGenerationService().create_initial_variants(
+                    self.user_key,
+                    self.project.id,
+                    character.character_id,
+                    {
+                        "variant_count": 1,
+                        "_idempotency_key": "concurrency-limit-test",
+                    },
+                )
+
+        self.assertEqual(provider.calls, 0)
+
+    @override_settings(
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=10,
+    )
+    def test_user_daily_budget_blocks_new_paid_provider_call(self):
+        character = self.create_character()
+        self.project.generation_settings = {
+            "image_generation_model": "gemini-flash-image",
+        }
+        self.project.save(update_fields=["generation_settings"])
+        CharacterGenerationJob.objects.create(
+            character=character,
+            project=self.project,
+            user=self.user_key,
+            actor=self.user_key,
+            job_type=GenerationJobType.INITIAL_VARIANTS,
+            status=GenerationJobStatus.COMPLETED,
+            variant_count=1,
+            provider="gemini-flash-image",
+            provider_started_at=timezone.now(),
+        )
+        provider = CountingProvider()
+
+        with patch(PROVIDER_FACTORY, return_value=provider):
+            with self.assertRaises(GenerationBudgetExceededError):
+                CharacterGenerationService().create_initial_variants(
+                    self.user_key,
+                    self.project.id,
+                    character.character_id,
+                    {
+                        "variant_count": 1,
+                        "_idempotency_key": "daily-budget-test",
+                    },
+                )
+
+        self.assertEqual(provider.calls, 0)
+
+    @override_settings(
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=10,
+    )
+    def test_active_paid_job_reserves_remaining_user_budget(self):
+        character = self.create_character()
+        self.project.generation_settings = {
+            "image_generation_model": "gemini-flash-image",
+        }
+        self.project.save(update_fields=["generation_settings"])
+        CharacterGenerationJob.objects.create(
+            character=character,
+            project=self.project,
+            user=self.user_key,
+            actor=self.user_key,
+            job_type=GenerationJobType.INITIAL_VARIANTS,
+            status=GenerationJobStatus.QUEUED,
+            variant_count=1,
+            provider="gemini-flash-image",
+        )
+        provider = CountingProvider()
+
+        with patch(PROVIDER_FACTORY, return_value=provider):
+            with self.assertRaises(GenerationBudgetExceededError):
+                CharacterGenerationService().create_initial_variants(
+                    self.user_key,
+                    self.project.id,
+                    character.character_id,
+                    {
+                        "variant_count": 1,
+                        "_idempotency_key": "reserved-budget-test",
+                    },
+                )
+
+        self.assertEqual(provider.calls, 0)
+
+    @override_settings(
+        CHARACTER_STUDIO_MAX_ACTIVE_GLOBAL=1,
+        CHARACTER_STUDIO_MAX_ACTIVE_PER_PROJECT=1,
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
+        CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=1,
+    )
+    def test_model3d_job_does_not_consume_image_generation_limits(self):
+        character = self.create_character()
+        self.project.generation_settings = {
+            "image_generation_model": "gemini-flash-image",
+        }
+        self.project.save(update_fields=["generation_settings"])
+        CharacterGenerationJob.objects.create(
+            character=character,
+            project=self.project,
+            user=self.user_key,
+            actor=self.user_key,
+            job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
+            status=GenerationJobStatus.QUEUED,
+            variant_count=1,
+            provider="hunyuan3d-head-pipeline",
+        )
+
+        preview = build_generation_preview(
+            actor=self.user_key,
+            character=character,
+            image_types=["portrait"],
+        )
+        self.assertEqual(preview["budgets"]["user"]["used"], 0)
+        self.assertEqual(preview["budgets"]["project"]["used"], 0)
+        self.assertEqual(preview["concurrency"]["global"]["active"], 0)
+        self.assertEqual(preview["concurrency"]["project"]["active"], 0)
+        provider = CountingProvider()
+
+        with patch(PROVIDER_FACTORY, return_value=provider):
+            job = CharacterGenerationService().create_initial_variants(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                {
+                    "variant_count": 1,
+                    "_idempotency_key": "model3d-does-not-block-images",
+                },
+            )
+
+        self.assertEqual(job.status, GenerationJobStatus.COMPLETED)
+        self.assertEqual(provider.calls, 1)
 
     def test_create_from_reference_replays_whole_endpoint(self):
         provider = CountingProvider()

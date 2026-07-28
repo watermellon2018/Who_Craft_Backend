@@ -87,6 +87,9 @@ class CharacterStudioTestCase(TestCase):
         self.previous_provider = os.environ.get("CHARACTER_STUDIO_IMAGE_PROVIDER")
         os.environ["CHARACTER_STUDIO_IMAGE_PROVIDER"] = "mock"
 
+    def generation_headers(self):
+        return {"HTTP_IDEMPOTENCY_KEY": f"test-{uuid4()}"}
+
     def tearDown(self):
         if self.previous_provider is None:
             os.environ.pop("CHARACTER_STUDIO_IMAGE_PROVIDER", None)
@@ -677,6 +680,7 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
             "/generate-initial-variants",
             {"token_user": self.token, "variant_count": 4},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(job_response.status_code, 200)
         job_id = job_response.json()["job_id"]
@@ -1222,6 +1226,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate"),
             {"token_user": self.token, "reference_type": reference_type, **extra},
             format="json",
+            **self.generation_headers(),
         )
 
     def test_get_returns_all_nine_reference_types_in_stable_order(self):
@@ -1286,6 +1291,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "preserve_identity": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
         rows = CharacterAsset.objects.filter(
@@ -1368,6 +1374,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_proceed_to_3d_blocked_without_required_references(self):
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         body = response.json()
@@ -1380,6 +1387,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self.assertEqual(response.status_code, 200, response.content)
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
@@ -1394,6 +1402,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._generate(ref_type)
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
 
@@ -1452,6 +1461,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "preserve_identity": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
@@ -1479,6 +1489,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "only_missing": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(first.status_code, 200, first.content)
         # All 4 jobs created the first time. The mock provider runs the job
@@ -1492,6 +1503,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "only_missing": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(second.status_code, 200, second.content)
         body = second.json()
@@ -1519,6 +1531,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate-missing"),
             {"token_user": self.token, "reference_types": ["portrait", "moonwalk"]},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1528,6 +1541,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate-missing"),
             {"token_user": self.token, "reference_types": []},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -1588,6 +1602,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                     "reference_image": self._png(),
                 },
                 format="multipart",
+                **self.generation_headers(),
             )
         self.assertEqual(response.status_code, 201, response.content)
         body = response.json()
@@ -1612,6 +1627,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 "character_type": "human",
             },
             format="multipart",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1629,6 +1645,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 "reference_image": bad,
             },
             format="multipart",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1654,6 +1671,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                     "reference_image": self._png(),
                 },
                 format="multipart",
+                **self.generation_headers(),
             )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error_code"], "PERMISSION_DENIED")
@@ -1685,6 +1703,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                         "reference_image": self._png(),
                     },
                     format="multipart",
+                    **self.generation_headers(),
                 )
         finally:
             providers_module.get_image_provider = original
@@ -1722,6 +1741,7 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
             self._references_url("/generate"),
             {"token_user": self.token, "reference_type": reference_type},
             format="json",
+            **self.generation_headers(),
         )
 
     def test_full_body_requires_identity_asset(self):

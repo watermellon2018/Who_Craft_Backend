@@ -36,6 +36,23 @@ class ConflictError(ValidationError):
     message = "A conflicting generation request already exists."
 
 
+class IdempotencyKeyRequiredError(ValidationError):
+    error_code = "IDEMPOTENCY_KEY_REQUIRED"
+    message = "Idempotency-Key header is required."
+
+
+class GenerationConcurrencyLimitError(CharacterStudioError):
+    error_code = "CHARACTER_GENERATION_CONCURRENCY_LIMIT"
+    status_code = 429
+    message = "Too many character generation requests are active."
+
+
+class GenerationBudgetExceededError(CharacterStudioError):
+    error_code = "CHARACTER_GENERATION_DAILY_BUDGET_EXCEEDED"
+    status_code = 429
+    message = "Character generation daily budget is exhausted."
+
+
 class SafetyRejectedError(CharacterStudioError):
     error_code = "SAFETY_REJECTED"
     status_code = 400

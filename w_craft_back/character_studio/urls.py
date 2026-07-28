@@ -24,6 +24,11 @@ urlpatterns = [
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/generation-preview",
+        views.generation_preview,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
         "/generate-initial-variants",
         views.generate_initial_variants,
     ),
