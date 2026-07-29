@@ -359,6 +359,39 @@ class RegistrationViewTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_rejects_short_password_with_password_error_contract(self):
+        response = self.client.post(
+            reverse("register"),
+            {"username": "short-password-user", "password": "short"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.json()["errors"])
+        self.assertFalse(User.objects.filter(username="short-password-user").exists())
+
+    def test_rejects_common_password_with_password_error_contract(self):
+        response = self.client.post(
+            reverse("register"),
+            {"username": "common-password-user", "password": "password"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.json()["errors"])
+        self.assertFalse(User.objects.filter(username="common-password-user").exists())
+
+    def test_rejects_numeric_password_with_password_error_contract(self):
+        response = self.client.post(
+            reverse("register"),
+            {"username": "numeric-password-user", "password": "1234567890"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.json()["errors"])
+        self.assertFalse(User.objects.filter(username="numeric-password-user").exists())
+
 
 class UserRateThrottleIsolationTests(TestCase):
     def setUp(self):
