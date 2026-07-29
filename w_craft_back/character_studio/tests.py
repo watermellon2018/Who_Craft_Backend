@@ -55,6 +55,7 @@ from w_craft_back.character_studio.services.providers import (
     GeminiProvider,
     MockProvider,
     ProviderContentBlockedError,
+    ProviderUserFacingError,
 )
 from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
@@ -540,7 +541,7 @@ class GeminiProviderTests(TestCase):
         )
         self.assertEqual(variants[0]["image_url"], "")
 
-    def test_http_error_includes_google_response_without_api_key(self):
+    def test_http_error_omits_google_response_and_api_key(self):
         response = Mock()
         response.status_code = 400
         response.reason = "Bad Request"
@@ -553,7 +554,7 @@ class GeminiProviderTests(TestCase):
 
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=False):
             with patch(PROVIDER_SESSION, return_value=session):
-                with self.assertRaises(RuntimeError) as ctx:
+                with self.assertRaises(ProviderUserFacingError) as ctx:
                     GeminiProvider().generate_character_variants(
                         SimpleNamespace(job_id=uuid4()),
                         {
@@ -563,7 +564,12 @@ class GeminiProviderTests(TestCase):
                         4,
                     )
 
-        self.assertIn("Unknown name negativePrompt", str(ctx.exception))
+        self.assertEqual(ctx.exception.error_code, "PROVIDER_HTTP_ERROR")
+        self.assertEqual(
+            str(ctx.exception),
+            "Провайдер отклонил запрос (HTTP 400).",
+        )
+        self.assertNotIn("Unknown name negativePrompt", str(ctx.exception))
         self.assertNotIn("test-key", str(ctx.exception))
 
     def test_non_ascii_prompt_is_translated_before_imagen_request(self):
@@ -650,9 +656,13 @@ class GeminiProviderTests(TestCase):
                         4,
                     )
 
-        self.assertEqual(ctx.exception.error_code, "GEMINI_PROHIBITED_CONTENT")
+        self.assertEqual(
+            ctx.exception.error_code,
+            "PROVIDER_CONTENT_BLOCKED",
+        )
         self.assertIn("Gemini заблокировал промпт", ctx.exception.user_message)
         self.assertNotIn("promptFeedback", str(ctx.exception))
+        self.assertNotIn("PROHIBITED_CONTENT", repr(ctx.exception.__dict__))
 
 
 class CharacterStudioApiTests(CharacterStudioTestCase):

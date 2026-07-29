@@ -59,6 +59,7 @@ from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
 )
 from w_craft_back.movie.project.policy import Action
+from w_craft_back.upload_protection import UploadLimitExceeded
 from w_craft_back.storage_gateway import (
     StorageGatewayError,
     delete_storage_key,
@@ -118,6 +119,8 @@ def handle_errors(func):
                 {"error_code": exc.error_code, "message": exc.message},
                 status=exc.status_code,
             )
+        except UploadLimitExceeded:
+            raise
         except Exception:
             # Never echo raw exception text to clients — internal paths, SQL
             # fragments, etc. leak. The traceback is captured in logs instead.

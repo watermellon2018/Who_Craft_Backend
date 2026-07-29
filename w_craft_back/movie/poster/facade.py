@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Optional
 
@@ -66,6 +67,9 @@ from w_craft_back.services.image_generation import (
     ImageProviderError,
     resolve_provider_for_user,
 )
+
+logger = logging.getLogger(__name__)
+
 
 DEFAULT_VARIANT_LIMIT = 8
 MAX_VARIANT_LIMIT = 50
@@ -156,6 +160,14 @@ def _raise_stored_failure(job: PosterGenerationJob) -> None:
 
 
 def _provider_failure(job, provider_key: str | None, exc: ImageProviderError):
+    logger.warning(
+        "poster_generation_failed",
+        extra={
+            "job_id": job.id,
+            "provider": provider_key,
+            "error_code": exc.code,
+        },
+    )
     if provider_key and exc.http_status >= 500:
         record_provider_failure(provider_key)
     fail_generation(
@@ -172,6 +184,14 @@ def _provider_failure(job, provider_key: str | None, exc: ImageProviderError):
 
 
 def _raise_persistence_failure(job, exc: Exception) -> None:
+    logger.error(
+        "poster_generation_persistence_failed",
+        extra={
+            "job_id": job.id,
+            "error_code": "POSTER_RESULT_PERSISTENCE_FAILED",
+            "exception_type": type(exc).__name__,
+        },
+    )
     try:
         fail_generation(
             job,
@@ -364,6 +384,15 @@ def generate_poster(
             project, poster, job, request=request, replayed=True
         )
 
+    logger.info(
+        "poster_generation_queued",
+        extra={
+            "job_id": job.id,
+            "project_id": project.id,
+            "operation": PosterJobOperation.GENERATE,
+        },
+    )
+
     use_mock = (
         getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
         if run_mock is None
@@ -431,6 +460,14 @@ def generate_poster(
 
     job.refresh_from_db()
     poster.refresh_from_db()
+    logger.info(
+        "poster_generation_finished",
+        extra={
+            "job_id": job.id,
+            "project_id": project.id,
+            "operation": PosterJobOperation.GENERATE,
+        },
+    )
     return _serialize_operation(project, poster, job, request=request)
 
 
@@ -483,6 +520,15 @@ def edit_poster(
             project, poster, job, request=request, replayed=True
         )
 
+    logger.info(
+        "poster_generation_queued",
+        extra={
+            "job_id": job.id,
+            "project_id": project.id,
+            "operation": PosterJobOperation.EDIT,
+        },
+    )
+
     use_mock = (
         getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
         if run_mock is None
@@ -518,6 +564,14 @@ def edit_poster(
 
     job.refresh_from_db()
     poster.refresh_from_db()
+    logger.info(
+        "poster_generation_finished",
+        extra={
+            "job_id": job.id,
+            "project_id": project.id,
+            "operation": PosterJobOperation.EDIT,
+        },
+    )
     return _serialize_operation(project, poster, job, request=request)
 
 

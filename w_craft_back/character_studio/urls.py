@@ -13,6 +13,7 @@ urlpatterns = [
     path(
         "projects/<int:project_id>/characters/from-reference/",
         views.create_character_from_reference,
+        name="character-create-from-reference",
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>",
@@ -81,6 +82,7 @@ urlpatterns = [
         "projects/<int:project_id>/characters/<uuid:character_id>"
         "/outfits/<uuid:outfit_id>/upload-reference",
         views.upload_outfit_reference,
+        name="character-outfit-reference-upload",
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>"
@@ -90,10 +92,12 @@ urlpatterns = [
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/clothing-references",
         views.upload_clothing_reference,
+        name="character-clothing-reference-upload",
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/clothing-references/",
         views.upload_clothing_reference,
+        name="character-clothing-reference-upload",
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>"
@@ -130,6 +134,7 @@ urlpatterns = [
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/references/upload",
         views.references_upload,
+        name="character-reference-upload",
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/references/readiness",

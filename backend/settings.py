@@ -78,11 +78,15 @@ from corsheaders.defaults import default_headers as _cors_default_headers
 CORS_ALLOW_HEADERS = (
     *_cors_default_headers,
     "x-user-token",
+    "x-request-id",
     "idempotency-key",
 )
+CORS_EXPOSE_HEADERS = ("X-Request-ID",)
 
 
 MIDDLEWARE = [
+    'w_craft_back.observability.RequestContextMiddleware',
+    'w_craft_back.upload_protection.UploadProtectionMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -93,6 +97,18 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'w_craft_back.api_errors.ApiErrorEnvelopeMiddleware',
 ]
+
+UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+UPLOAD_DEFAULT_MULTIPART_FILE_LIMIT_BYTES = 12 * 1024 * 1024
+UPLOAD_ENDPOINT_FILE_LIMITS = {
+    'character-create-from-reference': 10 * 1024 * 1024,
+    'character-outfit-reference-upload': 10 * 1024 * 1024,
+    'character-clothing-reference-upload': 10 * 1024 * 1024,
+    'character-reference-upload': 10 * 1024 * 1024,
+    'project-assets': 100 * 1024 * 1024,
+    'profile-me-avatar': 5 * 1024 * 1024,
+    'profile-me-cover': 10 * 1024 * 1024,
+}
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -179,22 +195,29 @@ DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 # production without a code change. Defaults preserve the previous behaviour
 # (quiet by default).
 _APP_LOG_LEVEL = os.getenv('CRAFT_LOG_LEVEL', 'DEBUG' if DEBUG else 'INFO').upper()
+GENERATION_LOG_RAW_PROMPTS = (
+    os.getenv('GENERATION_LOG_RAW_PROMPTS', 'false').lower()
+    in {'1', 'true', 'yes', 'on'}
+)
 _DJANGO_REQUEST_LOG_LEVEL = os.getenv('CRAFT_REQUEST_LOG_LEVEL', 'INFO' if DEBUG else 'WARNING').upper()
 
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'safe_django_request': {
+            '()': 'w_craft_back.observability.SafeDjangoRequestFilter',
+        },
+    },
     'formatters': {
-        'verbose': {
-            'format': '[{asctime}] {levelname} {name}: {message}',
-            'style': '{',
-            'datefmt': '%H:%M:%S',
+        'json': {
+            '()': 'w_craft_back.observability.JsonLogFormatter',
         },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+            'formatter': 'json',
         },
     },
     'root': {
@@ -209,6 +232,13 @@ LOGGING = {
         },
         'django.request': {
             'handlers': ['console'],
+            'filters': ['safe_django_request'],
+            'level': _DJANGO_REQUEST_LOG_LEVEL,
+            'propagate': False,
+        },
+        'django.server': {
+            'handlers': ['console'],
+            'filters': ['safe_django_request'],
             'level': _DJANGO_REQUEST_LOG_LEVEL,
             'propagate': False,
         },

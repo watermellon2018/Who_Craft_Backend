@@ -7,19 +7,23 @@ turn them into this shape.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
+def _fragment_metadata(value: str | None) -> tuple[int, str]:
+    raw = (value or "").encode("utf-8", errors="replace")
+    return len(raw), hashlib.sha256(raw).hexdigest()
+
+
 class ImageProviderError(Exception):
     """Structured error from the image-generation pipeline.
 
-    Carries enough info for the view layer to render a clean JSON response
-    (``code`` / ``message`` / ``http_status``) and for ops to debug the
-    upstream failure (``provider_status`` / ``provider_body``) — without
-    leaking the API key.
+    Carries a stable public response and non-reversible metadata for upstream
+    diagnostics. Raw provider response fragments are deliberately discarded.
     """
 
     def __init__(
@@ -36,7 +40,10 @@ class ImageProviderError(Exception):
         self.message = message
         self.http_status = http_status
         self.provider_status = provider_status
-        self.provider_body = provider_body
+        self.provider_body_length, self.provider_body_hash = _fragment_metadata(
+            provider_body
+        )
+        self.provider_body = None
 
 
 # Public error codes — kept stable for the FE.
@@ -223,7 +230,10 @@ def map_to_provider_error(exc: BaseException) -> ImageProviderError:
                 provider_body=msg[:1000],
             )
 
-    logger.exception("Unmapped image-provider error", exc_info=exc)
+    logger.error(
+        "image_provider_error_unmapped",
+        extra={"error_code": CODE_ERROR},
+    )
     return ImageProviderError(
         code=CODE_ERROR,
         message="Провайдер генерации изображений вернул неизвестную ошибку.",

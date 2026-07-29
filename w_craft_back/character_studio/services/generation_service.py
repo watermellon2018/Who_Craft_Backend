@@ -2,6 +2,7 @@ from django.db import transaction
 from django.utils import timezone
 import hashlib
 import logging
+import re
 import time
 
 from w_craft_back.character_studio.models import (
@@ -29,11 +30,33 @@ from w_craft_back.character_studio.services.generation_lifecycle import (
     mark_provider_started,
     recover_stale_jobs,
 )
-from w_craft_back.character_studio.services.prompt_compiler import CharacterPromptCompiler
-from w_craft_back.character_studio.services.providers import ProviderUserFacingError, get_image_provider
+from w_craft_back.character_studio.services.prompt_compiler import (
+    CharacterPromptCompiler,
+)
+from w_craft_back.character_studio.services.providers import (
+    ProviderUserFacingError,
+    get_image_provider,
+)
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
+from w_craft_back.observability import log_context
 from w_craft_back.movie.project.policy import Action
 from w_craft_back.character_studio.services.serialization import job_dict
+
+
+_SAFE_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
+_GENERIC_GENERATION_ERROR = "Generation failed. Try again."
+
+
+def _generation_failure_details(exc: Exception) -> tuple[str, str]:
+    candidate = getattr(exc, "error_code", "GENERATION_FAILED")
+    error_code = (
+        candidate
+        if isinstance(candidate, str) and _SAFE_ERROR_CODE.fullmatch(candidate)
+        else "GENERATION_FAILED"
+    )
+    if isinstance(exc, ProviderUserFacingError):
+        return error_code, exc.user_message
+    return error_code, _GENERIC_GENERATION_ERROR
 
 
 class CharacterGenerationService:
@@ -130,12 +153,13 @@ class CharacterGenerationService:
         variant_count = self._validate_variant_count(params.get("variant_count", 4))
         image_type = self._validate_image_type(params.get("image_type") or params.get("preview_type") or CharacterImageType.PORTRAIT)
         region = self.IMAGE_TYPE_TO_REGION[image_type]
-        outfit_name = getattr(character.active_outfit, "name", None) or "none"
-        outfit_desc = getattr(character.active_outfit, "description", None) or "none"
         self.logger.info(
-            "create_initial_variants: character_id=%s visual_style=%s variant_count=%d image_type=%s outfit=%r outfit_desc=%r",
-            character.character_id, params.get("visual_style"), variant_count, image_type,
-            outfit_name, outfit_desc,
+            "character_generation_requested",
+            extra={
+                "character_id": character.character_id,
+                "variant_count": variant_count,
+                "image_type": image_type,
+            },
         )
         if image_type == CharacterImageType.PORTRAIT:
             # Use strict portrait-only prompt for initial selection variants.
@@ -862,6 +886,20 @@ class CharacterGenerationService:
         reference_bytes=None,
         mime_type=None,
     ):
+        with log_context(job_id=job_id):
+            return self._execute_queued_job(
+                job_id,
+                reference_bytes=reference_bytes,
+                mime_type=mime_type,
+            )
+
+    def _execute_queued_job(
+        self,
+        job_id,
+        *,
+        reference_bytes=None,
+        mime_type=None,
+    ):
         """Run provider I/O outside transactions, fenced by a durable lease."""
         lease = claim_job(job_id)
         if lease is None:
@@ -883,6 +921,7 @@ class CharacterGenerationService:
             "metadata": dict(job.compiled_metadata or {}),
         }
         provider = None
+        provider_started_at = time.monotonic()
         try:
             if job.provider_operation == "reference" and reference_bytes is None:
                 reference_bytes, mime_type = self._load_reference_input(job)
@@ -924,21 +963,35 @@ class CharacterGenerationService:
                 lease,
                 results=results,
                 provider=provider,
+                duration_ms=round(
+                    (time.monotonic() - provider_started_at) * 1000,
+                    2,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
-            self.logger.exception(
-                "Character generation failed (provider=%s job_id=%s)",
-                job.provider,
-                job.job_id,
+            error_code, public_message = _generation_failure_details(exc)
+            model = (
+                getattr(provider, "model_version", "")
+                or getattr(provider, "model_name", "")
+                or job.provider
+            )
+            self.logger.error(
+                "character_generation_failed",
+                extra={
+                    "job_id": job.job_id,
+                    "model": model,
+                    "duration_ms": round(
+                        (time.monotonic() - provider_started_at) * 1000,
+                        2,
+                    ),
+                    "status": "failed",
+                    "error_code": error_code,
+                },
             )
             fail_job(
                 lease,
-                error_code=getattr(exc, "error_code", "GENERATION_FAILED"),
-                error_message=(
-                    exc.user_message
-                    if isinstance(exc, ProviderUserFacingError)
-                    else str(exc)
-                ),
+                error_code=error_code,
+                error_message=public_message,
             )
         return CharacterGenerationJob.objects.get(job_id=job_id)
 
@@ -973,7 +1026,14 @@ class CharacterGenerationService:
         return reference_bytes, asset.mime_type or "image/png"
 
     @transaction.atomic
-    def _complete_job(self, lease: JobLease, *, results, provider):
+    def _complete_job(
+        self,
+        lease: JobLease,
+        *,
+        results,
+        provider,
+        duration_ms: float,
+    ):
         """Persist assets and terminal state in one short fenced transaction."""
         job = (
             CharacterGenerationJob.objects.select_for_update(of=("self",))
@@ -1106,9 +1166,14 @@ class CharacterGenerationService:
         job.lease_expires_at = None
         job.save()
         self.logger.info(
-            "Character generation completed: job_id=%s character_id=%s",
-            job.job_id,
-            character.character_id,
+            "character_generation_completed",
+            extra={
+                "job_id": job.job_id,
+                "character_id": character.character_id,
+                "model": job.model_version or job.model_name or job.provider,
+                "duration_ms": duration_ms,
+                "status": "completed",
+            },
         )
         return job
 

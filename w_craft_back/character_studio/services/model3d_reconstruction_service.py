@@ -34,6 +34,7 @@ from w_craft_back.character_studio.services.asset_service import (
 )
 from w_craft_back.character_studio.services.errors import ValidationError
 from w_craft_back.character_studio.services.serialization import public_url
+from w_craft_back.observability import log_context
 
 
 logger = logging.getLogger(__name__)
@@ -407,11 +408,18 @@ def dispatch_reconstruction(job_id) -> None:
     try:
         with (log_dir / f"{job_id}.log").open("ab") as output:
             subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, **kwargs)
-    except OSError as error:
-        logger.exception("Could not start model3d reconstruction job %s", job_id)
+    except OSError:
+        logger.error(
+            "model3d_worker_start_failed",
+            extra={
+                "job_id": job_id,
+                "status": "failed",
+                "error_code": "WORKER_START_FAILED",
+            },
+        )
         _fail_job(
             job_id,
-            f"Could not start reconstruction worker: {error}",
+            "Could not start reconstruction worker. Try again.",
             "WORKER_START_FAILED",
         )
 
@@ -680,6 +688,18 @@ def run_reconstruction_job(
     *,
     command_runner: CommandRunner = _run_command,
 ) -> CharacterAsset | None:
+    with log_context(job_id=job_id):
+        return _run_reconstruction_job(
+            job_id,
+            command_runner=command_runner,
+        )
+
+
+def _run_reconstruction_job(
+    job_id,
+    *,
+    command_runner: CommandRunner = _run_command,
+) -> CharacterAsset | None:
     """Claim and execute one queued reconstruction job."""
     with transaction.atomic():
         try:
@@ -687,7 +707,10 @@ def run_reconstruction_job(
                 "character",
             ).get(job_id=job_id, job_type=GenerationJobType.MODEL3D_RECONSTRUCTION)
         except CharacterGenerationJob.DoesNotExist:
-            logger.error("Unknown model3d reconstruction job %s", job_id)
+            logger.error(
+                "model3d_job_not_found",
+                extra={"job_id": job_id},
+            )
             return None
         if job.status == GenerationJobStatus.COMPLETED:
             return _asset_for_job(job)
@@ -797,7 +820,17 @@ def run_reconstruction_job(
             error_code="",
         )
         return asset
-    except Exception as error:  # Worker boundary: persist every pipeline failure.
-        logger.exception("Model3d reconstruction failed for job %s", job.job_id)
-        _fail_job(job.job_id, str(error) or error.__class__.__name__)
+    except Exception:  # Worker boundary: persist every pipeline failure.
+        logger.error(
+            "model3d_reconstruction_failed",
+            extra={
+                "job_id": job.job_id,
+                "status": "failed",
+                "error_code": "RECONSTRUCTION_FAILED",
+            },
+        )
+        _fail_job(
+            job.job_id,
+            "Reconstruction failed. Try again.",
+        )
         return None

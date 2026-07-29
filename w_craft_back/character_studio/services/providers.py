@@ -500,20 +500,25 @@ class GeminiProvider(AIImageProvider):
         try:
             resp.raise_for_status()
         except HTTPError as exc:
-            raise RuntimeError(self._format_error(resp)) from exc
+            raise ProviderUserFacingError(
+                self._format_error(resp),
+                error_code="PROVIDER_HTTP_ERROR",
+            ) from exc
         data = resp.json()
 
         predictions = data.get("predictions") or []
         if not predictions:
             self._raise_if_blocked(data)
             self.logger.warning(
-                "_generate empty predictions: image_type=%s prompt_prefix=%r response=%s",
-                image_type, prompt[:120], data,
+                "image_provider_empty_predictions",
+                extra={
+                    "image_type": image_type,
+                    "provider": "gemini",
+                },
             )
-            raise RuntimeError(
-                f"Gemini/Imagen returned no predictions for '{image_type}'. "
-                f"This may indicate a safety filter hit or an invalid API parameter. "
-                f"Response: {data}"
+            raise ProviderUserFacingError(
+                "Провайдер не вернул изображение.",
+                error_code="PROVIDER_EMPTY_RESPONSE",
             )
 
         variants: List[Dict[str, Any]] = []
@@ -524,8 +529,9 @@ class GeminiProvider(AIImageProvider):
                 or pred.get("imageBytes")
             )
             if not encoded:
-                raise RuntimeError(
-                    f"Gemini/Imagen prediction missing base64 image bytes: {pred}"
+                raise ProviderUserFacingError(
+                    "Провайдер вернул некорректный ответ.",
+                    error_code="PROVIDER_BAD_RESPONSE",
                 )
             try:
                 image_bytes = base64.b64decode(encoded, validate=True)
@@ -603,7 +609,10 @@ class GeminiProvider(AIImageProvider):
         try:
             response.raise_for_status()
         except HTTPError as exc:
-            raise RuntimeError(self._format_error(response)) from exc
+            raise ProviderUserFacingError(
+                self._format_error(response),
+                error_code="PROVIDER_HTTP_ERROR",
+            ) from exc
 
         data = response.json()
         self._raise_if_blocked(data)
@@ -636,10 +645,7 @@ class GeminiProvider(AIImageProvider):
             data = response.text
         if isinstance(data, dict):
             self._raise_if_blocked(data)
-        return (
-            "Gemini/Imagen request failed "
-            f"({response.status_code} {response.reason}): {data}"
-        )
+        return f"Провайдер отклонил запрос (HTTP {response.status_code})."
 
     def _raise_if_blocked(self, data: Dict[str, Any]) -> None:
         feedback = data.get("promptFeedback") or {}
@@ -647,5 +653,5 @@ class GeminiProvider(AIImageProvider):
         if block_reason:
             raise ProviderContentBlockedError(
                 CONTENT_BLOCKED_MESSAGE,
-                error_code=f"GEMINI_{block_reason}",
+                error_code="PROVIDER_CONTENT_BLOCKED",
             )

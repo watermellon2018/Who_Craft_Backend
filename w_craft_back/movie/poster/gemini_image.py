@@ -129,7 +129,10 @@ def generate_image_via_gemini(
             url, headers=headers, json=payload, timeout=timeout_seconds
         )
     except requests.RequestException as exc:
-        logger.error("Gemini transport error: %s", exc)
+        logger.error(
+            "gemini_transport_error",
+            extra={"exception_type": type(exc).__name__},
+        )
         raise GeminiImageError(
             "Gemini provider unavailable",
             kind="unavailable",
@@ -249,7 +252,10 @@ def edit_image_via_gemini(
             url, headers=headers, json=payload, timeout=timeout_seconds
         )
     except requests.RequestException as exc:
-        logger.error("Gemini edit transport error: %s", exc)
+        logger.error(
+            "gemini_edit_transport_error",
+            extra={"exception_type": type(exc).__name__},
+        )
         raise GeminiImageError(
             "Gemini provider unavailable",
             kind="unavailable",

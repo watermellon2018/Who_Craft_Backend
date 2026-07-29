@@ -584,14 +584,26 @@ class Model3DReconstructionTests(TestCase):
         self.assertNotEqual(retried["job_id"], state["job_id"])
         dispatch.assert_called_once()
 
-    def test_worker_failure_is_visible_and_retry_creates_new_job(self):
+    def test_worker_failure_is_safe_and_retry_creates_new_job(self):
+        private_fragment = "log01-private-provider-fragment-3d"
         state, _ = self._ensure_and_dispatch()
-        with patch(PIPELINE, side_effect=RuntimeError("CUDA unavailable")):
+        with self.assertLogs(
+            "w_craft_back.character_studio.services.model3d_reconstruction_service",
+            level="ERROR",
+        ) as captured, patch(
+            PIPELINE,
+            side_effect=RuntimeError(private_fragment),
+        ):
             result = run_reconstruction_job(state["job_id"])
         self.assertIsNone(result)
         failed = reconstruction_state(self.character)
         self.assertEqual(failed["status"], "failed")
-        self.assertIn("CUDA unavailable", failed["error_message"])
+        self.assertEqual(
+            failed["error_message"],
+            "Reconstruction failed. Try again.",
+        )
+        self.assertNotIn(private_fragment, "\n".join(captured.output))
+        self.assertNotIn(private_fragment, failed["error_message"])
 
         with patch(DISPATCH) as dispatch:
             with self.captureOnCommitCallbacks(execute=True):
