@@ -635,7 +635,7 @@ class MemberManagementTests(TestCase):
             ProjectMemberRole.OWNER,
         )
 
-    def test_delete_endpoints_follow_canonical_owner_after_transfer(self):
+    def test_delete_endpoint_follows_canonical_owner_after_transfer(self):
         team_service.transfer_ownership(
             self.owner,
             self.project,
@@ -647,13 +647,6 @@ class MemberManagementTests(TestCase):
             HTTP_X_USER_TOKEN=self.owner_token,
         )
         self.assertEqual(dashboard_delete.status_code, 403)
-
-        legacy_delete = self.client.delete(
-            f"/api/projects/delete-project-by-id/?id={self.project.id}",
-            HTTP_X_USER_TOKEN=self.owner_token,
-        )
-        self.assertEqual(legacy_delete.status_code, 404)
-        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
 
         new_owner_delete = self.client.delete(
             f"/api/projects/{self.project.id}/",

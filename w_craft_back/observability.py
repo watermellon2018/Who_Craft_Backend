@@ -45,6 +45,16 @@ _STRUCTURED_FIELDS = (
     "exception_type",
 )
 
+# Temporary tombstone telemetry for removed project CRUD endpoints. Values are
+# fixed symbolic names so request paths, query strings and bodies never reach logs.
+_LEGACY_PROJECT_ROUTE_OPERATIONS = {
+    "/api/projects/create/": "create",
+    "/api/projects/get-list-projects/": "list",
+    "/api/projects/delete-project-by-id/": "delete",
+    "/api/projects/select-project-by-id/": "select",
+    "/api/projects/update-project-by-id/": "update",
+}
+
 
 def _safe_scalar(value: Any) -> str | int | float | bool | None:
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -141,6 +151,17 @@ class RequestContextMiddleware:
         token = _request_id.set(request_id)
         started_at = time.monotonic()
         try:
+            legacy_operation = _LEGACY_PROJECT_ROUTE_OPERATIONS.get(
+                request.path_info
+            )
+            if legacy_operation is not None:
+                self.logger.info(
+                    "legacy_project_route_requested",
+                    extra={
+                        "method": request.method,
+                        "operation": legacy_operation,
+                    },
+                )
             response = self.get_response(request)
             response[_REQUEST_ID_HEADER] = request_id
             route = _request_route(request)

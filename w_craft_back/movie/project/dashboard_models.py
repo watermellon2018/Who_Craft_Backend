@@ -91,23 +91,6 @@ class ActivityType(models.TextChoices):
     OWNERSHIP_TRANSFERRED = "ownership_transferred", "Владение передано"
 
 
-class GenerationJobType(models.TextChoices):
-    CHARACTER_IMAGE = "character_image", "Генерация персонажа"
-    SCENE_IMAGE = "scene_image", "Генерация сцены"
-    REFERENCE_SHEET = "reference_sheet", "Референсы персонажа"
-    VIDEO = "video", "Генерация видео"
-    MUSIC = "music", "Генерация музыки"
-    LOCATION = "location", "Генерация локации"
-
-
-class ProjectGenerationJobStatus(models.TextChoices):
-    QUEUED = "queued", "В очереди"
-    PROCESSING = "processing", "В процессе"
-    COMPLETED = "completed", "Завершено"
-    FAILED = "failed", "Ошибка"
-    CANCELLED = "cancelled", "Отменено"
-
-
 class ProjectTag(models.Model):
     project = models.ForeignKey(
         Project,
@@ -554,47 +537,3 @@ class ProjectActivity(models.Model):
     @actor.setter
     def actor(self, value):
         self.user = value
-
-
-class ProjectGenerationJob(models.Model):
-    """Project-level generation job. Distinct from CharacterGenerationJob in
-    character_studio.models, which is scoped to a specific StudioCharacter."""
-
-    project = models.ForeignKey(
-        Project,
-        on_delete=models.CASCADE,
-        related_name="generation_jobs",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="project_generation_jobs",
-    )
-    job_type = models.CharField(max_length=30, choices=GenerationJobType.choices)
-    status = models.CharField(
-        max_length=20,
-        choices=ProjectGenerationJobStatus.choices,
-        default=ProjectGenerationJobStatus.QUEUED,
-    )
-    prompt = models.TextField(blank=True, default="")
-    negative_prompt = models.TextField(blank=True, default="")
-    input_data = models.JSONField(default=dict, blank=True)
-    output_data = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True, default="")
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["project", "status"]),
-            models.Index(fields=["user", "status"]),
-            models.Index(fields=["job_type", "status"]),
-            models.Index(fields=["created_at"]),
-        ]
-
-    def __str__(self):
-        return f"{self.job_type}#{self.id} [{self.status}]"

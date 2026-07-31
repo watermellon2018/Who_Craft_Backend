@@ -1,19 +1,11 @@
 from django.urls import path
 
-from w_craft_back.movie.project.views import (
-    ProjectView,
-    delete_project,
-    get_list_projects,
-    select_project_info,
-    update_info_project,
-)
 from w_craft_back.movie.project.dashboard_views import (
     ProjectAssetDetailView,
     ProjectAssetsView,
     ProjectCharactersView,
     ProjectDashboardView,
     ProjectDetailView,
-    ProjectGenerationJobsView,
     ProjectListCreateView,
     ProjectLocationsView,
     ProjectMusicView,
@@ -47,13 +39,6 @@ from w_craft_back.movie.project.scene_views import (
 )
 
 urlpatterns = [
-    # Legacy endpoints (kept for back-compat).
-    path('create/', ProjectView.as_view(), name='project'),
-    path('get-list-projects/', get_list_projects, name='get_list_projects'),
-    path('delete-project-by-id/', delete_project, name='delete_project'),
-    path('select-project-by-id/', select_project_info, name='select_project_info'),
-    path('update-project-by-id/', update_info_project, name='update_info_project'),
-
     # New dashboard / project API.
     path('', ProjectListCreateView.as_view(), name='project-list-create'),
     path('<int:project_id>/', ProjectDetailView.as_view(), name='project-detail'),
@@ -68,7 +53,6 @@ urlpatterns = [
         ProjectAssetDetailView.as_view(),
         name='project-asset-detail',
     ),
-    path('<int:project_id>/generation-jobs/', ProjectGenerationJobsView.as_view(), name='project-generation-jobs'),
 
     # Concurrent-edit-guarded entity detail endpoints (GET/PATCH with version).
     path('<int:project_id>/scenes/<int:scene_id>/', SceneDetailView.as_view(), name='project-scene-detail'),

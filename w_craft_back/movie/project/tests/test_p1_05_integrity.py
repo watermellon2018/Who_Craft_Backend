@@ -38,11 +38,9 @@ from w_craft_back.movie.poster.models import (
 )
 from w_craft_back.movie.project.dashboard_models import (
     AssetType,
-    GenerationJobType as ProjectGenerationJobType,
     Location,
     MusicTrack,
     ProjectAsset,
-    ProjectGenerationJob,
     Scene,
     SceneCharacter,
     SceneMusic,
@@ -140,11 +138,6 @@ class AttributionDeletionTests(TestCase):
             to_node="Friend",
             label=relation_type,
         )
-        project_job = ProjectGenerationJob.objects.create(
-            project=self.project,
-            user=self.actor,
-            job_type=ProjectGenerationJobType.SCENE_IMAGE,
-        )
         poster = ProjectPoster.objects.create(
             project=self.project,
             user=self.actor,
@@ -167,7 +160,6 @@ class AttributionDeletionTests(TestCase):
             revision,
             folder,
             edge,
-            project_job,
             poster,
             poster_job,
             variant,

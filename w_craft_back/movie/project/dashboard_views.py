@@ -44,7 +44,6 @@ from w_craft_back.movie.project.permissions import (
 )
 from w_craft_back.movie.project.serializers import (
     CharacterCreateSerializer,
-    GenerationJobCreateSerializer,
     LocationCreateSerializer,
     MusicTrackCreateSerializer,
     ProjectCreateSerializer,
@@ -810,42 +809,3 @@ class ProjectAssetDetailView(_ProjectScopedView):
         ) as exc:
             return _mutation_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class ProjectGenerationJobsView(_ProjectScopedView):
-    def post(self, request, project_id: int):
-        user, project, err = self._project_for_action(
-            request,
-            project_id,
-            policy.Action.RUN_GENERATION,
-        )
-        if err:
-            return err
-
-        serializer = GenerationJobCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return _validation_error(serializer.errors)
-        data = serializer.validated_data
-
-        from w_craft_back.movie.project.dashboard_models import GenerationJobType
-
-        if data["job_type"] not in {c[0] for c in GenerationJobType.choices}:
-            return _validation_error({"job_type": ["invalid"]})
-
-        try:
-            job = project_mutations.enqueue_project_generation(
-                actor=user,
-                action=policy.Action.RUN_GENERATION,
-                project_id=project.id,
-                data=data,
-            )
-        except (
-            Project.DoesNotExist,
-            project_mutations.ProjectMutationForbidden,
-            ValidationError,
-        ) as exc:
-            return _mutation_error_response(exc)
-        return Response(
-            {"id": job.id, "status": job.status, "jobType": job.job_type},
-            status=status.HTTP_201_CREATED,
-        )

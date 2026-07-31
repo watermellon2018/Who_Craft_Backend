@@ -24,8 +24,6 @@ from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
     ProjectAsset,
-    ProjectGenerationJob,
-    ProjectGenerationJobStatus,
     ProjectTag,
     Scene,
 )
@@ -471,30 +469,6 @@ def create_project_asset(
         delete_storage_key(stored.storage_key)
         raise
     return asset
-
-
-@transaction.atomic
-def enqueue_project_generation(
-    *,
-    actor: User,
-    action: policy.Action,
-    project_id: int,
-    data: Mapping[str, Any],
-) -> ProjectGenerationJob:
-    """Create a billable project job under ``RUN_GENERATION``."""
-    _require_action(action, policy.Action.RUN_GENERATION)
-    project = get_project_for_action(
-        actor=actor, project_id=project_id, action=action, lock=True
-    )
-    return ProjectGenerationJob.objects.create(
-        project=project,
-        user=actor,
-        job_type=data["job_type"],
-        status=ProjectGenerationJobStatus.QUEUED,
-        prompt=data.get("prompt", ""),
-        negative_prompt=data.get("negative_prompt", ""),
-        input_data=data.get("input_data", {}),
-    )
 
 
 @transaction.atomic

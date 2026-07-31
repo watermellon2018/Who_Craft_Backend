@@ -64,15 +64,10 @@ class ProjectMutationPreauthorizationTests(TestCase):
         self.assertEqual(response.status_code, 403, response.content)
         self.assertFalse(Genre.objects.filter(name=genre_name).exists())
 
-    def test_legacy_update_authorizes_before_image_validation(self):
-        response = self.client.post(
-            "/api/projects/update-project-by-id/",
-            {
-                "data": {
-                    "id": self.project.id,
-                    "image": "data:text/plain;base64,not-an-image",
-                }
-            },
+    def test_canonical_update_authorizes_before_image_validation(self):
+        response = self.client.patch(
+            f"/api/projects/{self.project.id}/",
+            {"poster_image_data": "data:text/plain;base64,not-an-image"},
             format="json",
             HTTP_X_USER_TOKEN=self.viewer_token,
         )

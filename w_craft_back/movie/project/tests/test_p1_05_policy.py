@@ -89,26 +89,6 @@ class ProjectSettingsPolicyTests(TestCase):
                     self.assertEqual(project.status, ProjectStatus.IN_PROGRESS)
                     self.assertIsNone(project.archived_at)
 
-    def test_generation_service_rejects_content_action(self):
-        project = _project(self.owner, "Generation action")
-        data = {"job_type": "scene_image", "prompt": "night street"}
-
-        with self.assertRaises(ValueError):
-            project_mutations.enqueue_project_generation(
-                actor=self.owner,
-                action=policy.Action.EDIT_CONTENT,
-                project_id=project.id,
-                data=data,
-            )
-
-        job = project_mutations.enqueue_project_generation(
-            actor=self.owner,
-            action=policy.Action.RUN_GENERATION,
-            project_id=project.id,
-            data=data,
-        )
-        self.assertEqual(job.user, self.owner)
-
     def test_character_attribution_uses_current_actor(self):
         project = _project(self.owner, "Actor attribution")
         editor, _ = _user_with_token("current-editor")

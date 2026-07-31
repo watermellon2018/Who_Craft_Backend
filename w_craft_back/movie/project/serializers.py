@@ -13,7 +13,6 @@ from w_craft_back.character_studio.models import CharacterRole, StudioCharacter
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
-    ProjectGenerationJob,
     ProjectTag,
     Scene,
     SceneStatus,
@@ -318,10 +317,3 @@ class MusicTrackCreateSerializer(serializers.Serializer):
 class LocationCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
     description = serializers.CharField(allow_blank=True, required=False, default="")
-
-
-class GenerationJobCreateSerializer(serializers.Serializer):
-    job_type = serializers.CharField(max_length=30)
-    prompt = serializers.CharField(allow_blank=True, required=False, default="")
-    negative_prompt = serializers.CharField(allow_blank=True, required=False, default="")
-    input_data = serializers.JSONField(required=False, default=dict)
