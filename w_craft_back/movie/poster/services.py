@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Optional
+import uuid
 
 from django.contrib.auth.models import User
 from django.db import transaction
@@ -23,6 +24,7 @@ from w_craft_back.movie.poster.errors import (
 from w_craft_back.movie.poster.generation_guard import (
     daily_quota,
     daily_quota_per_user,
+    ensure_provider_circuit_closed,
     job_lease_seconds,
     max_active_jobs,
     max_active_jobs_per_user,
@@ -42,11 +44,13 @@ from w_craft_back.movie.poster.models import (
 from w_craft_back.movie.project.dashboard_models import ProjectAsset
 from w_craft_back.movie.project.models import Project
 from w_craft_back.storage_gateway import (
+    NormalizedImage,
     StorageGatewayError,
     delete_storage_key,
+    normalize_image_bytes,
     signed_url_for_asset,
     signed_url_for_file,
-    store_image_bytes,
+    store_normalized_image,
 )
 
 
@@ -103,9 +107,19 @@ def serialize_variant(variant: PosterVariant, request=None) -> dict[str, Any]:
 def serialize_job(job: PosterGenerationJob, request=None) -> dict[str, Any]:
     return {
         "id": job.id,
+        "operation": job.operation,
         "posterId": job.poster_id,
         "projectId": job.project_id,
         "status": job.status,
+        "progress": job.progress,
+        "attempts": job.attempts,
+        "requestedModel": job.requested_model or None,
+        "retryOf": job.retry_of_id,
+        "cancellationRequestedAt": (
+            job.cancellation_requested_at.isoformat()
+            if job.cancellation_requested_at
+            else None
+        ),
         "prompt": job.prompt,
         "style": job.style,
         "format": job.format,
@@ -117,8 +131,22 @@ def serialize_job(job: PosterGenerationJob, request=None) -> dict[str, Any]:
         "errorHttpStatus": job.error_http_status,
         "createdAt": job.created_at.isoformat() if job.created_at else None,
         "startedAt": job.started_at.isoformat() if job.started_at else None,
+        "heartbeatAt": (
+            job.heartbeat_at.isoformat() if job.heartbeat_at else None
+        ),
+        "providerStartedAt": (
+            job.provider_started_at.isoformat()
+            if job.provider_started_at
+            else None
+        ),
         "completedAt": job.completed_at.isoformat() if job.completed_at else None,
     }
+
+
+def serialize_job_history(job: PosterGenerationJob, request=None) -> dict[str, Any]:
+    data = serialize_job(job, request)
+    data.pop("prompt", None)
+    return data
 
 
 def serialize_poster(
@@ -192,23 +220,34 @@ def resolve_reference_asset(
 
 
 def _expire_stale_jobs(user: User, now) -> None:
-    """Release abandoned jobs so a process crash cannot block generation forever."""
-    legacy_cutoff = now - timedelta(seconds=job_lease_seconds())
-    PosterGenerationJob.objects.filter(
+    """Recover only expired processing leases; queued work remains durable."""
+    stale_jobs = PosterGenerationJob.objects.select_for_update().filter(
         user=user,
-        status__in=[PosterJobStatus.QUEUED, PosterJobStatus.PROCESSING],
-    ).filter(
-        Q(lease_expires_at__lte=now)
-        | Q(lease_expires_at__isnull=True, created_at__lte=legacy_cutoff)
-    ).update(
-        status=PosterJobStatus.FAILED,
-        error_message="Poster generation lease expired",
-        error_code="POSTER_JOB_LEASE_EXPIRED",
-        error_http_status=503,
-        completed_at=now,
-        lease_expires_at=None,
-        updated_at=now,
+        status=PosterJobStatus.PROCESSING,
+        lease_expires_at__lte=now,
     )
+    for job in stale_jobs:
+        if job.provider_started_at is not None:
+            job.status = PosterJobStatus.FAILED
+            job.error_message = "Poster provider outcome is unknown after lease expiry"
+            job.error_code = "PROVIDER_OUTCOME_UNKNOWN"
+            job.error_http_status = 503
+            job.completed_at = now
+        elif job.attempts >= job.max_attempts:
+            job.status = PosterJobStatus.FAILED
+            job.error_message = "Poster generation retry limit reached"
+            job.error_code = "MAX_ATTEMPTS_EXCEEDED"
+            job.error_http_status = 503
+            job.completed_at = now
+        else:
+            job.status = PosterJobStatus.QUEUED
+            job.progress = 0
+            job.error_message = ""
+            job.error_code = ""
+            job.error_http_status = None
+        job.lease_token = None
+        job.lease_expires_at = None
+        job.save()
 
 
 def enqueue_generation_job(
@@ -221,6 +260,9 @@ def enqueue_generation_job(
     operation: str = PosterJobOperation.GENERATE,
     idempotency_key: str = "",
     request_hash: str = "",
+    requested_model: str = "",
+    reference_storage_key: str = "",
+    reference_mime_type: str = "",
     reference_image_url: str = "",
     reference_asset: Optional[ProjectAsset] = None,
     source_variant: Optional[PosterVariant] = None,
@@ -298,7 +340,9 @@ def enqueue_generation_job(
             operation=operation,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
-            lease_expires_at=now + timedelta(seconds=job_lease_seconds()),
+            requested_model=requested_model or "",
+            reference_storage_key=reference_storage_key or "",
+            reference_mime_type=reference_mime_type or "",
             prompt=prompt,
             style=style,
             format=format,
@@ -401,52 +445,126 @@ def mark_generation_processing(
     *,
     provider_name: str,
     model_name: str,
-) -> PosterGenerationJob:
-    """Atomically claim a queued job for the synchronous bounded provider call."""
+) -> Optional[PosterGenerationJob]:
+    """Claim a queued job with a fenced lease."""
     with transaction.atomic():
         locked = PosterGenerationJob.objects.select_for_update().get(pk=job.pk)
-        if locked.status == PosterJobStatus.QUEUED:
-            locked.status = PosterJobStatus.PROCESSING
-            locked.started_at = timezone.now()
-            locked.model_provider = provider_name[:64]
-            locked.model_name = model_name[:128]
-            locked.lease_expires_at = timezone.now() + timedelta(
-                seconds=job_lease_seconds()
-            )
-            locked.save(
-                update_fields=[
-                    "status",
-                    "started_at",
-                    "model_provider",
-                    "model_name",
-                    "lease_expires_at",
-                    "updated_at",
-                ]
-            )
+        if locked.status != PosterJobStatus.QUEUED:
+            return None
+        if locked.attempts >= locked.max_attempts:
+            locked.status = PosterJobStatus.FAILED
+            locked.error_code = "MAX_ATTEMPTS_EXCEEDED"
+            locked.error_message = "Poster generation retry limit reached"
+            locked.completed_at = timezone.now()
+            locked.save()
+            return None
+        now = timezone.now()
+        locked.status = PosterJobStatus.PROCESSING
+        locked.progress = 10
+        locked.attempts += 1
+        locked.lease_token = uuid.uuid4()
+        locked.started_at = locked.started_at or now
+        locked.heartbeat_at = now
+        locked.model_provider = provider_name[:64]
+        locked.model_name = model_name[:128]
+        locked.lease_expires_at = now + timedelta(seconds=job_lease_seconds())
+        locked.save(
+            update_fields=[
+                "status",
+                "progress",
+                "attempts",
+                "lease_token",
+                "started_at",
+                "heartbeat_at",
+                "model_provider",
+                "model_name",
+                "lease_expires_at",
+                "updated_at",
+            ]
+        )
         return locked
+
+
+def start_generation_provider_call(
+    job: PosterGenerationJob,
+    *,
+    provider_key: str,
+    provider_name: str,
+    model_name: str,
+) -> Optional[PosterGenerationJob]:
+    """Reserve the provider circuit and mark the call started atomically."""
+    with transaction.atomic():
+        locked = PosterGenerationJob.objects.select_for_update().get(pk=job.pk)
+        if (
+            locked.status != PosterJobStatus.PROCESSING
+            or locked.lease_token is None
+            or locked.lease_token != job.lease_token
+        ):
+            return None
+
+        ensure_provider_circuit_closed(provider_key)
+        now = timezone.now()
+        locked.provider_started_at = now
+        locked.heartbeat_at = now
+        locked.lease_expires_at = now + timedelta(seconds=job_lease_seconds())
+        locked.model_provider = provider_name[:64]
+        locked.model_name = model_name[:128]
+        locked.save(
+            update_fields=[
+                "provider_started_at",
+                "heartbeat_at",
+                "lease_expires_at",
+                "model_provider",
+                "model_name",
+                "updated_at",
+            ]
+        )
+        return locked
+
+
+def prepare_generation_images(
+    image_bytes_list: list[bytes],
+) -> list[NormalizedImage]:
+    """Validate provider output independently from durable storage writes."""
+    prepared = []
+    for image_bytes in image_bytes_list:
+        try:
+            prepared.append(
+                normalize_image_bytes(
+                    image_bytes,
+                    max_bytes=max_output_bytes(),
+                    max_pixels=max_output_pixels(),
+                )
+            )
+        except StorageGatewayError as exc:
+            raise InvalidProviderImage(str(exc)) from exc
+    return prepared
+
 
 
 def complete_generation(
     job: PosterGenerationJob,
     image_bytes_list: list[bytes],
+    *,
+    prepared_images: Optional[list[NormalizedImage]] = None,
 ) -> list[PosterVariant]:
     """Normalize/store provider results, then commit metadata exactly once."""
 
+    normalized_images = (
+        prepared_images
+        if prepared_images is not None
+        else prepare_generation_images(image_bytes_list)
+    )
     prepared = []
     persisted = False
     try:
-        for image_bytes in image_bytes_list:
-            try:
-                prepared.append(
-                    store_image_bytes(
-                        image_bytes,
-                        namespace=f"projects/{job.project_id}/posters/variants",
-                        max_bytes=max_output_bytes(),
-                        max_pixels=max_output_pixels(),
-                    )
+        for image in normalized_images:
+            prepared.append(
+                store_normalized_image(
+                    image,
+                    namespace=f"projects/{job.project_id}/posters/variants",
                 )
-            except StorageGatewayError as exc:
-                raise InvalidProviderImage(str(exc)) from exc
+            )
 
         with transaction.atomic():
             locked = (
@@ -457,7 +575,11 @@ def complete_generation(
             )
             if locked.status == PosterJobStatus.COMPLETED:
                 return list(locked.variants.order_by("variant_index"))
-            if locked.status in (PosterJobStatus.FAILED, PosterJobStatus.CANCELLED):
+            if (
+                locked.status != PosterJobStatus.PROCESSING
+                or locked.lease_token is None
+                or locked.lease_token != job.lease_token
+            ):
                 return []
 
             created: list[PosterVariant] = []
@@ -478,12 +600,18 @@ def complete_generation(
                 created.append(variant)
 
             locked.status = PosterJobStatus.COMPLETED
+            locked.progress = 100
             locked.completed_at = timezone.now()
+            locked.heartbeat_at = locked.completed_at
+            locked.lease_token = None
             locked.lease_expires_at = None
             locked.save(
                 update_fields=[
                     "status",
+                    "progress",
                     "completed_at",
+                    "heartbeat_at",
+                    "lease_token",
                     "lease_expires_at",
                     "updated_at",
                 ]
@@ -524,13 +652,22 @@ def fail_generation(
             .select_related("poster")
             .get(pk=job.pk)
         )
-        if locked.status == PosterJobStatus.COMPLETED:
+        if locked.status not in (
+            PosterJobStatus.QUEUED,
+            PosterJobStatus.PROCESSING,
+        ):
+            return
+        if (
+            locked.status == PosterJobStatus.PROCESSING
+            and locked.lease_token != job.lease_token
+        ):
             return
         locked.status = PosterJobStatus.FAILED
         locked.error_message = error_message
         locked.error_code = error_code or ""
         locked.error_http_status = error_http_status
         locked.completed_at = timezone.now()
+        locked.lease_token = None
         locked.lease_expires_at = None
         locked.save(
             update_fields=[
@@ -539,6 +676,7 @@ def fail_generation(
                 "error_code",
                 "error_http_status",
                 "completed_at",
+                "lease_token",
                 "lease_expires_at",
                 "updated_at",
             ]
@@ -577,6 +715,8 @@ def complete_generation_mock(
         provider_name="mock",
         model_name="mock-poster-provider",
     )
+    if claimed is None:
+        return []
     return complete_generation(
         claimed,
         [placeholder_bytes for _ in range(variant_count)],

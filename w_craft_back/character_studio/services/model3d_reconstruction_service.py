@@ -11,6 +11,8 @@ import hashlib
 import json
 import logging
 import os
+from datetime import timedelta
+import uuid
 import subprocess
 import sys
 from pathlib import Path
@@ -232,7 +234,12 @@ def _state(
         base["status"] = "processing"
     elif job.status == GenerationJobStatus.QUEUED:
         base["status"] = "queued"
-    elif job.status in (GenerationJobStatus.FAILED, GenerationJobStatus.CANCELLED):
+    elif job.status == GenerationJobStatus.CANCELLATION_REQUESTED:
+        base["status"] = GenerationJobStatus.CANCELLATION_REQUESTED
+    elif job.status in (
+        GenerationJobStatus.FAILED,
+        GenerationJobStatus.CANCELLED,
+    ):
         base["status"] = "failed"
     elif job.status == GenerationJobStatus.COMPLETED:
         base.update(
@@ -293,6 +300,7 @@ def ensure_reconstruction(
         is_failed = existing.status in (
             GenerationJobStatus.FAILED,
             GenerationJobStatus.CANCELLED,
+            GenerationJobStatus.CANCELLATION_REQUESTED,
         )
         if (
             is_ready
@@ -322,6 +330,7 @@ def ensure_reconstruction(
         model_name="tencent/Hunyuan3D-2mv",
         model_version="3a761b539b29fe4ff64714813aa9560fd66f5de0",
         progress=0,
+        timeout_seconds=7200,
     )
     relative_path = (
         f"character-studio/model3d/{locked_character.character_id}/"
@@ -360,7 +369,6 @@ def ensure_reconstruction(
             },
         },
     )
-    transaction.on_commit(lambda: dispatch_reconstruction(job.job_id))
     return _state(locked_character, references)
 
 
@@ -407,7 +415,7 @@ def dispatch_reconstruction(job_id) -> None:
         kwargs["start_new_session"] = True
     try:
         with (log_dir / f"{job_id}.log").open("ab") as output:
-            subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, **kwargs)
+            subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=True, **kwargs)
     except OSError:
         logger.error(
             "model3d_worker_start_failed",
@@ -662,25 +670,62 @@ def _execute_pipeline(
 
 
 def _set_progress(job_id, progress: int) -> None:
-    CharacterGenerationJob.objects.filter(job_id=job_id).update(progress=progress)
-
-
-def _fail_job(job_id, message: str, code: str = "RECONSTRUCTION_FAILED") -> None:
+    job = CharacterGenerationJob.objects.filter(
+        job_id=job_id,
+        status=GenerationJobStatus.PROCESSING,
+    ).only("lease_token", "timeout_seconds").first()
+    if job is None or job.lease_token is None:
+        return
     now = timezone.now()
-    CharacterGenerationJob.objects.filter(job_id=job_id).update(
+    CharacterGenerationJob.objects.filter(
+        job_id=job_id,
+        status=GenerationJobStatus.PROCESSING,
+        lease_token=job.lease_token,
+    ).update(
+        progress=progress,
+        heartbeat_at=now,
+        lease_expires_at=now + timedelta(seconds=job.timeout_seconds + 30),
+        updated_at=now,
+    )
+
+
+def _fail_job(
+    job_id,
+    message: str,
+    code: str = "RECONSTRUCTION_FAILED",
+    *,
+    lease_token=None,
+) -> None:
+    now = timezone.now()
+    filters = {"job_id": job_id}
+    if lease_token is not None:
+        filters.update(
+            status=GenerationJobStatus.PROCESSING,
+            lease_token=lease_token,
+        )
+    else:
+        filters["status__in"] = (
+            GenerationJobStatus.QUEUED,
+            GenerationJobStatus.PROCESSING,
+        )
+    updated = CharacterGenerationJob.objects.filter(**filters).update(
         status=GenerationJobStatus.FAILED,
         error_message=message[:4000],
         error_code=code,
         failed_at=now,
-    )
-    CharacterAsset.objects.filter(
-        source_job_id=job_id,
-        asset_type=CharacterAssetType.MODEL_3D,
-    ).update(
-        status=CharacterAssetStatus.FAILED,
-        error_message=message[:4000],
+        lease_token=None,
+        lease_expires_at=None,
         updated_at=now,
     )
+    if updated:
+        CharacterAsset.objects.filter(
+            source_job_id=job_id,
+            asset_type=CharacterAssetType.MODEL_3D,
+        ).update(
+            status=CharacterAssetStatus.FAILED,
+            error_message=message[:4000],
+            updated_at=now,
+        )
 
 
 def run_reconstruction_job(
@@ -716,24 +761,43 @@ def _run_reconstruction_job(
             return _asset_for_job(job)
         if job.status != GenerationJobStatus.QUEUED:
             return None
+        if job.attempts >= job.max_attempts:
+            _fail_job(job.job_id, "Reconstruction retry limit reached.")
+            return None
+        now = timezone.now()
         job.status = GenerationJobStatus.PROCESSING
         job.progress = 5
-        job.started_at = timezone.now()
+        job.attempts += 1
+        job.lease_token = uuid.uuid4()
+        job.heartbeat_at = now
+        job.lease_expires_at = now + timedelta(seconds=job.timeout_seconds + 30)
+        job.provider_started_at = now
+        job.started_at = job.started_at or now
         job.error_message = ""
         job.error_code = ""
         job.save(
             update_fields=(
                 "status",
                 "progress",
+                "attempts",
+                "lease_token",
+                "heartbeat_at",
+                "lease_expires_at",
+                "provider_started_at",
                 "started_at",
                 "error_message",
                 "error_code",
+                "updated_at",
             )
         )
 
     asset = _asset_for_job(job)
     if asset is None:
-        _fail_job(job.job_id, "The reconstruction output asset is missing.")
+        _fail_job(
+            job.job_id,
+            "The reconstruction output asset is missing.",
+            lease_token=job.lease_token,
+        )
         return None
     try:
         request_payload = (
@@ -799,9 +863,7 @@ def _run_reconstruction_job(
             "bytes": hair_output_path.stat().st_size,
             "coordinate_space": "head_y_up_z_front_metres",
         }
-        asset.status = CharacterAssetStatus.READY
-        asset.error_message = ""
-        asset.metadata = {
+        completed_metadata = {
             **previous_metadata,
             **pipeline_metadata,
             "component": "head",
@@ -810,16 +872,45 @@ def _run_reconstruction_job(
             "sha256": digest.hexdigest(),
             "bytes": output_path.stat().st_size,
         }
-        asset.save(update_fields=("status", "error_message", "metadata", "updated_at"))
-        now = timezone.now()
-        CharacterGenerationJob.objects.filter(job_id=job.job_id).update(
-            status=GenerationJobStatus.COMPLETED,
-            progress=100,
-            completed_at=now,
-            error_message="",
-            error_code="",
-        )
-        return asset
+        with transaction.atomic():
+            locked_job = CharacterGenerationJob.objects.select_for_update().get(
+                job_id=job.job_id
+            )
+            if (
+                locked_job.status != GenerationJobStatus.PROCESSING
+                or locked_job.lease_token != job.lease_token
+            ):
+                return None
+            locked_asset = CharacterAsset.objects.select_for_update().get(pk=asset.pk)
+            locked_asset.status = CharacterAssetStatus.READY
+            locked_asset.error_message = ""
+            locked_asset.metadata = completed_metadata
+            locked_asset.save(
+                update_fields=("status", "error_message", "metadata", "updated_at")
+            )
+            now = timezone.now()
+            locked_job.status = GenerationJobStatus.COMPLETED
+            locked_job.progress = 100
+            locked_job.completed_at = now
+            locked_job.error_message = ""
+            locked_job.error_code = ""
+            locked_job.lease_token = None
+            locked_job.lease_expires_at = None
+            locked_job.heartbeat_at = now
+            locked_job.save(
+                update_fields=(
+                    "status",
+                    "progress",
+                    "completed_at",
+                    "error_message",
+                    "error_code",
+                    "lease_token",
+                    "lease_expires_at",
+                    "heartbeat_at",
+                    "updated_at",
+                )
+            )
+        return locked_asset
     except Exception:  # Worker boundary: persist every pipeline failure.
         logger.error(
             "model3d_reconstruction_failed",
@@ -832,5 +923,6 @@ def _run_reconstruction_job(
         _fail_job(
             job.job_id,
             "Reconstruction failed. Try again.",
+            lease_token=job.lease_token,
         )
         return None

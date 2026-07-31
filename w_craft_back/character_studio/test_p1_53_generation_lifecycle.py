@@ -196,11 +196,11 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
                 **headers,
             )
 
-        self.assertEqual(first.status_code, 200, first.content)
-        self.assertEqual(replay.status_code, 200, replay.content)
+        self.assertEqual(first.status_code, 202, first.content)
+        self.assertEqual(replay.status_code, 202, replay.content)
         self.assertEqual(conflict.status_code, 409, conflict.content)
         self.assertEqual(first.json()["job_id"], replay.json()["job_id"])
-        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.calls, 0)
 
         polling = client.get(
             f"/api/generation-jobs/{first.json()['job_id']}",
@@ -268,7 +268,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
             user=self.user_key,
             actor=self.user_key,
             job_type=GenerationJobType.EDIT_VARIANTS,
-            status=GenerationJobStatus.QUEUED,
+            status=GenerationJobStatus.PROCESSING,
             variant_count=1,
             provider="mock",
         )
@@ -440,8 +440,8 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
                 **headers,
             )
 
-        self.assertEqual(first.status_code, 201, first.content)
-        self.assertEqual(replay.status_code, 201, replay.content)
+        self.assertEqual(first.status_code, 202, first.content)
+        self.assertEqual(replay.status_code, 202, replay.content)
         self.assertEqual(conflict.status_code, 409, conflict.content)
         self.assertEqual(
             first.json()["character"]["character_id"],
@@ -451,7 +451,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
             first.json()["generation_job"]["job_id"],
             replay.json()["generation_job"]["job_id"],
         )
-        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.calls, 0)
         self.assertEqual(
             StudioCharacter.objects.filter(project=self.project).count(),
             1,

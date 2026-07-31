@@ -198,16 +198,12 @@ class ProjectPosterGenerateView(_AuthedView):
                 reference_image_asset_id=data.get("reference_image_asset_id"),
                 image_model=data.get("image_model"),
                 request=request,
+                execute_immediately=False,
             )
         except PosterError as exc:
             return _error_response(exc)
 
-        response_status = (
-            status.HTTP_200_OK
-            if payload.get("idempotentReplay")
-            else status.HTTP_201_CREATED
-        )
-        return Response(payload, status=response_status)
+        return Response(payload, status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectPosterEditView(_AuthedView):
@@ -235,16 +231,12 @@ class ProjectPosterEditView(_AuthedView):
                 idempotency_key=idempotency_key,
                 image_model=data.get("image_model"),
                 request=request,
+                execute_immediately=False,
             )
         except PosterError as exc:
             return _error_response(exc)
 
-        response_status = (
-            status.HTTP_200_OK
-            if payload.get("idempotentReplay")
-            else status.HTTP_201_CREATED
-        )
-        return Response(payload, status=response_status)
+        return Response(payload, status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectPosterJobDetailView(_AuthedView):
@@ -257,6 +249,61 @@ class ProjectPosterJobDetailView(_AuthedView):
         except PosterError as exc:
             return _error_response(exc)
         return Response(data, status=status.HTTP_200_OK)
+
+
+class ProjectPosterJobsView(_AuthedView):
+    def get(self, request, project_id: int):
+        user, error = self._user(request)
+        if error:
+            return error
+        try:
+            limit = int(request.query_params.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            data = facade.get_poster_jobs(
+                user,
+                project_id,
+                limit=limit,
+                request=request,
+            )
+        except PosterError as exc:
+            return _error_response(exc)
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class ProjectPosterJobRetryView(_AuthedView):
+    def post(self, request, project_id: int, job_id: int):
+        user, error = self._user(request)
+        if error:
+            return error
+        try:
+            data = facade.retry_poster_generation(
+                user,
+                project_id,
+                job_id,
+                request=request,
+            )
+        except PosterError as exc:
+            return _error_response(exc)
+        return Response(data, status=status.HTTP_202_ACCEPTED)
+
+
+class ProjectPosterJobCancellationView(_AuthedView):
+    def post(self, request, project_id: int, job_id: int):
+        user, error = self._user(request)
+        if error:
+            return error
+        try:
+            data = facade.cancel_poster_generation(
+                user,
+                project_id,
+                job_id,
+                request=request,
+            )
+        except PosterError as exc:
+            return _error_response(exc)
+        return Response(data, status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectPosterVariantsView(_AuthedView):

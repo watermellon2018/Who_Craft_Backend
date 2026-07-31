@@ -198,7 +198,7 @@ class Model3DReconstructionTests(TestCase):
         state, dispatch = self._ensure_and_dispatch()
         self.assertEqual(state["status"], "queued")
         self.assertEqual(state["progress"], 0)
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
         self.assertEqual(
             CharacterGenerationJob.objects.filter(
                 job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
@@ -582,7 +582,7 @@ class Model3DReconstructionTests(TestCase):
 
         self.assertEqual(retried["status"], "queued")
         self.assertNotEqual(retried["job_id"], state["job_id"])
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
     def test_worker_failure_is_safe_and_retry_creates_new_job(self):
         private_fragment = "log01-private-provider-fragment-3d"
@@ -610,7 +610,7 @@ class Model3DReconstructionTests(TestCase):
                 retried = retry_reconstruction(self.character)
         self.assertEqual(retried["status"], "queued")
         self.assertNotEqual(retried["job_id"], state["job_id"])
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
     def test_unlocked_character_does_not_auto_create_from_state(self):
         self.character.status = CharacterStatus.ACTIVE

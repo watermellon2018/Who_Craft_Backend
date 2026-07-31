@@ -14,7 +14,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.movie.poster import dashboard_views, facade
+from w_craft_back.movie.poster import dashboard_views, facade, worker
 from w_craft_back.movie.poster.errors import PosterProviderCircuitOpen
 from w_craft_back.movie.poster.generation_guard import ensure_provider_circuit_closed
 from w_craft_back.movie.poster.models import (
@@ -130,6 +130,10 @@ class PosterGenerationSecurityTests(TestCase):
             "HTTP_IDEMPOTENCY_KEY": key,
         }
 
+    @staticmethod
+    def _execute(response):
+        return worker.execute_poster_job(response.json()["jobId"])
+
     def _mock_source_variant(self, project: Project | None = None) -> int:
         target = project or self.project
         result = facade.generate_poster(
@@ -241,7 +245,7 @@ class PosterGenerationSecurityTests(TestCase):
             format="json",
             **self._headers(self.editor_token),
         )
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 202)
 
     def test_idempotency_key_is_required(self):
         response = self.client.post(
@@ -256,13 +260,14 @@ class PosterGenerationSecurityTests(TestCase):
     @override_settings(POSTER_PROVIDER_TIMEOUT_SECONDS=7)
     def test_duplicate_request_replays_without_second_provider_call(self):
         provider = RecordingProvider()
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             first = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "same-request"),
             )
+            self._execute(first)
             second = self.client.post(
                 self.generate_url,
                 self.generate_payload,
@@ -270,8 +275,8 @@ class PosterGenerationSecurityTests(TestCase):
                 **self._headers(self.owner_token, "same-request"),
             )
 
-        self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
         self.assertTrue(second.json()["idempotentReplay"])
         self.assertEqual(first.json()["jobId"], second.json()["jobId"])
         self.assertEqual(len(provider.generate_calls), 1)
@@ -292,7 +297,7 @@ class PosterGenerationSecurityTests(TestCase):
             format="json",
             **self._headers(self.owner_token, "conflicting-key"),
         )
-        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 409)
         self.assertEqual(second.json()["code"], "IDEMPOTENCY_KEY_REUSED")
 
@@ -354,13 +359,14 @@ class PosterGenerationSecurityTests(TestCase):
             format="json",
             **self._headers(self.owner_token, "quota-first"),
         )
+        self._execute(first)
         second = self.client.post(
             self.generate_url,
             self.generate_payload,
             format="json",
             **self._headers(self.owner_token, "quota-second"),
         )
-        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 429)
         self.assertEqual(second.json()["code"], "POSTER_DAILY_QUOTA_EXCEEDED")
 
@@ -384,7 +390,7 @@ class PosterGenerationSecurityTests(TestCase):
             **self._headers(self.owner_token, "account-quota-second"),
         )
 
-        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 429)
         self.assertEqual(second.json()["code"], "POSTER_DAILY_QUOTA_EXCEEDED")
 
@@ -394,71 +400,81 @@ class PosterGenerationSecurityTests(TestCase):
     )
     def test_provider_circuit_opens_after_repeated_failures(self):
         provider = RecordingProvider(fail=True)
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             first = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "circuit-first"),
             )
+            first_job = self._execute(first)
             second = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "circuit-second"),
             )
+            second_job = self._execute(second)
             third = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "circuit-third"),
             )
+            third_job = self._execute(third)
 
-        self.assertEqual(first.status_code, 503)
-        self.assertEqual(second.status_code, 503)
-        self.assertEqual(third.status_code, 503)
-        self.assertEqual(third.json()["code"], "POSTER_PROVIDER_CIRCUIT_OPEN")
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(third.status_code, 202)
+        self.assertEqual(first_job.status, PosterJobStatus.FAILED)
+        self.assertEqual(second_job.status, PosterJobStatus.FAILED)
+        self.assertEqual(third_job.error_code, "POSTER_PROVIDER_CIRCUIT_OPEN")
         self.assertEqual(len(provider.generate_calls), 2)
 
     @override_settings(POSTER_CIRCUIT_FAILURE_THRESHOLD=2)
     def test_invalid_provider_images_open_circuit(self):
         provider = RecordingProvider(output_bytes=b"not-an-image")
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             first = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "invalid-output-first"),
             )
+            first_job = self._execute(first)
             second = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "invalid-output-second"),
             )
+            second_job = self._execute(second)
             third = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "invalid-output-third"),
             )
+            third_job = self._execute(third)
 
-        self.assertEqual(first.status_code, 502)
-        self.assertEqual(first.json()["code"], "IMAGE_PROVIDER_BAD_RESPONSE")
-        self.assertEqual(second.status_code, 502)
-        self.assertEqual(third.status_code, 503)
-        self.assertEqual(third.json()["code"], "POSTER_PROVIDER_CIRCUIT_OPEN")
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(third.status_code, 202)
+        self.assertEqual(first_job.error_code, "IMAGE_PROVIDER_BAD_RESPONSE")
+        self.assertEqual(second_job.error_code, "IMAGE_PROVIDER_BAD_RESPONSE")
+        self.assertEqual(third_job.error_code, "POSTER_PROVIDER_CIRCUIT_OPEN")
         self.assertEqual(len(provider.generate_calls), 2)
 
     def test_failed_idempotent_replay_preserves_http_status(self):
         provider = RecordingProvider(fail=True)
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             first = self.client.post(
                 self.generate_url,
                 self.generate_payload,
                 format="json",
                 **self._headers(self.owner_token, "failed-replay"),
             )
+            failed_job = self._execute(first)
             replay = self.client.post(
                 self.generate_url,
                 self.generate_payload,
@@ -466,9 +482,10 @@ class PosterGenerationSecurityTests(TestCase):
                 **self._headers(self.owner_token, "failed-replay"),
             )
 
-        self.assertEqual(first.status_code, 503)
-        self.assertEqual(replay.status_code, first.status_code)
-        self.assertEqual(replay.json()["code"], first.json()["code"])
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(failed_job.status, PosterJobStatus.FAILED)
+        self.assertEqual(replay.status_code, 503)
+        self.assertEqual(replay.json()["code"], failed_job.error_code)
         self.assertEqual(len(provider.generate_calls), 1)
 
     @override_settings(POSTER_PROVIDER_TIMEOUT_SECONDS=7)
@@ -503,7 +520,7 @@ class PosterGenerationSecurityTests(TestCase):
     def test_edit_uses_project_variant_and_provider_timeout(self):
         source_variant_id = self._mock_source_variant()
         provider = RecordingProvider()
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             response = self.client.post(
                 self.edit_url,
                 {
@@ -513,7 +530,8 @@ class PosterGenerationSecurityTests(TestCase):
                 format="json",
                 **self._headers(self.owner_token, "successful-edit"),
             )
-        self.assertEqual(response.status_code, 201)
+            self._execute(response)
+        self.assertEqual(response.status_code, 202)
         self.assertEqual(len(provider.edit_calls), 1)
         self.assertEqual(provider.edit_calls[0]["timeout"], 9.0)
 
@@ -559,6 +577,8 @@ class PosterGenerationSecurityTests(TestCase):
         )
         first_job_id = first.json()["jobId"]
         PosterGenerationJob.objects.filter(pk=first_job_id).update(
+            provider_started_at=timezone.now(),
+            attempts=1,
             status=PosterJobStatus.PROCESSING,
             lease_expires_at=timezone.now(),
         )
@@ -569,16 +589,21 @@ class PosterGenerationSecurityTests(TestCase):
             format="json",
             **self._headers(self.owner_token, "stale-second"),
         )
-        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.status_code, 202)
         stale = PosterGenerationJob.objects.get(pk=first_job_id)
         self.assertEqual(stale.status, PosterJobStatus.FAILED)
-        self.assertEqual(stale.error_code, "POSTER_JOB_LEASE_EXPIRED")
+        self.assertEqual(stale.error_code, "PROVIDER_OUTCOME_UNKNOWN")
 
     def test_persistence_failure_releases_job_lease(self):
         provider = RecordingProvider()
+        circuit = PosterProviderCircuit.objects.create(
+            provider_key="security-test:recording-v1",
+            failure_count=3,
+            opened_until=timezone.now() - timedelta(seconds=1),
+        )
         with (
-            patch.object(facade, "resolve_provider_for_user", return_value=provider),
-            patch.object(facade, "complete_generation", side_effect=OSError("disk")),
+            patch.object(worker, "resolve_provider_for_user", return_value=provider),
+            patch.object(worker, "complete_generation", side_effect=OSError("disk")),
         ):
             response = self.client.post(
                 self.generate_url,
@@ -586,11 +611,16 @@ class PosterGenerationSecurityTests(TestCase):
                 format="json",
                 **self._headers(self.owner_token, "persistence-failure"),
             )
-        self.assertEqual(response.status_code, 500)
+            self._execute(response)
+        self.assertEqual(response.status_code, 202)
         job = PosterGenerationJob.objects.get()
         self.assertEqual(job.status, PosterJobStatus.FAILED)
         self.assertEqual(job.error_code, "POSTER_RESULT_PERSISTENCE_FAILED")
         self.assertIsNone(job.lease_expires_at)
+        circuit.refresh_from_db()
+        self.assertEqual(circuit.failure_count, 0)
+        self.assertIsNone(circuit.opened_until)
+        self.assertIsNotNone(job.provider_started_at)
 
     @override_settings(POSTER_GENERATION_USE_MOCK=True)
     def test_selected_variant_is_exposed_by_project_detail(self):
@@ -600,7 +630,12 @@ class PosterGenerationSecurityTests(TestCase):
             format="json",
             **self._headers(self.owner_token, "project-poster"),
         )
-        variant = generated.json()["variants"][0]
+        self._execute(generated)
+        detail = self.client.get(
+            f"/api/projects/{self.project.id}/poster/jobs/{generated.json()['jobId']}/",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        variant = detail.json()["variants"][0]
         selected = self.client.patch(
             f"/api/projects/{self.project.id}/poster/select/",
             {"variant_id": variant["id"]},
@@ -619,7 +654,7 @@ class PosterGenerationSecurityTests(TestCase):
     def test_edit_rejects_oversized_server_owned_source(self):
         source_variant_id = self._mock_source_variant()
         provider = RecordingProvider()
-        with patch.object(facade, "resolve_provider_for_user", return_value=provider):
+        with patch.object(worker, "resolve_provider_for_user", return_value=provider):
             response = self.client.post(
                 self.edit_url,
                 {

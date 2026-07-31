@@ -30,6 +30,7 @@ from w_craft_back.character_studio.services.errors import (
     GenerationBudgetExceededError,
     GenerationConcurrencyLimitError,
     IdempotencyKeyRequiredError,
+    NotFoundError,
     ValidationError,
 )
 from w_craft_back.movie.project.models import Project
@@ -43,6 +44,7 @@ TERMINAL_STATUSES = {
     GenerationJobStatus.COMPLETED,
     GenerationJobStatus.FAILED,
     GenerationJobStatus.CANCELLED,
+    GenerationJobStatus.CANCELLATION_REQUESTED,
 }
 IMAGE_GENERATION_JOB_TYPES = tuple(
     value
@@ -309,7 +311,7 @@ def build_generation_preview(
     usage = _usage_snapshot(actor, character.project, now)
     active_jobs = CharacterGenerationJob.objects.filter(
         job_type__in=IMAGE_GENERATION_JOB_TYPES,
-        status__in=ACTIVE_JOB_STATUSES,
+        status=GenerationJobStatus.PROCESSING,
     )
     call_count = len(normalized_types)
     unit_cost = estimated_cost_per_call(provider)
@@ -373,7 +375,7 @@ def _enforce_generation_limits(
     _recover_stale_active_jobs(now)
     active_jobs = CharacterGenerationJob.objects.filter(
         job_type__in=IMAGE_GENERATION_JOB_TYPES,
-        status__in=ACTIVE_JOB_STATUSES,
+        status=GenerationJobStatus.PROCESSING,
     )
     if active_jobs.count() >= max_active_jobs_global():
         raise GenerationConcurrencyLimitError(
@@ -554,6 +556,12 @@ def enqueue_job(
 @transaction.atomic
 def claim_job(job_id) -> JobLease | None:
     """Claim a queued job without retaining the transaction for provider I/O."""
+    snapshot = CharacterGenerationJob.objects.select_related(
+        "actor", "project"
+    ).get(job_id=job_id)
+    if snapshot.job_type in IMAGE_GENERATION_JOB_TYPES and snapshot.actor_id:
+        _lock_generation_scope(snapshot.actor, snapshot.project)
+
     job = CharacterGenerationJob.objects.select_for_update().get(job_id=job_id)
     now = timezone.now()
     _recover_locked(job, now)
@@ -576,6 +584,20 @@ def claim_job(job_id) -> JobLease | None:
         job.failed_at = now
         job.save()
         return None
+
+    if job.job_type in IMAGE_GENERATION_JOB_TYPES:
+        _recover_stale_active_jobs(now)
+        active_jobs = CharacterGenerationJob.objects.filter(
+            job_type__in=IMAGE_GENERATION_JOB_TYPES,
+            status=GenerationJobStatus.PROCESSING,
+        ).exclude(pk=job.pk)
+        if active_jobs.count() >= max_active_jobs_global():
+            return None
+        if (
+            active_jobs.filter(project_id=job.project_id).count()
+            >= max_active_jobs_per_project()
+        ):
+            return None
 
     token = uuid.uuid4()
     job.status = GenerationJobStatus.PROCESSING
@@ -662,7 +684,7 @@ def recover_stale_jobs(*, limit: int = 100) -> dict:
     expired_jobs = list(
         CharacterGenerationJob.objects.select_for_update()
         .filter(
-            job_type__in=IMAGE_GENERATION_JOB_TYPES,
+            job_type__in=GenerationJobType.values,
             status=GenerationJobStatus.PROCESSING,
             lease_expires_at__isnull=False,
             lease_expires_at__lte=now,
@@ -682,7 +704,7 @@ def recover_stale_jobs(*, limit: int = 100) -> dict:
         queued_jobs = (
             CharacterGenerationJob.objects.select_for_update()
             .filter(
-                job_type__in=IMAGE_GENERATION_JOB_TYPES,
+                job_type__in=GenerationJobType.values,
                 status=GenerationJobStatus.QUEUED,
             )
             .exclude(job_id__in=ready)
@@ -690,3 +712,122 @@ def recover_stale_jobs(*, limit: int = 100) -> dict:
         )
         ready.extend(str(job.job_id) for job in queued_jobs)
     return {"requeued": ready, "failed": failed}
+
+
+def list_character_jobs(*, actor, project_id, character_id, limit: int = 50):
+    """Return recent jobs scoped to a viewable project and character."""
+    from w_craft_back.character_studio.services.permissions import (
+        get_viewable_project,
+    )
+
+    get_viewable_project(actor, project_id)
+    batch_limit = max(1, min(int(limit), 200))
+    return list(
+        CharacterGenerationJob.objects.filter(
+            project_id=project_id,
+            character_id=character_id,
+        ).order_by("-created_at")[:batch_limit]
+    )
+
+
+@transaction.atomic
+def request_job_cancellation(*, actor, job_id):
+    """Fence an active job and record that cancellation was requested."""
+    from w_craft_back.character_studio.services.permissions import (
+        get_generation_project,
+    )
+
+    try:
+        job = CharacterGenerationJob.objects.select_for_update().get(job_id=job_id)
+    except CharacterGenerationJob.DoesNotExist as exc:
+        raise NotFoundError("Generation job not found.") from exc
+    get_generation_project(actor, job.project_id)
+    if job.status in (
+        GenerationJobStatus.QUEUED,
+        GenerationJobStatus.PROCESSING,
+    ):
+        job.status = GenerationJobStatus.CANCELLATION_REQUESTED
+        job.cancellation_requested_at = timezone.now()
+        job.lease_token = None
+        job.lease_expires_at = None
+        job.save()
+    return job
+
+
+@transaction.atomic
+def retry_character_job(*, actor, job_id):
+    """Create or reuse a safe retry from an immutable request snapshot."""
+    from w_craft_back.character_studio.services.permissions import (
+        get_generation_project,
+    )
+
+    try:
+        original = (
+            CharacterGenerationJob.objects.select_for_update()
+            .select_related("character")
+            .get(job_id=job_id)
+        )
+    except CharacterGenerationJob.DoesNotExist as exc:
+        raise NotFoundError("Generation job not found.") from exc
+    get_generation_project(actor, original.project_id)
+    if original.status in (
+        GenerationJobStatus.QUEUED,
+        GenerationJobStatus.PROCESSING,
+    ):
+        raise ConflictError("An active generation job cannot be retried.")
+    if original.error_code == "PROVIDER_OUTCOME_UNKNOWN":
+        raise ConflictError("Provider outcome is unknown; retry is unsafe.")
+    if (
+        original.status == GenerationJobStatus.CANCELLATION_REQUESTED
+        and original.provider_started_at is not None
+    ):
+        raise ConflictError("Provider outcome is still unknown; retry is unsafe.")
+
+    existing_retry = original.retries.order_by("created_at").first()
+    if existing_retry is not None:
+        return existing_retry
+
+    if original.job_type in IMAGE_GENERATION_JOB_TYPES:
+        _enforce_generation_limits(
+            actor=actor,
+            project=original.project,
+            provider=original.provider,
+            now=timezone.now(),
+        )
+
+    if original.job_type == GenerationJobType.MODEL3D_RECONSTRUCTION:
+        from w_craft_back.character_studio.services.model3d_reconstruction_service import (
+            retry_reconstruction,
+        )
+
+        state = retry_reconstruction(original.character, actor=actor)
+        retried_id = state.get("job_id")
+        if not retried_id or str(retried_id) == str(original.job_id):
+            raise ConflictError("3D reconstruction could not be retried.")
+        retried = CharacterGenerationJob.objects.get(job_id=retried_id)
+        retried.retry_of = original
+        retried.save(update_fields=["retry_of", "updated_at"])
+        return retried
+
+    return CharacterGenerationJob.objects.create(
+        character=original.character,
+        project=original.project,
+        user=original.user,
+        actor=actor,
+        retry_of=original,
+        job_type=original.job_type,
+        status=GenerationJobStatus.QUEUED,
+        region=original.region,
+        variant_count=original.variant_count,
+        request_payload=dict(original.request_payload or {}),
+        request_hash=original.request_hash,
+        compiled_prompt=original.compiled_prompt,
+        negative_prompt=original.negative_prompt,
+        edit_instruction=original.edit_instruction,
+        preserve_options=dict(original.preserve_options or {}),
+        compiled_metadata=dict(original.compiled_metadata or {}),
+        provider=original.provider,
+        provider_operation=original.provider_operation,
+        timeout_seconds=original.timeout_seconds,
+        max_attempts=original.max_attempts,
+    )

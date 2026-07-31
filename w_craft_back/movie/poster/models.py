@@ -36,6 +36,7 @@ class ProjectPosterStatus(models.TextChoices):
 
 
 class PosterJobStatus(models.TextChoices):
+    CANCELLATION_REQUESTED = "cancellation_requested", "Cancellation requested"
     QUEUED = "queued", "В очереди"
     PROCESSING = "processing", "В процессе"
     COMPLETED = "completed", "Завершено"
@@ -156,7 +157,24 @@ class PosterGenerationJob(models.Model):
     )
     idempotency_key = models.CharField(max_length=128, blank=True, default="")
     request_hash = models.CharField(max_length=64, blank=True, default="")
+    requested_model = models.CharField(max_length=128, blank=True, default="")
+    reference_storage_key = models.CharField(max_length=500, blank=True, default="")
+    reference_mime_type = models.CharField(max_length=100, blank=True, default="")
+    progress = models.PositiveSmallIntegerField(default=0)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    lease_token = models.UUIDField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True)
+    cancellation_requested_at = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="retries",
+    )
 
     prompt = models.TextField()
     negative_prompt = models.TextField(blank=True, default="")
@@ -189,7 +207,7 @@ class PosterGenerationJob(models.Model):
     model_name = models.CharField(max_length=128, blank=True, default="")
 
     status = models.CharField(
-        max_length=20,
+        max_length=32,
         choices=PosterJobStatus.choices,
         default=PosterJobStatus.QUEUED,
     )
@@ -213,6 +231,14 @@ class PosterGenerationJob(models.Model):
             models.Index(fields=["poster", "-created_at"]),
         ]
         constraints = [
+            models.CheckConstraint(
+                check=models.Q(progress__gte=0) & models.Q(progress__lte=100),
+                name="chk_poster_job_progress_range",
+            ),
+            models.CheckConstraint(
+                check=models.Q(attempts__lte=models.F("max_attempts")),
+                name="chk_poster_job_attempts",
+            ),
             models.UniqueConstraint(
                 fields=[
                     "project",

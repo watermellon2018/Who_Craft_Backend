@@ -48,6 +48,22 @@ urlpatterns = [
     ),
     path("generation-jobs/<uuid:job_id>", views.get_generation_job),
     path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/generation-jobs",
+        views.generation_job_history,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>/generation-jobs/",
+        views.generation_job_history,
+    ),
+    path(
+        "generation-jobs/<uuid:job_id>/retry",
+        views.retry_generation_job,
+    ),
+    path(
+        "generation-jobs/<uuid:job_id>/cancellation-request",
+        views.request_generation_job_cancellation,
+    ),
+    path(
         "projects/<int:project_id>/characters/<uuid:character_id>/apply-variant",
         views.apply_variant,
     ),

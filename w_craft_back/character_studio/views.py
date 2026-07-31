@@ -32,6 +32,9 @@ from w_craft_back.character_studio.services.errors import (
 )
 from w_craft_back.character_studio.services.generation_lifecycle import (
     build_generation_preview,
+    list_character_jobs,
+    request_job_cancellation,
+    retry_character_job,
     require_idempotency_key,
 )
 from w_craft_back.character_studio.services.generation_service import (
@@ -68,6 +71,7 @@ from w_craft_back.storage_gateway import (
 from w_craft_back.character_studio.services.serialization import (
     asset_dict,
     character_dict,
+    job_history_dict,
     job_dict,
     outfit_dict,
     reference_dict,
@@ -279,7 +283,7 @@ def create_character_from_reference(request, project_id):
         idempotency_key=idempotency_key,
         request_hash=request_hash,
     )
-    job = CharacterGenerationService().create_reference_variants(
+    job = CharacterGenerationService(execute_immediately=False).create_reference_variants(
         user, project_id, character.character_id, reference_asset, generation_params
     )
 
@@ -338,7 +342,7 @@ def create_character_from_reference(request, project_id):
         "reference": asset_dict(reference_asset),
         "generation_job": job_dict(job),
     }
-    return ok(response, status=201)
+    return ok(response, status=202)
 
 
 @api_view(["GET", "PATCH", "DELETE"])
@@ -382,7 +386,7 @@ def generation_preview(request, project_id, character_id):
 def generate_initial_variants(request, project_id, character_id):
     user = get_user_from_request(request)
     data = generation_payload(request)
-    service = CharacterGenerationService()
+    service = CharacterGenerationService(execute_immediately=False)
     logger.info(
         "generate_initial_variants start: project_id=%s character_id=%s",
         project_id, character_id,
@@ -391,7 +395,7 @@ def generate_initial_variants(request, project_id, character_id):
         jobs = service.create_initial_image_set(user, project_id, character_id, data)
         failed = next((job for job in jobs if job.status == "failed"), None)
         primary_job = failed or (jobs[0] if jobs else None)
-        status = "failed" if failed else "completed"
+        status = failed.status if failed else primary_job.status
         logger.info(
             "generate_initial_variants done: job_id=%s status=%s character_id=%s",
             str(primary_job.job_id) if primary_job else None, status, character_id,
@@ -403,7 +407,8 @@ def generate_initial_variants(request, project_id, character_id):
                 "error_code": failed.error_code if failed else "",
                 "error_message": failed.error_message if failed else "",
                 "jobs": [generation_job_summary(job) for job in jobs],
-            }
+            },
+            status=202,
         )
     job = service.create_initial_variants(user, project_id, character_id, data)
     logger.info(
@@ -415,14 +420,14 @@ def generate_initial_variants(request, project_id, character_id):
         "status": job.status,
         "error_code": job.error_code,
         "error_message": job.error_message,
-    })
+    }, status=202)
 
 
 @api_view(["POST"])
 @handle_errors
 def generate_edit_variants(request, project_id, character_id):
     user = get_user_from_request(request)
-    job = CharacterGenerationService().generate_edit_variants(
+    job = CharacterGenerationService(execute_immediately=False).generate_edit_variants(
         user, project_id, character_id, generation_payload(request),
     )
     deps = CharacterGenerationService.dependent_image_types(
@@ -434,14 +439,14 @@ def generate_edit_variants(request, project_id, character_id):
         "error_code": job.error_code,
         "error_message": job.error_message,
         "dependent_image_types": [str(t) for t in deps],
-    })
+    }, status=202)
 
 
 @api_view(["POST"])
 @handle_errors
 def zone_edit(request, project_id, character_id):
     user = get_user_from_request(request)
-    primary_job, secondary_jobs = CharacterGenerationService().generate_zone_edit(
+    primary_job, secondary_jobs = CharacterGenerationService(execute_immediately=False).generate_zone_edit(
         user, project_id, character_id, generation_payload(request)
     )
     deps = CharacterGenerationService.dependent_image_types(
@@ -457,7 +462,7 @@ def zone_edit(request, project_id, character_id):
             str(job.request_payload.get("image_type")): str(job.job_id)
             for job in secondary_jobs
         },
-    })
+    }, status=202)
 
 
 def generation_job_summary(job):
@@ -476,6 +481,39 @@ def get_generation_job(request, job_id):
     user = get_user_from_request(request)
     job = CharacterGenerationService().get_generation_job(user, job_id)
     return ok(job_dict(job))
+
+
+@api_view(["GET"])
+@handle_errors
+def generation_job_history(request, project_id, character_id):
+    user = get_user_from_request(request)
+    try:
+        limit = int(request.GET.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    jobs = list_character_jobs(
+        actor=user,
+        project_id=project_id,
+        character_id=character_id,
+        limit=limit,
+    )
+    return ok({"jobs": [job_history_dict(job) for job in jobs]})
+
+
+@api_view(["POST"])
+@handle_errors
+def retry_generation_job(request, job_id):
+    user = get_user_from_request(request)
+    job = retry_character_job(actor=user, job_id=job_id)
+    return ok({"job_id": str(job.job_id), "status": job.status}, status=202)
+
+
+@api_view(["POST"])
+@handle_errors
+def request_generation_job_cancellation(request, job_id):
+    user = get_user_from_request(request)
+    job = request_job_cancellation(actor=user, job_id=job_id)
+    return ok(job_dict(job, include_variants=False), status=202)
 
 
 @api_view(["POST"])
@@ -574,10 +612,10 @@ def generate_outfit_variants(request, project_id, character_id, outfit_id):
     data["region"] = "outfit"
     data.setdefault("controls", {})
     data["controls"]["outfit_id"] = str(outfit_id)
-    job = CharacterGenerationService().generate_edit_variants(
+    job = CharacterGenerationService(execute_immediately=False).generate_edit_variants(
         user, project_id, character_id, data,
     )
-    return ok({"job_id": str(job.job_id), "status": job.status})
+    return ok({"job_id": str(job.job_id), "status": job.status}, status=202)
 
 
 @api_view(["POST"])
@@ -760,7 +798,7 @@ def references_collection(request, project_id, character_id):
 def references_generate(request, project_id, character_id):
     user = get_user_from_request(request)
     data = generation_payload(request)
-    job = CharacterGenerationService().generate_reference(
+    job = CharacterGenerationService(execute_immediately=False).generate_reference(
         user, project_id, character_id, data,
     )
     # Refresh state so the client gets the updated row immediately (the asset
@@ -776,7 +814,7 @@ def references_generate(request, project_id, character_id):
         "error_code": job.error_code,
         "error_message": job.error_message,
         "references": references_payload(character, readiness),
-    })
+    }, status=202)
 
 
 @api_view(["POST"])
@@ -790,7 +828,7 @@ def references_generate_missing(request, project_id, character_id):
     """
     user = get_user_from_request(request)
     data = generation_payload(request)
-    result = CharacterGenerationService().generate_missing_references(
+    result = CharacterGenerationService(execute_immediately=False).generate_missing_references(
         user, project_id, character_id, data,
     )
     character = CharacterService().get_viewable_character(
@@ -801,7 +839,7 @@ def references_generate_missing(request, project_id, character_id):
         "created_jobs": result["created_jobs"],
         "skipped": result["skipped"],
         "references": references_payload(character, readiness),
-    })
+    }, status=202)
 
 
 @api_view(["POST"])
@@ -809,7 +847,7 @@ def references_generate_missing(request, project_id, character_id):
 def references_correct(request, project_id, character_id, reference_id):
     user = get_user_from_request(request)
     data = generation_payload(request)
-    job = CharacterGenerationService().correct_reference(
+    job = CharacterGenerationService(execute_immediately=False).correct_reference(
         user, project_id, character_id, reference_id, data,
     )
     character = CharacterService().get_viewable_character(
@@ -822,7 +860,7 @@ def references_correct(request, project_id, character_id, reference_id):
         "error_code": job.error_code,
         "error_message": job.error_message,
         "references": references_payload(character, readiness),
-    })
+    }, status=202)
 
 
 @api_view(["POST"])
@@ -946,7 +984,8 @@ def references_proceed_to_3d(request, project_id, character_id):
         "next_url": f"/project/{project_id}/characters/{character_id}/3d-model",
         "locked_reference_ids": locked_ids,
         "reconstruction": reconstruction,
-    })
+        "job_id": reconstruction.get("job_id"),
+    }, status=202)
 
 
 # ----------------------------------------------------------------------------

@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 
 from w_craft_back.movie.poster.errors import (
     PosterError,
@@ -48,6 +50,7 @@ from w_craft_back.movie.poster.services import (
     resolve_reference_asset,
     select_variant as _select_variant,
     serialize_job,
+    serialize_job_history,
     serialize_poster,
     serialize_variant,
     soft_delete_variant,
@@ -138,6 +141,7 @@ def _serialize_operation(
         .order_by("variant_index", "created_at")
     )
     return {
+        "job_id": job.id,
         "jobId": job.id,
         "status": job.status,
         "idempotentReplay": replayed,
@@ -321,6 +325,7 @@ def generate_poster(
     image_model: str | None = None,
     request=None,
     run_mock: bool | None = None,
+    execute_immediately: bool = True,
 ) -> dict[str, Any]:
     project = _project_for_generation(user, project_id)
     reference_asset = resolve_reference_asset(project, reference_image_asset_id)
@@ -353,6 +358,17 @@ def generate_poster(
         reference_image_bytes = normalized_reference.data
         reference_mime_type = normalized_reference.mime_type
 
+    reference_storage_key = ""
+    if reference_image_bytes is not None:
+        extension = {
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+        }.get(reference_mime_type, "png")
+        reference_storage_key = default_storage.save(
+            f"projects/{project.id}/posters/references/{uuid.uuid4()}.{extension}",
+            ContentFile(reference_image_bytes),
+        )
+
     key = _service_idempotency_key(idempotency_key)
     fingerprint = request_fingerprint(
         {
@@ -366,18 +382,28 @@ def generate_poster(
         },
         reference_image_bytes,
     )
-    poster, job, created = enqueue_generation_job(
-        project=project,
-        user=user,
-        prompt=prompt,
-        style=style,
-        format=format,
-        operation=PosterJobOperation.GENERATE,
-        idempotency_key=key,
-        request_hash=fingerprint,
-        reference_asset=reference_asset,
-    )
+    try:
+        poster, job, created = enqueue_generation_job(
+            project=project,
+            user=user,
+            prompt=prompt,
+            style=style,
+            format=format,
+            operation=PosterJobOperation.GENERATE,
+            idempotency_key=key,
+            request_hash=fingerprint,
+            requested_model=image_model or "",
+            reference_storage_key=reference_storage_key,
+            reference_mime_type=reference_mime_type if reference_storage_key else "",
+            reference_asset=reference_asset,
+        )
+    except Exception:
+        if reference_storage_key:
+            default_storage.delete(reference_storage_key)
+        raise
     if not created:
+        if reference_storage_key:
+            default_storage.delete(reference_storage_key)
         if job.status == PosterJobStatus.FAILED:
             _raise_stored_failure(job)
         return _serialize_operation(
@@ -392,6 +418,9 @@ def generate_poster(
             "operation": PosterJobOperation.GENERATE,
         },
     )
+
+    if not execute_immediately:
+        return _serialize_operation(project, poster, job, request=request)
 
     use_mock = (
         getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
@@ -481,6 +510,7 @@ def edit_poster(
     image_model: str | None = None,
     request=None,
     run_mock: bool | None = None,
+    execute_immediately: bool = True,
 ) -> dict[str, Any]:
     project = _project_for_generation(user, project_id)
     source = (
@@ -492,6 +522,15 @@ def edit_poster(
     if source is None:
         raise PosterVariantNotFound("source poster variant not found")
     source_bytes = _read_limited_file(source.image)
+    source_mime_type = source.mime_type or "image/png"
+    extension = {
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+    }.get(source_mime_type, "png")
+    source_storage_key = default_storage.save(
+        f"projects/{project.id}/posters/edit-sources/{uuid.uuid4()}.{extension}",
+        ContentFile(source_bytes),
+    )
 
     key = _service_idempotency_key(idempotency_key)
     fingerprint = request_fingerprint(
@@ -502,18 +541,26 @@ def edit_poster(
             "image_model": image_model,
         }
     )
-    poster, job, created = enqueue_generation_job(
-        project=project,
-        user=user,
-        prompt=instruction,
-        style=source.job.style,
-        format=source.job.format,
-        operation=PosterJobOperation.EDIT,
-        idempotency_key=key,
-        request_hash=fingerprint,
-        source_variant=source,
-    )
+    try:
+        poster, job, created = enqueue_generation_job(
+            project=project,
+            user=user,
+            prompt=instruction,
+            style=source.job.style,
+            format=source.job.format,
+            operation=PosterJobOperation.EDIT,
+            idempotency_key=key,
+            request_hash=fingerprint,
+            reference_storage_key=source_storage_key,
+            reference_mime_type=source_mime_type,
+            source_variant=source,
+            requested_model=image_model or "",
+        )
+    except Exception:
+        default_storage.delete(source_storage_key)
+        raise
     if not created:
+        default_storage.delete(source_storage_key)
         if job.status == PosterJobStatus.FAILED:
             _raise_stored_failure(job)
         return _serialize_operation(
@@ -528,6 +575,9 @@ def edit_poster(
             "operation": PosterJobOperation.EDIT,
         },
     )
+
+    if not execute_immediately:
+        return _serialize_operation(project, poster, job, request=request)
 
     use_mock = (
         getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
@@ -547,7 +597,7 @@ def edit_poster(
             edited = provider.edit(
                 source_bytes,
                 instruction,
-                mime_type=source.mime_type or "image/png",
+                mime_type=source_mime_type,
                 timeout=provider_timeout_seconds(),
             )
         except ImageProviderError as exc:
@@ -574,6 +624,68 @@ def edit_poster(
     )
     return _serialize_operation(project, poster, job, request=request)
 
+
+
+
+def get_poster_jobs(
+    user: User,
+    project_id: int,
+    *,
+    limit: int = 50,
+    request=None,
+) -> dict[str, Any]:
+    project = _project_for_access(user, project_id)
+    batch_limit = max(1, min(int(limit), 200))
+    jobs = PosterGenerationJob.objects.filter(project=project).order_by("-created_at")
+    return {
+        "jobs": [serialize_job_history(job, request) for job in jobs[:batch_limit]],
+    }
+
+
+def retry_poster_generation(
+    user: User,
+    project_id: int,
+    job_id: int,
+    *,
+    request=None,
+) -> dict[str, Any]:
+    from w_craft_back.movie.poster.lifecycle import retry_poster_job
+
+    project = _project_for_generation(user, project_id)
+    original = PosterGenerationJob.objects.filter(
+        pk=job_id,
+        project=project,
+    ).first()
+    if original is None:
+        raise PosterJobNotFound("poster job not found")
+    job = retry_poster_job(original, actor=user)
+    return {
+        "job_id": job.id,
+        "jobId": job.id,
+        "status": job.status,
+        "job": serialize_job(job, request),
+    }
+
+
+def cancel_poster_generation(
+    user: User,
+    project_id: int,
+    job_id: int,
+    *,
+    request=None,
+) -> dict[str, Any]:
+    from w_craft_back.movie.poster.lifecycle import request_poster_cancellation
+
+    project = _project_for_generation(user, project_id)
+    if not PosterGenerationJob.objects.filter(pk=job_id, project=project).exists():
+        raise PosterJobNotFound("poster job not found")
+    job = request_poster_cancellation(job_id)
+    return {
+        "job_id": job.id,
+        "jobId": job.id,
+        "status": job.status,
+        "job": serialize_job(job, request),
+    }
 
 def get_poster_job(
     user: User,

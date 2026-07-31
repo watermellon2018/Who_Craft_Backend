@@ -136,7 +136,8 @@ class CharacterGenerationService:
     def dependent_image_types(cls, image_type):
         return cls.EDIT_DEPENDENCIES.get(image_type, (image_type,))
 
-    def __init__(self):
+    def __init__(self, *, execute_immediately=True):
+        self.execute_immediately = execute_immediately
         self.logger = logging.getLogger(__name__)
         self.jobs = GenerationJobRepository()
         self.variants = VariantRepository()
@@ -873,6 +874,8 @@ class CharacterGenerationService:
             compiled=compiled,
             provider_operation=provider_operation,
         )
+        if not self.execute_immediately:
+            return job
         return self.execute_queued_job(
             job.job_id,
             reference_bytes=reference_bytes,

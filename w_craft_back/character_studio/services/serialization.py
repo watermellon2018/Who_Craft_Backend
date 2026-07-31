@@ -260,15 +260,24 @@ def job_dict(job, include_variants=True):
     data["project_id"] = job.project_id
     # ``user`` remains legacy character-creator attribution; ``actor`` is the
     # collaborator who authorized and started this concrete paid operation.
+    data["retry_of"] = str(job.retry_of_id) if job.retry_of_id else None
     data["user_id"] = job.user_id
     data["creator_id"] = job.user_id
     data["actor_id"] = job.actor_id
     data["created_at"] = value_to_json(job.created_at)
     data["started_at"] = value_to_json(job.started_at)
     data["completed_at"] = value_to_json(job.completed_at)
+    data["cancellation_requested_at"] = value_to_json(job.cancellation_requested_at)
     data["failed_at"] = value_to_json(job.failed_at)
     data["lease_expires_at"] = value_to_json(job.lease_expires_at)
     data["heartbeat_at"] = value_to_json(job.heartbeat_at)
     if include_variants:
         data["variants"] = [variant_dict(variant) for variant in job.variants.order_by("variant_index")]
+    return data
+
+
+def job_history_dict(job):
+    data = job_dict(job, include_variants=False)
+    for sensitive_field in ("request_payload", "preserve_options"):
+        data.pop(sensitive_field, None)
     return data

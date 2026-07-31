@@ -105,6 +105,7 @@ class GenerationJobType(models.TextChoices):
 class GenerationJobStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
     PROCESSING = "processing", "Processing"
+    CANCELLATION_REQUESTED = "cancellation_requested", "Cancellation requested"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
     CANCELLED = "cancelled", "Cancelled"
@@ -623,6 +624,14 @@ class CharacterGenerationJob(models.Model):
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     provider_started_at = models.DateTimeField(null=True, blank=True)
+    cancellation_requested_at = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="retries",
+    )
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     failed_at = models.DateTimeField(null=True, blank=True)
