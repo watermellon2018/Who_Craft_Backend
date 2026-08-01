@@ -6,7 +6,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.profile.models import UserProfile
+from w_craft_back.profile.models import Interest, UserInterest, UserProfile
 
 
 class DashboardViewTest(TestCase):
@@ -54,9 +54,10 @@ class DashboardViewTest(TestCase):
     def test_stats_section_has_all_fields(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         stats = response.json()['stats']
+        self.assertFalse(stats['available'])
         for field in ('new_messages', 'subscriptions_count', 'watch_history_count',
                       'total_views', 'recommendations_count', 'completed_lessons'):
-            self.assertIn(field, stats)
+            self.assertEqual(stats[field], 0)
 
     def test_settings_reflect_profile_defaults(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
@@ -74,17 +75,64 @@ class DashboardViewTest(TestCase):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['display_name'], 'Джеймс Кэмерон')
 
-    def test_analytics_has_30_points(self):
+    def test_unimplemented_dashboard_sections_are_empty_or_unavailable(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
-        points = response.json()['views_analytics']['points']
-        self.assertEqual(len(points), 30)
+        data = response.json()
 
-    def test_awards_list_is_not_empty(self):
+        for field in ('awards', 'recent_activity', 'favorite_authors',
+                      'continue_watching'):
+            self.assertEqual(data[field], [])
+
+        analytics = data['views_analytics']
+        self.assertFalse(analytics['available'])
+        self.assertEqual(analytics['period'], '30d')
+        self.assertEqual(analytics['points'], [])
+        self.assertEqual(analytics['summary'], {
+            'views': 0,
+            'views_delta_percent': 0,
+            'unique_viewers': 0,
+            'unique_viewers_delta_percent': 0,
+            'average_watch_time': '',
+            'average_watch_time_delta_percent': 0,
+        })
+
+    def test_default_profile_has_no_fabricated_profile_values(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
-        awards = response.json()['awards']
-        self.assertGreater(len(awards), 0)
-        self.assertIn('code', awards[0])
-        self.assertIn('unlocked', awards[0])
+        data = response.json()
+
+        self.assertEqual(data['user']['tagline'], '')
+        self.assertEqual(data['interests'], [])
+        self.assertEqual(data['favorite_genres'], [])
+
+    def test_dashboard_uses_saved_legacy_profile_values(self):
+        UserProfile.objects.create(
+            user=self.user,
+            tagline='Снимаю документальное кино',
+            interests=['Архитектура'],
+            favorite_genres=['Документальный'],
+        )
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        data = response.json()
+
+        self.assertEqual(data['user']['tagline'], 'Снимаю документальное кино')
+        self.assertEqual(data['interests'], ['Архитектура'])
+        self.assertEqual(data['favorite_genres'], ['Документальный'])
+
+    def test_normalized_interests_take_precedence_over_legacy_profile_values(self):
+        UserProfile.objects.create(
+            user=self.user,
+            interests=['Legacy interest'],
+        )
+        interest = Interest.objects.create(
+            name='Real interest',
+            slug='real-interest',
+        )
+        UserInterest.objects.create(user=self.user, interest=interest)
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+
+        self.assertEqual(response.json()['interests'], ['Real interest'])
 
     def test_token_via_header(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
