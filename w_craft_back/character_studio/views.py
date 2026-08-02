@@ -1011,7 +1011,7 @@ def model3d_state(request, project_id, character_id):
         # the first time, load the saved state every time after.
         return ok({
             "params": character.model3d_params or {},
-            "reconstruction": reconstruction_state(character),
+            "reconstruction": reconstruction_state(character, ensure=True),
             "autofit_done": character.model3d_autofit_done,
             "autofit_version": character.model3d_autofit_version,
             "updated_at": character.updated_at.isoformat(),

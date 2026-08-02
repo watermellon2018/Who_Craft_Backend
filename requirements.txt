@@ -1,12 +1,12 @@
 accelerate==0.27.2
-asgiref==3.7.2
+asgiref==3.8.1
 certifi==2023.11.17
 cfgv==3.4.0
 charset-normalizer==3.3.2
 colorama==0.4.6
 diffusers @ git+https://github.com/kashif/diffusers.git@9785210afe81e387a65dd6594818077ddb8e86dc
 distlib==0.3.8
-Django==4.1
+Django==5.2.13
 django-cors-headers==4.3.1
 django-js-asset==2.2.0
 django-mptt==0.16.0

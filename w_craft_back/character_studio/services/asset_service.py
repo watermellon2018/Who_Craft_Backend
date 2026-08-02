@@ -265,12 +265,9 @@ class CharacterAssetService:
         """Compute the readiness summary used by the References screen.
 
         Technical requirements (portrait + full_body + (profile|three_quarter)
-        + back_view, all ready, no in-flight job, no failed required) BLOCK
-        proceed-to-3D. Subjective user-checklist items (appearance_stable,
-        face_matches_base, outfit_readable, suitable_for_3d) are returned in
-        the response but do NOT block — they only show as warnings. This is
-        intentional: we don't want to stall a real production flow on a user
-        forgetting to tick a self-affirmation box.
+        + back_view, all ready, no in-flight job) and every subjective quality
+        checklist item must be satisfied before the references can be locked
+        for the 3D stage.
         """
         latest = self.latest_ready_by_reference_type(character)
 
@@ -314,6 +311,14 @@ class CharacterAssetService:
             blockers.append("missing_back_view")
         if generating_on_required:
             blockers.append("generation_in_progress")
+        if not appearance_stable:
+            blockers.append("appearance_not_confirmed")
+        if not face_matches_base:
+            blockers.append("face_not_confirmed")
+        if not outfit_readable:
+            blockers.append("outfit_not_confirmed")
+        if not suitable_for_3d:
+            blockers.append("suitability_for_3d_not_confirmed")
 
         can_proceed = not blockers
 

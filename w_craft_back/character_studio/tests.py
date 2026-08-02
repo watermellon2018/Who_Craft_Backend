@@ -1239,6 +1239,55 @@ class ReferencesStageTests(CharacterStudioTestCase):
             **self.generation_headers(),
         )
 
+    def _confirm_quality(self):
+        response = self.client.patch(
+            self._url("/checklist"),
+            {
+                "token_user": self.token,
+                "appearance_stable": True,
+                "face_matches_base": True,
+                "outfit_readable": True,
+                "suitable_for_3d": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def _seed_ready_references(self, *side_types):
+        side_types = side_types or (
+            CharacterAssetType.PROFILE, CharacterAssetType.THREE_QUARTER,
+        )
+        portrait = CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.PORTRAIT,
+            image_url="/media/tests/portrait.png",
+            storage_path="tests/portrait.png",
+            source="test",
+            status=CharacterAssetStatus.READY,
+            metadata={"sha256": "portrait-hash"},
+        )
+        for asset_type in (
+            CharacterAssetType.FULL_BODY,
+            *side_types,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            CharacterAsset.objects.create(
+                character=self.character,
+                project=self.project,
+                user=self.user_key,
+                asset_type=asset_type,
+                image_url=f"/media/tests/{asset_type}.png",
+                storage_path=f"tests/{asset_type}.png",
+                source="test",
+                status=CharacterAssetStatus.READY,
+                metadata={
+                    "sha256": f"{asset_type}-hash",
+                    "source_identity_asset_id": str(portrait.asset_id),
+                },
+            )
+
     def test_get_returns_all_nine_reference_types_in_stable_order(self):
         response = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.status_code, 200)
@@ -1391,30 +1440,49 @@ class ReferencesStageTests(CharacterStudioTestCase):
         self.assertFalse(body["can_proceed"])
         self.assertIn("missing_portrait", body["blockers"])
 
-    def test_proceed_to_3d_succeeds_when_required_ready(self):
-        for ref_type in ("portrait", "full_body", "profile", "back_view"):
-            response = self._generate(ref_type)
-            self.assertEqual(response.status_code, 200, response.content)
+    def test_proceed_to_3d_blocked_until_quality_is_confirmed(self):
+        self._seed_ready_references()
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        self.assertFalse(body["can_proceed"])
+        self.assertIn("appearance_not_confirmed", body["blockers"])
+        self.assertIn("face_not_confirmed", body["blockers"])
+        self.assertIn("outfit_not_confirmed", body["blockers"])
+        self.assertIn("suitability_for_3d_not_confirmed", body["blockers"])
+        self.character.refresh_from_db()
+        self.assertNotEqual(self.character.status, CharacterStatus.REFERENCES_LOCKED)
+
+    def test_proceed_to_3d_succeeds_when_ready_and_quality_confirmed(self):
+        self._seed_ready_references()
+        self._confirm_quality()
+        response = self.client.post(
+            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
+        )
+        self.assertEqual(response.status_code, 202, response.content)
         body = response.json()
         self.assertTrue(body["can_proceed"])
         self.assertEqual(body["next_stage"], "3d_model")
         self.character.refresh_from_db()
+        self.assertEqual(body["reconstruction"]["status"], "queued")
+        self.assertIsNotNone(body["job_id"])
         self.assertEqual(self.character.status, CharacterStatus.REFERENCES_LOCKED)
 
     def test_three_quarter_satisfies_profile_requirement(self):
         # profile OR three_quarter is acceptable for the side requirement.
-        for ref_type in ("portrait", "full_body", "three_quarter", "back_view"):
-            self._generate(ref_type)
+        self._seed_ready_references(
+            CharacterAssetType.THREE_QUARTER,
+        )
+        self._confirm_quality()
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 202, response.content)
 
     def test_checklist_patch_persists_user_state(self):
         response = self.client.patch(
@@ -1989,6 +2057,42 @@ class Model3DStageTests(CharacterStudioTestCase):
         body = response.json()
         self.assertEqual(body["params"], {})
         self.assertIn("updated_at", body)
+
+    def test_get_recovers_reconstruction_for_locked_shared_identity_views(self):
+        self.character.status = CharacterStatus.REFERENCES_LOCKED
+        self.character.save(update_fields=("status", "updated_at"))
+        identity_source_id = "canonical-identity-asset"
+        for asset_type in (
+            CharacterAssetType.PORTRAIT,
+            CharacterAssetType.FULL_BODY,
+            CharacterAssetType.PROFILE,
+            CharacterAssetType.THREE_QUARTER,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            CharacterAsset.objects.create(
+                character=self.character,
+                project=self.project,
+                user=self.user_key,
+                asset_type=asset_type,
+                image_url=f"/media/tests/{asset_type}.png",
+                storage_path=f"tests/{asset_type}.png",
+                source="test",
+                status=CharacterAssetStatus.READY,
+                metadata={
+                    "sha256": f"{asset_type}-hash",
+                    "source_identity_asset_id": identity_source_id,
+                },
+            )
+
+        response = self.client.get(
+            self._url(),
+            HTTP_X_USER_TOKEN=self.token,
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        reconstruction = response.json()["reconstruction"]
+        self.assertEqual(reconstruction["status"], "queued")
+        self.assertIsNotNone(reconstruction["job_id"])
 
     def test_put_then_get_roundtrip(self):
         params = {

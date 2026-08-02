@@ -92,7 +92,6 @@ def resolve_current_for_user(user: Any) -> dict:
     are missing.
     """
     key, source = _resolve_key(user, None)
-    spec = resolve_model(key) if key in (None, "") or True else None  # validated below
     try:
         spec = resolve_model(key)
     except ImageProviderError:

@@ -16,6 +16,7 @@ from rest_framework.test import APIClient
 from w_craft_back.character_studio.models import (
     CharacterGenerationJob,
     GenerationJobStatus,
+    GenerationJobType,
 )
 from w_craft_back.character_studio.services.generation_lifecycle import (
     claim_job,
@@ -65,6 +66,36 @@ class CharacterWorkerContractTests(CharacterStudioTestCase):
             HTTP_X_USER_TOKEN=str(self.user_key.key),
         )
         self.assertEqual(polling.json()["status"], GenerationJobStatus.COMPLETED)
+
+    def test_history_redacts_technical_failure_details(self):
+        character = self.create_character()
+        job = CharacterGenerationService(execute_immediately=False).create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1},
+        )
+        raw_error = (
+            r"Command ['C:\Users\stepa\conda.exe'] "
+            "returned non-zero exit status 1."
+        )
+        CharacterGenerationJob.objects.filter(job_id=job.job_id).update(
+            job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
+            status=GenerationJobStatus.FAILED,
+            error_code="RECONSTRUCTION_FAILED",
+            error_message=raw_error,
+        )
+
+        history = self.client.get(
+            f"/api/projects/{self.project.id}/characters/"
+            f"{character.character_id}/generation-jobs",
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+
+        self.assertEqual(history.status_code, 200, history.content)
+        error_message = history.json()["jobs"][0]["error_message"]
+        self.assertEqual(error_message, "Reconstruction failed. Try again.")
+        self.assertNotIn(r"C:\Users", error_message)
 
     def test_cancellation_request_fences_stale_terminal_update_and_retry_history(self):
         character = self.create_character()

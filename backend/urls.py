@@ -21,9 +21,12 @@ from django.conf.urls.static import static
 from django.urls.resolvers import URLPattern
 
 from w_craft_back.api_contract import openapi_schema_view
+from w_craft_back.health import liveness, readiness
 from w_craft_back.storage_gateway import serve_signed_media
 
 urlpatterns = [
+    path('health/live', liveness, name='health-live'),
+    path('health/ready', readiness, name='health-ready'),
     path('admin/', admin.site.urls),
     path('api/schema/openapi.json', openapi_schema_view, name='openapi-schema'),
     path('api/character/', include('w_craft_back.characters.display_tree.urls')),

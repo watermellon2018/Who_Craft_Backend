@@ -321,3 +321,7 @@ MODEL3D_MODEL_ROOT = os.getenv(
     "MODEL3D_MODEL_ROOT",
     str(BASE_DIR.parent / "external" / "Hunyuan3D-2" / "models"),
 )
+READINESS_REQUIRE_MODEL3D_WORKER = (
+    os.getenv("READINESS_REQUIRE_MODEL3D_WORKER", "true").lower()
+    in {"1", "true", "yes", "on"}
+)

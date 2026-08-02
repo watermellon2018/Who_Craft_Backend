@@ -14,7 +14,10 @@ from w_craft_back.services.image_generation.errors import (
 )
 from w_craft_back.services.image_generation.gemini_native import GeminiNativeProvider
 from w_craft_back.services.image_generation.litellm_provider import LiteLLMProvider
-from w_craft_back.services.image_generation.resolver import _resolve_key
+from w_craft_back.services.image_generation.resolver import (
+    _resolve_key,
+    resolve_current_for_user,
+)
 
 
 def _user_with_pref(pref: str | None):
@@ -51,6 +54,13 @@ class ResolveKeyTest(TestCase):
             key, source = _resolve_key(None, None)
         self.assertEqual(key, "gemini-flash-image")
         self.assertEqual(source, "default")
+
+    def test_removed_user_model_falls_back_to_default(self):
+        user = _user_with_pref("removed-model-key")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            current = resolve_current_for_user(user)
+        self.assertEqual(current["key"], "gemini-flash-image")
+        self.assertEqual(current["source"], "default")
 
 
 class ResolveProviderTest(TestCase):

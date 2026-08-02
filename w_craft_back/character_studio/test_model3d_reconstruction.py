@@ -235,6 +235,26 @@ class Model3DReconstructionTests(TestCase):
         self.assertIn("different identity", state["error_message"])
         dispatch.assert_not_called()
 
+    def test_shared_identity_anchor_survives_portrait_regeneration(self):
+        identity_source_id = "canonical-identity-asset"
+        for asset in self.reference_assets.values():
+            asset.metadata = {
+                **asset.metadata,
+                "source_identity_asset_id": identity_source_id,
+            }
+            asset.save(update_fields=("metadata", "updated_at"))
+
+        state, dispatch = self._ensure_and_dispatch()
+
+        self.assertEqual(state["status"], "queued")
+        self.assertIsNotNone(state["job_id"])
+        dispatch.assert_not_called()
+        self.assertTrue(
+            CharacterGenerationJob.objects.filter(
+                job_id=state["job_id"],
+            ).exists()
+        )
+
     def test_pipeline_passes_profile_and_three_quarter_in_order(self):
 
         selected = _selected_references(self.character)

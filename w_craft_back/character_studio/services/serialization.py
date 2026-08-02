@@ -2,6 +2,30 @@ from django.forms.models import model_to_dict
 
 from w_craft_back.storage_gateway import signed_url_for_asset
 
+_TECHNICAL_ERROR_MARKERS = (
+    "command [",
+    "traceback",
+    "returned non-zero exit status",
+    ":\\users\\",
+    "/users/",
+    "/home/",
+    "static\\media\\",
+    "static/media/",
+)
+
+
+def public_generation_error_message(error_message: str, job_type: str = "") -> str:
+    """Return a user-safe failure summary without commands or local paths."""
+    message = str(error_message or "").strip()
+    if not message:
+        return ""
+    if job_type == "model3d_reconstruction":
+        return "Reconstruction failed. Try again."
+    normalized = message.lower()
+    if any(marker in normalized for marker in _TECHNICAL_ERROR_MARKERS):
+        return "Generation failed. Try again."
+    return message
+
 
 def value_to_json(value):
     if value is None:
@@ -244,6 +268,11 @@ def references_payload(character, readiness):
 
 def job_dict(job, include_variants=True):
     data = model_dict(job)
+    if data.get("status") == "failed":
+        data["error_message"] = public_generation_error_message(
+            job.error_message,
+            job.job_type,
+        )
     for internal_field in (
         "lease_token",
         "request_hash",

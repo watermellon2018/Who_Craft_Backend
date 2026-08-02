@@ -35,7 +35,10 @@ from w_craft_back.character_studio.services.asset_service import (
     CharacterAssetService,
 )
 from w_craft_back.character_studio.services.errors import ValidationError
-from w_craft_back.character_studio.services.serialization import public_url
+from w_craft_back.character_studio.services.serialization import (
+    public_generation_error_message,
+    public_url,
+)
 from w_craft_back.observability import log_context
 
 
@@ -71,15 +74,18 @@ def _identity_source_ids(references: dict[str, CharacterAsset]) -> set[str]:
 def _references_share_portrait_identity(
     references: dict[str, CharacterAsset],
 ) -> bool:
-    """Reject derived views anchored to a portrait other than the selected one."""
+    """Accept views anchored to the selected portrait or its identity source."""
     portrait = references.get(CharacterAssetType.PORTRAIT)
     if portrait is None:
         return False
-    portrait_id = str(portrait.asset_id)
-    return all(
-        source_id == portrait_id
-        for source_id in _identity_source_ids(references)
+    portrait_metadata = (
+        portrait.metadata if isinstance(portrait.metadata, dict) else {}
     )
+    allowed_source_ids = {str(portrait.asset_id)}
+    portrait_source_id = portrait_metadata.get("source_identity_asset_id")
+    if portrait_source_id:
+        allowed_source_ids.add(str(portrait_source_id))
+    return _identity_source_ids(references).issubset(allowed_source_ids)
 
 
 def _selected_references(character: StudioCharacter) -> dict[str, CharacterAsset]:
@@ -200,8 +206,9 @@ def _state(
             "progress": int(job.progress or 0),
             "job_id": str(job.job_id),
             "asset_id": str(asset.asset_id) if asset else None,
-            "error_message": (
-                job.error_message or (asset.error_message if asset else "")
+            "error_message": public_generation_error_message(
+                job.error_message or (asset.error_message if asset else ""),
+                job.job_type,
             ),
         }
     )
