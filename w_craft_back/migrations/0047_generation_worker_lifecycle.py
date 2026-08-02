@@ -121,14 +121,14 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="postergenerationjob",
             constraint=models.CheckConstraint(
-                condition=models.Q(progress__gte=0, progress__lte=100),
+                check=models.Q(progress__gte=0, progress__lte=100),
                 name="chk_poster_job_progress_range",
             ),
         ),
         migrations.AddConstraint(
             model_name="postergenerationjob",
             constraint=models.CheckConstraint(
-                condition=models.Q(attempts__lte=models.F("max_attempts")),
+                check=models.Q(attempts__lte=models.F("max_attempts")),
                 name="chk_poster_job_attempts",
             ),
         ),
