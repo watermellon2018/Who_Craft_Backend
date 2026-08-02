@@ -9,6 +9,7 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Any, Optional
 
 from django.contrib.auth.models import User
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -27,6 +28,10 @@ from w_craft_back.movie.project.dashboard_models import (
     SceneMusic,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
+from w_craft_back.storage_gateway import (
+    signed_url_for_asset,
+    signed_url_for_file,
+)
 
 try:  # UserProfile is optional — guard against absence.
     from w_craft_back.profile.models import UserProfile  # type: ignore
@@ -119,35 +124,34 @@ def _scenes_usage_label(count: int) -> str:
     return f"Используется в {count} {_plural_ru(count, 'сцене', 'сценах', 'сценах')}"
 
 
-def _absolute_url(request, file_field) -> Optional[str]:
-    if not file_field:
-        return None
+def _absolute_url(request, file_field, *, project=None) -> Optional[str]:
+    return signed_url_for_file(file_field, request, project=project)
+
+
+def _selected_poster_url(project: Project, request=None) -> Optional[str]:
+    """Return the canonical selected poster variant without exposing other jobs."""
     try:
-        url = file_field.url
-    except Exception:
+        selected = project.poster.selected_variant
+    except ObjectDoesNotExist:
         return None
-    if request is None:
-        return url
-    return request.build_absolute_uri(url)
+    if selected is None or selected.is_deleted:
+        return None
+    return _absolute_url(request, selected.image, project=project)
 
 
-def _absolute_url_str(request, raw_url: Optional[str]) -> Optional[str]:
-    """Turn a relative URL string (or absolute) into an absolute URL.
-
-    CharacterAsset.image_url is a TextField holding an already-relative URL
-    like '/media/character-studio/.../portrait_0.png', so we can't use the
-    Django file-field helper.
-    """
-    if not raw_url:
-        return None
-    raw_url = raw_url.strip()
-    if not raw_url:
-        return None
-    if raw_url.startswith(("http://", "https://", "//")):
-        return raw_url
-    if request is None:
-        return raw_url
-    return request.build_absolute_uri(raw_url)
+def _absolute_url_str(
+    request,
+    raw_url: Optional[str],
+    *,
+    storage_key: Optional[str] = None,
+    project=None,
+) -> Optional[str]:
+    return signed_url_for_asset(
+        storage_key=storage_key,
+        legacy_url=raw_url,
+        request=request,
+        project=project,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -210,22 +214,10 @@ def _team_member_payload(member: ProjectMember, profile, request) -> dict:
 # --------------------------------------------------------------------------- #
 
 def _resolve_user_role(project: Project, user: Optional[User]) -> str:
-    """Return current user's role for this project: owner | editor | viewer.
+    """Return the central policy role, defaulting to viewer for display."""
+    from w_craft_back.movie.project import policy
 
-    Owner via direct FK or legacy UserKey wrapper short-circuits to 'owner'.
-    Otherwise reads ProjectMember; defaults to 'viewer' for safety.
-    """
-    if user is None:
-        return "viewer"
-    if project.owner_id == user.id:
-        return "owner"
-    legacy_owner_id = getattr(project.user, "user_id", None) if project.user_id else None
-    if legacy_owner_id == user.id:
-        return "owner"
-    member = ProjectMember.objects.filter(project=project, user=user).first()
-    if member is None:
-        return "viewer"
-    return member.role
+    return policy.get_role(user, project) or "viewer"
 
 
 def _hero_payload(project: Project, request, user: Optional[User] = None) -> dict:
@@ -257,8 +249,10 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
         owner_name = owner_payload["displayName"]
 
     description = project.description or project.desc or ""
-    cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
-        request, project.image
+    cover_url = (
+        _absolute_url(request, project.cover_image, project=project)
+        or _selected_poster_url(project, request)
+        or _absolute_url(request, project.image, project=project)
     )
 
     from w_craft_back.movie.project import policy as _policy
@@ -380,7 +374,12 @@ def _characters_payload(project: Project, request, limit: int = 6) -> list[dict]
         main_image_url = None
         ref = c.canonical_reference_image
         if ref is not None:
-            avatar_url = _absolute_url_str(request, getattr(ref, "image_url", None))
+            avatar_url = _absolute_url_str(
+                request,
+                getattr(ref, "image_url", None),
+                storage_key=getattr(ref, "storage_path", None),
+                project=project,
+            )
             main_image_url = avatar_url
         out.append(
             {
@@ -483,7 +482,7 @@ def _music_payload(project: Project, request, limit: int = 5) -> list[dict]:
                 "durationSeconds": int(t.duration_seconds or 0),
                 "durationLabel": _format_duration(t.duration_seconds),
                 "tags": list(t.tags or []),
-                "coverImageUrl": _absolute_url(request, t.cover_image),
+                "coverImageUrl": _absolute_url(request, t.cover_image, project=project),
                 "usageCount": usage,
                 "usageLabel": _scenes_usage_label(usage),
             }
@@ -590,8 +589,10 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
     if scenes_total is None:
         scenes_total = Scene.objects.filter(project=project).count()
 
-    cover_url = _absolute_url(request, project.cover_image) or _absolute_url(
-        request, project.image
+    cover_url = (
+        _absolute_url(request, project.cover_image, project=project)
+        or _selected_poster_url(project, request)
+        or _absolute_url(request, project.image, project=project)
     )
 
     # When the caller did a ``prefetch_related('tags')`` we read the cache
@@ -673,8 +674,10 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
     """
 
     base = build_project_summary(project, request)
-    poster_url = _absolute_url(request, project.image) or _absolute_url(
-        request, project.cover_image
+    poster_url = (
+        _selected_poster_url(project, request)
+        or _absolute_url(request, project.image, project=project)
+        or _absolute_url(request, project.cover_image, project=project)
     )
     base.update({
         "format": project.format or "",
@@ -685,6 +688,7 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
         "annotation": project.annot or "",
         "synopsis": project.desc or project.description or "",
         "posterUrl": poster_url,
+        "generationSettings": dict(project.generation_settings or {}),
         "createdAt": project.created_at.isoformat() if project.created_at else None,
     })
     return base

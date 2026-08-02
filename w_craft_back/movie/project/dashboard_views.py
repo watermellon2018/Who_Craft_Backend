@@ -1,49 +1,49 @@
 """Project dashboard API views.
 
-Auth follows the project's existing pattern: a ``token_user`` query/body/header
-value resolves to a ``UserKey`` -> ``User``. We never trust a user_id from
-the request body for access control.
+DRF resolves the ``X-User-Token`` access token before these handlers run. The
+temporary body-token fallback is implemented centrally; query credentials are
+never accepted. We never trust a request-body user id for access control.
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import re
-import uuid
 from typing import Optional
 
 from django.contrib.auth.models import User
-from django.core.files.base import ContentFile
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from w_craft_back.auth.models import UserKey
+from w_craft_back.movie.project import (
+    policy,
+    project_mutations,
+    team_errors,
+    team_service,
+)
 from w_craft_back.movie.project.dashboard_models import (
-    Location,
-    MusicTrack,
-    ProjectActivity,
-    ProjectGenerationJob,
-    ProjectGenerationJobStatus,
+    ProjectAsset,
     ProjectMember,
     ProjectMemberRole,
     ProjectProgress,
     ProjectTag,
-    Scene,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
+from w_craft_back.movie.project.project_images import (
+    decode_project_image_data_url,
+)
 from w_craft_back.movie.project.permissions import (
-    user_can_edit_project,
     user_has_project_access,
-    user_is_project_owner,
 )
 from w_craft_back.movie.project.serializers import (
     CharacterCreateSerializer,
-    GenerationJobCreateSerializer,
     LocationCreateSerializer,
     MusicTrackCreateSerializer,
     ProjectCreateSerializer,
@@ -58,10 +58,9 @@ from w_craft_back.movie.project.services import (
 )
 from w_craft_back.movie.project.script_workspace import (
     characters_collection_payload,
-    replace_scene_characters,
     scene_payload,
-    script_text_from_blocks,
 )
+from w_craft_back.storage_gateway import signed_url_for_file
 
 from w_craft_back.movie.properties.models import Audience, Genre
 
@@ -73,15 +72,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 def _resolve_user(request) -> Optional[User]:
-    """Resolve calling ``User`` via the shared token extractor (header → body → deprecated query string)."""
-    from w_craft_back.auth.utils import extract_user_token
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related("user").get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError):
-        return None
+    """Return the Django user established by DRF authentication."""
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _unauthorized():
@@ -97,6 +92,18 @@ def _validation_error(errors):
         {"detail": "validation error", "errors": errors},
         status=status.HTTP_400_BAD_REQUEST,
     )
+
+
+def _mutation_error_response(exc):
+    if isinstance(exc, Project.DoesNotExist):
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    if isinstance(exc, project_mutations.ProjectMutationForbidden):
+        return _forbidden()
+    if isinstance(exc, ValidationError):
+        return _validation_error(
+            getattr(exc, "message_dict", {"detail": exc.messages})
+        )
+    raise exc
 
 
 def _get_project_or_404(project_id) -> Project:
@@ -122,7 +129,9 @@ def _replace_tags(project: Project, names) -> None:
         seen.add(name.lower())
         cleaned.append(name)
     ProjectTag.objects.filter(project=project).delete()
-    ProjectTag.objects.bulk_create([ProjectTag(project=project, name=n) for n in cleaned])
+    ProjectTag.objects.bulk_create(
+        [ProjectTag(project=project, name=name) for name in cleaned]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -283,36 +292,13 @@ def _resolve_audiences(values) -> list[Audience]:
     return resolved
 
 
-_BASE64_PREFIX_RE = re.compile(r"^data:(?P<mime>[\w/+\-.]+);base64,(?P<data>.+)$", re.S)
-
-
-def _decode_poster_data_url(data_url: str, owner_id, title: str) -> Optional[ContentFile]:
-    """Convert a data: URL into a Django ContentFile usable with ImageField.save."""
-    if not data_url:
-        return None
-    m = _BASE64_PREFIX_RE.match(data_url.strip())
-    if not m:
-        return None
-    mime = m.group("mime").lower()
-    if mime not in {"image/jpeg", "image/png", "image/webp"}:
-        return None
-    try:
-        raw = base64.b64decode(m.group("data"), validate=True)
-    except (ValueError, base64.binascii.Error):
-        return None
-    if len(raw) > 5 * 1024 * 1024:  # 5 MB hard cap
-        return None
-    ext = mime.split("/")[-1]
-    safe_title = re.sub(r"[^\w\-.]+", "_", title or "project")[:60]
-    name = f"{owner_id or 'anon'}/{safe_title}/{uuid.uuid4()}.{ext}"
-    return ContentFile(raw, name=name)
-
-
 def _apply_poster(project: Project, data: dict, owner_id) -> None:
     """Apply poster_image_data (base64) or poster_url ('' clears) to the project."""
     if "poster_image_data" in data and data["poster_image_data"]:
-        decoded = _decode_poster_data_url(
-            data["poster_image_data"], owner_id, project.title
+        decoded = decode_project_image_data_url(
+            data["poster_image_data"],
+            owner_id=owner_id,
+            title=project.title,
         )
         if decoded is not None:
             old = project.image
@@ -343,8 +329,8 @@ class ProjectListCreateView(APIView):
         if user is None:
             return _unauthorized()
 
-        # owner via direct FK, owner via legacy UserKey, or member
-        legacy_owner_q = Q(user__user_id=user.id)
+        # Canonical owner or project member. Legacy creator attribution is not
+        # an access-control signal.
         owner_q = Q(owner_id=user.id)
         member_q = Q(members__user_id=user.id)
 
@@ -352,8 +338,8 @@ class ProjectListCreateView(APIView):
         # fire 3 extra queries per project (was an N+1 hot spot for the
         # projects list endpoint).
         projects = (
-            Project.objects.filter(owner_q | legacy_owner_q | member_q)
-            .select_related("progress", "owner", "user")
+            Project.objects.filter(owner_q | member_q)
+            .select_related("progress", "owner", "user", "poster__selected_variant")
             .prefetch_related(
                 Prefetch(
                     "tags",
@@ -394,6 +380,7 @@ class ProjectListCreateView(APIView):
                 description=data.get("description", "") or synopsis,
                 status=data.get("status", ProjectStatus.DRAFT),
                 is_favorite=data.get("is_favorite", False),
+                generation_settings=data.get("generation_settings", {}),
                 # legacy required fields
                 user_id=_legacy_userkey_id(user),
                 format=data.get("format", "") or "",
@@ -429,8 +416,7 @@ class ProjectListCreateView(APIView):
 
 
 def _legacy_userkey_id(user: User) -> Optional[int]:
-    """Return UserKey.id for the user (if any). Legacy Project.user FK is non-null,
-    so we make sure each new Project has one to avoid breaking older code paths."""
+    """Return/create legacy creator attribution for compatibility."""
     uk = UserKey.objects.filter(user=user).first()
     if uk is None:
         uk = UserKey.objects.create(user=user)
@@ -455,90 +441,61 @@ class ProjectDetailView(APIView):
         user = _resolve_user(request)
         if user is None:
             return _unauthorized()
-        project = _get_project_or_404(project_id)
-        if not user_can_edit_project(user, project):
-            return _forbidden()
+
+        try:
+            project_mutations.get_project_for_action(
+                actor=user,
+                project_id=project_id,
+                action=policy.Action.EDIT_SETTINGS,
+            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         serializer = ProjectUpdateSerializer(data=request.data, partial=True)
         if not serializer.is_valid():
             return _validation_error(serializer.errors)
         data = serializer.validated_data
 
-        from django.utils import timezone as _tz
-
-        prev_status = project.status
-
-        editor_fields = (
-            "format", "genre", "audience", "annotation", "synopsis",
-            "poster_image_data", "poster_url",
+        genres = _resolve_genres(data["genre"]) if "genre" in data else None
+        audiences = (
+            _resolve_audiences(data["audience"]) if "audience" in data else None
         )
-
-        with transaction.atomic():
-            for field in ("title", "description", "status", "is_favorite"):
-                if field in data:
-                    setattr(project, field, data[field])
-            if "description" in data:
-                project.desc = data["description"]
-            if "format" in data:
-                project.format = data["format"] or ""
-            if "annotation" in data:
-                project.annot = data["annotation"] or ""
-            if "synopsis" in data:
-                project.desc = data["synopsis"] or ""
-
-            # Maintain archived_at when transitioning to/from archived.
-            if "status" in data:
-                if data["status"] == ProjectStatus.ARCHIVED and project.archived_at is None:
-                    project.archived_at = _tz.now()
-                elif data["status"] != ProjectStatus.ARCHIVED and project.archived_at is not None:
-                    project.archived_at = None
-
-            _apply_poster(project, data, owner_id=user.id)
-            project.save()
-
-            if "tags" in data:
-                _replace_tags(project, data["tags"])
-            if "genre" in data:
-                project.genre.set(_resolve_genres(data["genre"]))
-            if "audience" in data:
-                project.audience.set(_resolve_audiences(data["audience"]))
-
-            # Differentiated activity entries.
-            new_status = data.get("status")
-            status_changed = new_status is not None and new_status != prev_status
-            non_status_changed = any(
-                f in data
-                for f in ("title", "description", "is_favorite", "tags") + editor_fields
+        poster_file = None
+        poster_supplied = False
+        if data.get("poster_image_data"):
+            poster_file = decode_project_image_data_url(
+                data["poster_image_data"],
+                owner_id=user.id,
+                title=data.get("title", "project"),
             )
-
-            if status_changed and new_status == ProjectStatus.ARCHIVED:
-                record_activity(
-                    project,
-                    user,
-                    "project_archived",
-                    title=project.title,
-                    description="проект архивирован",
-                    metadata={"from": prev_status, "to": new_status},
+            if poster_file is None:
+                return _validation_error(
+                    {"poster_image_data": ["invalid or exceeds 5 MB"]}
                 )
-            elif status_changed:
-                record_activity(
-                    project,
-                    user,
-                    "project_status_changed",
-                    title=project.title,
-                    description="статус проекта изменён",
-                    metadata={"from": prev_status, "to": new_status},
-                )
+            poster_supplied = True
+        elif "poster_url" in data and data["poster_url"] in (None, ""):
+            poster_supplied = True
 
-            if non_status_changed:
-                record_activity(
-                    project,
-                    user,
-                    "project_updated",
-                    title=project.title,
-                    description="проект обновлён",
-                )
-
+        try:
+            project = project_mutations.update_project_settings(
+                actor=user,
+                action=policy.Action.EDIT_SETTINGS,
+                project_id=project_id,
+                data=data,
+                genres=genres,
+                audiences=audiences,
+                poster_file=poster_file,
+                poster_supplied=poster_supplied,
+            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
         return Response(build_project_edit_payload(project, request))
 
     def delete(self, request, project_id: int):
@@ -546,9 +503,12 @@ class ProjectDetailView(APIView):
         if user is None:
             return _unauthorized()
         project = _get_project_or_404(project_id)
-        if not user_is_project_owner(user, project):
+        try:
+            team_service.delete_project(user, project.pk)
+        except Project.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        except team_errors.InsufficientPermissions:
             return _forbidden()
-        project.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -575,23 +535,37 @@ class ProjectDashboardView(APIView):
 class _ProjectScopedView(APIView):
     """Base for endpoints that need an editable project."""
 
-    def _viewable_project(self, request, project_id: int):
+    def _project_for_action(
+        self,
+        request,
+        project_id: int,
+        action: policy.Action,
+    ):
         user = _resolve_user(request)
         if user is None:
             return None, None, _unauthorized()
-        project = _get_project_or_404(project_id)
-        if not user_has_project_access(user, project):
-            return None, None, _forbidden()
+        try:
+            project = project_mutations.get_project_for_action(
+                actor=user,
+                project_id=project_id,
+                action=action,
+            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+        ) as exc:
+            return None, None, _mutation_error_response(exc)
         return user, project, None
 
+    def _viewable_project(self, request, project_id: int):
+        return self._project_for_action(request, project_id, policy.Action.VIEW)
+
     def _editable_project(self, request, project_id: int):
-        user = _resolve_user(request)
-        if user is None:
-            return None, None, _unauthorized()
-        project = _get_project_or_404(project_id)
-        if not user_can_edit_project(user, project):
-            return None, None, _forbidden()
-        return user, project, None
+        return self._project_for_action(
+            request,
+            project_id,
+            policy.Action.EDIT_CONTENT,
+        )
 
 
 class ProjectCharactersView(_ProjectScopedView):
@@ -611,27 +585,19 @@ class ProjectCharactersView(_ProjectScopedView):
             return _validation_error(serializer.errors)
         data = serializer.validated_data
 
-        # Lazy import — StudioCharacter is the canonical character entity.
-        from w_craft_back.character_studio.models import StudioCharacter
-
-        legacy_userkey_id = _legacy_userkey_id(user)
-        with transaction.atomic():
-            character = StudioCharacter.objects.create(
-                project=project,
-                user_id=legacy_userkey_id,
-                name=data["name"],
-                short_description=data.get("short_description", ""),
-                role=data.get("role", "secondary"),
-                status="active",
+        try:
+            character = project_mutations.create_project_character(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                data=data,
             )
-            record_activity(
-                project,
-                user,
-                "character_created",
-                title=character.name,
-                description="персонаж создан",
-                metadata={"character_id": str(character.character_id)},
-            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         return Response(
             {
@@ -667,55 +633,19 @@ class ProjectScenesView(_ProjectScopedView):
             return _validation_error(serializer.errors)
         data = serializer.validated_data
 
-        location = None
-        if data.get("location_id"):
-            location = Location.objects.filter(
-                pk=data["location_id"], project=project
-            ).first()
-            if location is None:
-                return _validation_error(
-                    {"location_id": ["location not found in this project"]}
-                )
-
-        order = data.get("order")
-        if order is None:
-            order = (Scene.objects.filter(project=project).count() or 0) + 1
-
-        script_blocks = data.get("script_blocks")
-        script_text = data.get("script_text", "")
-        if script_blocks is not None:
-            script_text = script_text_from_blocks(script_blocks)
-        character_ids = data.get("character_ids", [])
-
-        data["script_text"] = script_text
-        with transaction.atomic():
-            scene = Scene.objects.create(
-                project=project,
-                title=data["title"],
-                description=data.get("description", ""),
-                script_text=data.get("script_text", ""),
-                script_blocks=script_blocks or [],
-                status=data.get("status", "draft"),
-                act=data.get("act", 1),
-                duration_seconds=data.get("duration_seconds", 0),
-                mood=data.get("mood", ""),
-                scene_type=data.get("scene_type", "other"),
-                notes=data.get("notes", ""),
-                camera_settings=data.get("camera_settings", {}),
-                location=location,
-                order=order,
-                created_by=user,
-                updated_by=user,
+        try:
+            scene = project_mutations.create_scene(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                data=data,
             )
-            replace_scene_characters(scene, project, character_ids)
-            record_activity(
-                project,
-                user,
-                "scene_created",
-                title=scene.title,
-                description="сцена создана",
-                metadata={"scene_id": scene.id},
-            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         return Response(scene_payload(scene, request), status=status.HTTP_201_CREATED)
 
@@ -731,24 +661,19 @@ class ProjectMusicView(_ProjectScopedView):
             return _validation_error(serializer.errors)
         data = serializer.validated_data
 
-        with transaction.atomic():
-            track = MusicTrack.objects.create(
-                project=project,
-                title=data["title"],
-                author=data.get("author", ""),
-                duration_seconds=data.get("duration_seconds", 0),
-                tags=data.get("tags", []),
-                created_by=user,
-                updated_by=user,
+        try:
+            track = project_mutations.create_music_track(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                data=data,
             )
-            record_activity(
-                project,
-                user,
-                "music_added",
-                title=track.title,
-                description=track.author or "",
-                metadata={"track_id": track.id},
-            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         return Response(
             {"id": track.id, "title": track.title}, status=status.HTTP_201_CREATED
@@ -766,22 +691,19 @@ class ProjectLocationsView(_ProjectScopedView):
             return _validation_error(serializer.errors)
         data = serializer.validated_data
 
-        with transaction.atomic():
-            location = Location.objects.create(
-                project=project,
-                name=data["name"],
-                description=data.get("description", ""),
-                created_by=user,
-                updated_by=user,
+        try:
+            location = project_mutations.create_location(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                data=data,
             )
-            record_activity(
-                project,
-                user,
-                "location_created",
-                title=location.name,
-                description="локация создана",
-                metadata={"location_id": location.id},
-            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         return Response(
             {"id": location.id, "name": location.name}, status=status.HTTP_201_CREATED
@@ -789,14 +711,14 @@ class ProjectLocationsView(_ProjectScopedView):
 
 
 class ProjectAssetsView(_ProjectScopedView):
-    parser_classes = []  # default parsers; multipart works out of the box
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, project_id: int):
         user, project, err = self._editable_project(request, project_id)
         if err:
             return err
 
-        from w_craft_back.movie.project.dashboard_models import AssetType, ProjectAsset
+        from w_craft_back.movie.project.dashboard_models import AssetType
 
         upload = request.FILES.get("file")
         if upload is None:
@@ -806,55 +728,84 @@ class ProjectAssetsView(_ProjectScopedView):
             return _validation_error({"asset_type": ["invalid"]})
         title = request.data.get("title", "") or ""
 
-        with transaction.atomic():
-            asset = ProjectAsset.objects.create(
-                project=project,
-                uploaded_by=user,
-                file=upload,
+        try:
+            asset = project_mutations.create_project_asset(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                upload=upload,
                 asset_type=asset_type,
                 title=title,
             )
-            record_activity(
-                project,
-                user,
-                "asset_uploaded",
-                title=title or upload.name,
-                description=asset_type,
-                metadata={"asset_id": asset.id, "asset_type": asset_type},
-            )
+        except (
+            Project.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
 
         return Response(
-            {"id": asset.id, "asset_type": asset.asset_type},
+            {
+                "id": asset.id,
+                "asset_type": asset.asset_type,
+                "mime_type": asset.metadata.get("mime_type"),
+                "size_bytes": asset.metadata.get("size_bytes"),
+                "url": signed_url_for_file(
+                    asset.file,
+                    request,
+                    project=project,
+                ),
+            },
             status=status.HTTP_201_CREATED,
         )
 
 
-class ProjectGenerationJobsView(_ProjectScopedView):
-    def post(self, request, project_id: int):
+class ProjectAssetDetailView(_ProjectScopedView):
+    """Issue signed downloads and delete assets through project policy."""
+
+    def get(self, request, project_id: int, asset_id: int):
+        _user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        asset = ProjectAsset.objects.filter(
+            pk=asset_id,
+            project=project,
+        ).first()
+        if asset is None:
+            return Response(
+                {"detail": "Not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            {
+                "id": asset.id,
+                "asset_type": asset.asset_type,
+                "title": asset.title,
+                "mime_type": asset.metadata.get("mime_type"),
+                "size_bytes": asset.metadata.get("size_bytes"),
+                "url": signed_url_for_file(
+                    asset.file,
+                    request,
+                    project=project,
+                ),
+            }
+        )
+
+    def delete(self, request, project_id: int, asset_id: int):
         user, project, err = self._editable_project(request, project_id)
         if err:
             return err
-
-        serializer = GenerationJobCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return _validation_error(serializer.errors)
-        data = serializer.validated_data
-
-        from w_craft_back.movie.project.dashboard_models import GenerationJobType
-
-        if data["job_type"] not in {c[0] for c in GenerationJobType.choices}:
-            return _validation_error({"job_type": ["invalid"]})
-
-        job = ProjectGenerationJob.objects.create(
-            project=project,
-            user=user,
-            job_type=data["job_type"],
-            status=ProjectGenerationJobStatus.QUEUED,
-            prompt=data.get("prompt", ""),
-            negative_prompt=data.get("negative_prompt", ""),
-            input_data=data.get("input_data", {}),
-        )
-        return Response(
-            {"id": job.id, "status": job.status, "jobType": job.job_type},
-            status=status.HTTP_201_CREATED,
-        )
+        try:
+            project_mutations.delete_project_entity(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                model=ProjectAsset,
+                object_id=asset_id,
+            )
+        except (
+            ProjectAsset.DoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+        ) as exc:
+            return _mutation_error_response(exc)
+        return Response(status=status.HTTP_204_NO_CONTENT)

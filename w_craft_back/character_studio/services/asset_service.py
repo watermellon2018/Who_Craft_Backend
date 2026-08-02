@@ -1,9 +1,5 @@
-import hashlib
 import logging
-import uuid
-from pathlib import Path
 
-from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
 
@@ -14,6 +10,14 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.character_studio.repositories.repositories import AssetRepository
 from w_craft_back.character_studio.services.errors import NotFoundError, ValidationError
+from w_craft_back.character_studio.services.permissions import get_project_for_action
+from w_craft_back.movie.project.policy import Action
+from w_craft_back.storage_gateway import (
+    StorageGatewayError,
+    delete_storage_key,
+    normalize_image_upload,
+    store_normalized_image,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -64,22 +68,25 @@ ASSET_TYPE_TO_REFERENCE_UI = {value: key for key, value in REFERENCE_UI_TO_ASSET
 # three_quarter is acceptable (covered explicitly in compute_readiness).
 REQUIRED_REFERENCE_UI_TYPES = ("portrait", "full_body", "back_view")
 
-ALLOWED_UPLOAD_MIME = {"image/jpeg", "image/png", "image/webp"}
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-MIME_TO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 class CharacterAssetService:
     def __init__(self, repository=None):
         self.assets = repository or AssetRepository()
 
-    def save_asset(self, character, asset_type, **payload):
+    def save_asset(self, actor, action, character, asset_type, **payload):
         # Auto-increment version for reference asset_types so each regeneration
         # / correction / upload becomes a new versioned row instead of clobbering
         # the previous one. Non-reference asset_types keep the default version=1.
         # Wrap in atomic + select_for_update on the character row so concurrent
         # uploads serialize and cannot produce duplicate versions.
         from w_craft_back.character_studio.models import StudioCharacter
+        if action is not Action.RUN_GENERATION:
+            raise ValueError(
+                f"Generated asset mutation requires run_generation, received {action.value}"
+            )
+        get_project_for_action(actor, character.project_id, action)
         with transaction.atomic():
             if asset_type in REFERENCE_ASSET_TYPES and "version" not in payload:
                 # Lock the parent character to serialize concurrent writers.
@@ -89,7 +96,7 @@ class CharacterAssetService:
             return self.assets.create(
                 character=character,
                 project=character.project,
-                user=character.user,
+                user=actor,
                 asset_type=asset_type,
                 **payload,
             )
@@ -146,124 +153,121 @@ class CharacterAssetService:
         asset.save(update_fields=["is_primary", "updated_at"])
         return asset
 
-    @transaction.atomic
-    def upload_reference(self, character, user, ui_reference_type, uploaded_file, replace_current=False):
+    def _store_uploaded_image(self, uploaded_file, *, namespace):
+        try:
+            normalized = getattr(
+                uploaded_file,
+                "_storage_gateway_normalized",
+                None,
+            ) or normalize_image_upload(
+                uploaded_file,
+                max_bytes=MAX_UPLOAD_BYTES,
+            )
+            return store_normalized_image(normalized, namespace=namespace)
+        except StorageGatewayError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def upload_reference(
+        self,
+        character,
+        user,
+        ui_reference_type,
+        uploaded_file,
+        replace_current=False,
+    ):
         if ui_reference_type not in REFERENCE_UI_TO_ASSET_TYPE:
             raise ValidationError(f"Unknown reference_type: {ui_reference_type}.")
+        if not uploaded_file:
+            raise ValidationError("No file provided.")
         asset_type = REFERENCE_UI_TO_ASSET_TYPE[ui_reference_type]
-
-        if not uploaded_file:
-            raise ValidationError("No file provided.")
-        content_type = getattr(uploaded_file, "content_type", "") or ""
-        if content_type not in ALLOWED_UPLOAD_MIME:
-            raise ValidationError("Only jpg, png and webp are supported.")
-        size = getattr(uploaded_file, "size", 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise ValidationError("File exceeds 10 MB limit.")
-
-        version = self._next_version(character, asset_type)
-        ext = MIME_TO_EXT[content_type]
-        # Filename derived from a fresh uuid + version, NEVER from the user's
-        # filename (which we do not trust).
-        filename = f"v{version}_{uuid.uuid4().hex}.{ext}"
-        rel_path = (
-            f"character-studio/characters/{character.character_id}/references/"
-            f"{ui_reference_type}/{filename}"
+        stored = self._store_uploaded_image(
+            uploaded_file,
+            namespace=(
+                f"character-studio/characters/{character.character_id}/"
+                f"references/{ui_reference_type}"
+            ),
         )
-        abs_path = Path(settings.MEDIA_ROOT) / rel_path
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        hasher = hashlib.sha256()
-        with abs_path.open("wb") as fh:
-            for chunk in uploaded_file.chunks():
-                hasher.update(chunk)
-                fh.write(chunk)
+        try:
+            from w_craft_back.character_studio.models import StudioCharacter
 
-        media_url = getattr(settings, "MEDIA_URL", "/media/")
-        if not media_url.endswith("/"):
-            media_url += "/"
-        image_url = f"{media_url}{rel_path}"
+            with transaction.atomic():
+                StudioCharacter.objects.select_for_update().get(pk=character.pk)
+                version = self._next_version(character, asset_type)
+                if replace_current:
+                    CharacterAsset.objects.filter(
+                        character=character,
+                        asset_type=asset_type,
+                        status=CharacterAssetStatus.GENERATING,
+                    ).update(
+                        status=CharacterAssetStatus.FAILED,
+                        error_message="Replaced by upload.",
+                    )
+                return CharacterAsset.objects.create(
+                    character=character,
+                    project=character.project,
+                    user=user,
+                    asset_type=asset_type,
+                    image_url="",
+                    storage_path=stored.storage_key,
+                    width=stored.width,
+                    height=stored.height,
+                    mime_type=stored.mime_type,
+                    source="uploaded",
+                    version=version,
+                    status=CharacterAssetStatus.READY,
+                    metadata={
+                        "uploaded": True,
+                        "sha256": stored.sha256,
+                        "size_bytes": stored.size_bytes,
+                    },
+                )
+        except Exception:
+            delete_storage_key(stored.storage_key)
+            raise
 
-        if replace_current:
-            CharacterAsset.objects.filter(
-                character=character,
-                asset_type=asset_type,
-                status=CharacterAssetStatus.GENERATING,
-            ).update(status=CharacterAssetStatus.FAILED, error_message="Replaced by upload.")
-
-        asset = CharacterAsset.objects.create(
-            character=character,
-            project=character.project,
-            user=user,
-            asset_type=asset_type,
-            image_url=image_url,
-            storage_path=rel_path,
-            mime_type=content_type,
-            source="uploaded",
-            version=version,
-            status=CharacterAssetStatus.READY,
-            metadata={"uploaded": True, "sha256": hasher.hexdigest()},
-        )
-        return asset
-
-    @transaction.atomic
     def save_uploaded_source_reference(self, character, user, uploaded_file):
-        """Save a user-uploaded source image to seed reference-based generation.
+        """Store the canonicalized source image for reference generation."""
 
-        Unlike :meth:`upload_reference`, this does not target a specific UI
-        reference slot (portrait / full_body / ...). It records the original
-        reference picture the user provided when creating the character.
-        """
         if not uploaded_file:
             raise ValidationError("No file provided.")
-        content_type = getattr(uploaded_file, "content_type", "") or ""
-        if content_type not in ALLOWED_UPLOAD_MIME:
-            raise ValidationError("Only jpg, png and webp are supported.")
-        size = getattr(uploaded_file, "size", 0) or 0
-        if size > MAX_UPLOAD_BYTES:
-            raise ValidationError("File exceeds 10 MB limit.")
-
-        ext = MIME_TO_EXT[content_type]
-        filename = f"{uuid.uuid4().hex}.{ext}"
-        rel_path = (
-            f"character-studio/characters/{character.character_id}/source/{filename}"
+        stored = self._store_uploaded_image(
+            uploaded_file,
+            namespace=(
+                f"character-studio/characters/{character.character_id}/source"
+            ),
         )
-        abs_path = Path(settings.MEDIA_ROOT) / rel_path
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        hasher = hashlib.sha256()
-        with abs_path.open("wb") as fh:
-            for chunk in uploaded_file.chunks():
-                hasher.update(chunk)
-                fh.write(chunk)
-
-        media_url = getattr(settings, "MEDIA_URL", "/media/")
-        if not media_url.endswith("/"):
-            media_url += "/"
-        image_url = f"{media_url}{rel_path}"
-
-        asset = CharacterAsset.objects.create(
-            character=character,
-            project=character.project,
-            user=user,
-            asset_type=CharacterAssetType.UPLOADED_REFERENCE,
-            image_url=image_url,
-            storage_path=rel_path,
-            mime_type=content_type,
-            source="uploaded",
-            status=CharacterAssetStatus.READY,
-            metadata={"uploaded": True, "sha256": hasher.hexdigest(), "role": "source"},
-        )
-        return asset
+        try:
+            with transaction.atomic():
+                return CharacterAsset.objects.create(
+                    character=character,
+                    project=character.project,
+                    user=user,
+                    asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+                    image_url="",
+                    storage_path=stored.storage_key,
+                    width=stored.width,
+                    height=stored.height,
+                    mime_type=stored.mime_type,
+                    source="uploaded",
+                    status=CharacterAssetStatus.READY,
+                    metadata={
+                        "uploaded": True,
+                        "sha256": stored.sha256,
+                        "size_bytes": stored.size_bytes,
+                        "role": "source",
+                    },
+                )
+        except Exception:
+            delete_storage_key(stored.storage_key)
+            raise
 
     def compute_readiness(self, character):
         """Compute the readiness summary used by the References screen.
 
         Technical requirements (portrait + full_body + (profile|three_quarter)
-        + back_view, all ready, no in-flight job, no failed required) BLOCK
-        proceed-to-3D. Subjective user-checklist items (appearance_stable,
-        face_matches_base, outfit_readable, suitable_for_3d) are returned in
-        the response but do NOT block — they only show as warnings. This is
-        intentional: we don't want to stall a real production flow on a user
-        forgetting to tick a self-affirmation box.
+        + back_view, all ready, no in-flight job) and every subjective quality
+        checklist item must be satisfied before the references can be locked
+        for the 3D stage.
         """
         latest = self.latest_ready_by_reference_type(character)
 
@@ -307,6 +311,14 @@ class CharacterAssetService:
             blockers.append("missing_back_view")
         if generating_on_required:
             blockers.append("generation_in_progress")
+        if not appearance_stable:
+            blockers.append("appearance_not_confirmed")
+        if not face_matches_base:
+            blockers.append("face_not_confirmed")
+        if not outfit_readable:
+            blockers.append("outfit_not_confirmed")
+        if not suitable_for_3d:
+            blockers.append("suitability_for_3d_not_confirmed")
 
         can_proceed = not blockers
 
@@ -323,4 +335,3 @@ class CharacterAssetService:
             },
             "latest_ready_by_type": latest,
         }
-

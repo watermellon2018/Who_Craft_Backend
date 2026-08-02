@@ -3,14 +3,21 @@ ownership transfer, author preservation, and version conflicts."""
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier, Event
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.db import IntegrityError, close_old_connections, transaction
+from django.db.models.deletion import ProtectedError
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
+from w_craft_back.movie.project import policy, team_service
+from w_craft_back.movie.project import team_errors as errors
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
@@ -75,14 +82,35 @@ class MembershipInvariantTests(TestCase):
         self.assertEqual(owners.count(), 1)
 
     def test_cannot_create_duplicate_member(self):
-        from django.db import IntegrityError, transaction
-
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 ProjectMember.objects.create(
                     project=self.project, user=self.owner,
                     role=ProjectMemberRole.EDITOR,
                 )
+
+    def test_cannot_create_second_owner_member(self):
+        other, _ = _make_user("second-owner")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProjectMember.objects.create(
+                    project=self.project,
+                    user=other,
+                    role=ProjectMemberRole.OWNER,
+                )
+
+    def test_deleting_legacy_userkey_preserves_project(self):
+        UserKey.objects.get(user=self.owner).delete()
+
+        self.project.refresh_from_db()
+        self.assertIsNone(self.project.user_id)
+        self.assertEqual(self.project.owner_id, self.owner.id)
+
+    def test_deleting_current_owner_account_is_protected(self):
+        with self.assertRaises(ProtectedError):
+            self.owner.delete()
+
+        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
 
 
 class PolicyMatrixTests(TestCase):
@@ -136,6 +164,16 @@ class PolicyMatrixTests(TestCase):
         p = self.policy
         self.assertFalse(p.can_view(self.outsider, self.project))
         self.assertIsNone(p.get_role(self.outsider, self.project))
+
+    def test_legacy_creator_attribution_grants_no_access(self):
+        self.project.user = UserKey.objects.get(user=self.outsider)
+        self.project.save(update_fields=["user"])
+
+        self.assertIsNone(self.policy.get_role(self.outsider, self.project))
+        self.assertNotIn(
+            self.project.id,
+            self.policy.accessible_project_ids(self.outsider),
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -410,6 +448,7 @@ class LinkInvitationTests(TestCase):
     def _invite_url(self):
         return f"/api/projects/{self.project.id}/team/invitations/"
 
+    @override_settings(FRONTEND_BASE_URL="http://frontend.test:3000")
     def test_create_link_invitation_returns_token_once(self):
         resp = self.client.post(
             self._invite_url(),
@@ -422,6 +461,10 @@ class LinkInvitationTests(TestCase):
         self.assertIn("token", body)
         self.assertIn("inviteUrl", body)
         self.token = body["token"]
+        self.assertEqual(
+            body["inviteUrl"],
+            f"http://frontend.test:3000/invite/{self.token}",
+        )
         # Token is NOT stored raw.
         inv = ProjectInvitation.objects.get(pk=body["id"])
         self.assertNotEqual(inv.token_hash, self.token)
@@ -553,6 +596,64 @@ class MemberManagementTests(TestCase):
         # Project.owner FK repointed.
         self.project.refresh_from_db()
         self.assertEqual(self.project.owner_id, self.admin.id)
+        # Legacy creator attribution still points at the former owner, but no
+        # longer grants ownership.
+        self.assertEqual(self.project.user.user_id, self.owner.id)
+        self.assertEqual(
+            policy.get_role(self.owner, self.project), ProjectMemberRole.ADMIN,
+        )
+        self.assertFalse(policy.can_transfer_ownership(self.owner, self.project))
+
+    def test_stale_former_owner_cannot_transfer_again(self):
+        team_service.transfer_ownership(
+            self.owner, self.project, self.admin_m.id,
+        )
+
+        with self.assertRaises(errors.InsufficientPermissions):
+            team_service.transfer_ownership(
+                self.owner, self.project, self.editor_m.id,
+            )
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner_id, self.admin.id)
+        self.assertEqual(
+            ProjectMember.objects.get(project=self.project, user=self.admin).role,
+            ProjectMemberRole.OWNER,
+        )
+
+    def test_deleting_former_owner_account_preserves_transferred_project(self):
+        team_service.transfer_ownership(
+            self.owner, self.project, self.admin_m.id,
+        )
+        self.owner.delete()
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner_id, self.admin.id)
+        self.assertIsNone(self.project.user_id)
+        self.assertEqual(
+            ProjectMember.objects.get(project=self.project, user=self.admin).role,
+            ProjectMemberRole.OWNER,
+        )
+
+    def test_delete_endpoint_follows_canonical_owner_after_transfer(self):
+        team_service.transfer_ownership(
+            self.owner,
+            self.project,
+            self.admin_m.id,
+        )
+
+        dashboard_delete = self.client.delete(
+            f"/api/projects/{self.project.id}/",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        self.assertEqual(dashboard_delete.status_code, 403)
+
+        new_owner_delete = self.client.delete(
+            f"/api/projects/{self.project.id}/",
+            HTTP_X_USER_TOKEN=self.admin_token,
+        )
+        self.assertEqual(new_owner_delete.status_code, 204)
+        self.assertFalse(Project.objects.filter(pk=self.project.pk).exists())
 
     def test_admin_cannot_transfer_ownership(self):
         resp = self.client.post(
@@ -593,6 +694,171 @@ class MemberManagementTests(TestCase):
             HTTP_X_USER_TOKEN=self.owner_token,
         )
         self.assertEqual(resp.status_code, 400)
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent ownership transfer
+# --------------------------------------------------------------------------- #
+
+class ConcurrentOwnershipTransferTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        self.owner, _ = _make_user("concurrent-owner")
+        self.admin, _ = _make_user("concurrent-admin")
+        self.editor, _ = _make_user("concurrent-editor")
+        self.project = _make_project(self.owner)
+        self.admin_member = _add_member(
+            self.project, self.admin, ProjectMemberRole.ADMIN,
+        )
+        self.editor_member = _add_member(
+            self.project, self.editor, ProjectMemberRole.EDITOR,
+        )
+
+    def test_only_one_concurrent_transfer_succeeds(self):
+        barrier = Barrier(2)
+
+        def attempt_transfer(member_id):
+            close_old_connections()
+            try:
+                actor = User.objects.get(pk=self.owner.pk)
+                stale_project = Project.objects.get(pk=self.project.pk)
+                barrier.wait(timeout=10)
+                try:
+                    team_service.transfer_ownership(
+                        actor, stale_project, member_id,
+                    )
+                except errors.InsufficientPermissions:
+                    return "denied"
+                return "transferred"
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(attempt_transfer, self.admin_member.pk),
+                executor.submit(attempt_transfer, self.editor_member.pk),
+            ]
+            results = [future.result(timeout=20) for future in futures]
+
+        self.assertCountEqual(results, ["transferred", "denied"])
+        self.project.refresh_from_db()
+        owners = ProjectMember.objects.filter(
+            project=self.project,
+            role=ProjectMemberRole.OWNER,
+        )
+        self.assertEqual(owners.count(), 1)
+        self.assertEqual(owners.get().user_id, self.project.owner_id)
+        self.assertIn(self.project.owner_id, (self.admin.id, self.editor.id))
+
+    def _paused_transfer(self, member_id, entered, release):
+        close_old_connections()
+        try:
+            actor = User.objects.get(pk=self.owner.pk)
+            stale_project = Project.objects.get(pk=self.project.pk)
+
+            def hold_before_commit(*args, **kwargs):
+                entered.set()
+                if not release.wait(timeout=10):
+                    raise TimeoutError("Timed out waiting to finish transfer")
+
+            with patch.object(
+                team_service,
+                "record_activity",
+                side_effect=hold_before_commit,
+            ):
+                team_service.transfer_ownership(
+                    actor,
+                    stale_project,
+                    member_id,
+                )
+            return "transferred"
+        finally:
+            close_old_connections()
+
+    def test_concurrent_former_owner_delete_is_denied_after_transfer(self):
+        transfer_paused = Event()
+        release_transfer = Event()
+        delete_started = Event()
+
+        def attempt_delete():
+            close_old_connections()
+            try:
+                actor = User.objects.get(pk=self.owner.pk)
+                delete_started.set()
+                try:
+                    team_service.delete_project(actor, self.project.pk)
+                except errors.InsufficientPermissions:
+                    return "denied"
+                return "deleted"
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            transfer_future = executor.submit(
+                self._paused_transfer,
+                self.admin_member.pk,
+                transfer_paused,
+                release_transfer,
+            )
+            self.assertTrue(transfer_paused.wait(timeout=10))
+            delete_future = executor.submit(attempt_delete)
+            self.assertTrue(delete_started.wait(timeout=10))
+            release_transfer.set()
+
+            self.assertEqual(transfer_future.result(timeout=20), "transferred")
+            self.assertEqual(delete_future.result(timeout=20), "denied")
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner_id, self.admin.id)
+
+    def test_concurrent_target_removal_cannot_drop_new_owner_member(self):
+        transfer_paused = Event()
+        release_transfer = Event()
+        removal_started = Event()
+
+        def attempt_removal():
+            close_old_connections()
+            try:
+                actor = User.objects.get(pk=self.owner.pk)
+                stale_project = Project.objects.get(pk=self.project.pk)
+                removal_started.set()
+                try:
+                    team_service.remove_member(
+                        actor,
+                        stale_project,
+                        self.admin_member.pk,
+                    )
+                except (
+                    errors.CannotRemoveOwner,
+                    errors.InsufficientPermissions,
+                ):
+                    return "protected"
+                return "removed"
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            transfer_future = executor.submit(
+                self._paused_transfer,
+                self.admin_member.pk,
+                transfer_paused,
+                release_transfer,
+            )
+            self.assertTrue(transfer_paused.wait(timeout=10))
+            removal_future = executor.submit(attempt_removal)
+            self.assertTrue(removal_started.wait(timeout=10))
+            release_transfer.set()
+
+            self.assertEqual(transfer_future.result(timeout=20), "transferred")
+            self.assertEqual(removal_future.result(timeout=20), "protected")
+
+        self.project.refresh_from_db()
+        owner_member = ProjectMember.objects.get(
+            project=self.project,
+            user_id=self.project.owner_id,
+        )
+        self.assertEqual(owner_member.role, ProjectMemberRole.OWNER)
 
 
 # --------------------------------------------------------------------------- #

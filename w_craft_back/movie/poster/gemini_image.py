@@ -4,8 +4,7 @@ Mirrors the working pattern from ``character_studio.services.providers``:
 REST POST to the Generative Language API with ``x-goog-api-key`` and an
 ``instances``/``parameters`` body.
 
-Returns the decoded PNG bytes so callers can hand them to the existing
-``img2response`` helper without caring about the provider underneath.
+Returns decoded PNG bytes for the unified image-provider adapter.
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ import os
 from typing import Any, Dict, Optional
 
 import requests
+
+from w_craft_back.movie.poster.generation_guard import max_output_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,43 @@ def _aspect_for(format_key: Optional[str]) -> str:
     return ASPECT_BY_FORMAT.get((format_key or "").lower(), "3:4")
 
 
+def _decode_provider_image(encoded: Any) -> bytes:
+    """Decode one provider image while bounding encoded and decoded payloads."""
+    if not isinstance(encoded, str) or not encoded:
+        raise GeminiImageError(
+            "Gemini response is missing image bytes",
+            kind="bad_response",
+        )
+
+    output_limit = max_output_bytes()
+    max_encoded_size = ((output_limit + 2) // 3) * 4
+    if len(encoded) > max_encoded_size:
+        raise GeminiImageError(
+            "Gemini returned an image larger than the configured output limit",
+            kind="bad_response",
+        )
+
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise GeminiImageError(
+            "Gemini returned invalid base64 image",
+            kind="bad_response",
+        ) from exc
+
+    if len(decoded) > output_limit:
+        raise GeminiImageError(
+            "Gemini returned an image larger than the configured output limit",
+            kind="bad_response",
+        )
+    return decoded
+
+
 def generate_image_via_gemini(
     prompt: str,
     *,
     poster_format: Optional[str] = None,
+    timeout_seconds: float = 120,
 ) -> bytes:
     """Call Gemini/Imagen and return PNG bytes for one generated image.
 
@@ -91,38 +125,33 @@ def generate_image_via_gemini(
     session.trust_env = False
 
     try:
-        response = session.post(url, headers=headers, json=payload, timeout=120)
+        response = session.post(
+            url, headers=headers, json=payload, timeout=timeout_seconds
+        )
     except requests.RequestException as exc:
-        logger.error("Gemini transport error: %s", exc)
+        logger.error(
+            "gemini_transport_error",
+            extra={"exception_type": type(exc).__name__},
+        )
         raise GeminiImageError(
             "Gemini provider unavailable",
             kind="unavailable",
         ) from exc
 
     if response.status_code in (401, 403):
-        body = (response.text or "")[:1000]
-        logger.error(
-            "Gemini rejected request: status=%s body=%s",
-            response.status_code, body,
-        )
+        logger.error("Gemini rejected request: status=%s", response.status_code)
         raise GeminiImageError(
             "Gemini rejected the request (check GEMINI_API_KEY and project access).",
             kind="forbidden",
             provider_status=response.status_code,
-            provider_body=body,
         )
 
     if response.status_code >= 400:
-        body = (response.text or "")[:1000]
-        logger.error(
-            "Gemini error: status=%s body=%s",
-            response.status_code, body,
-        )
+        logger.error("Gemini error: status=%s", response.status_code)
         raise GeminiImageError(
             f"Gemini returned HTTP {response.status_code}",
             kind="error",
             provider_status=response.status_code,
-            provider_body=body,
         )
 
     try:
@@ -144,7 +173,7 @@ def generate_image_via_gemini(
 
     predictions = data.get("predictions") or []
     if not predictions:
-        logger.warning("Gemini returned no predictions: %s", data)
+        logger.warning("Gemini returned no predictions")
         raise GeminiImageError(
             "Gemini returned no predictions (likely a safety filter hit).",
             kind="empty",
@@ -162,13 +191,7 @@ def generate_image_via_gemini(
             kind="bad_response",
         )
 
-    try:
-        return base64.b64decode(b64)
-    except (ValueError, base64.binascii.Error) as exc:
-        raise GeminiImageError(
-            "Gemini returned invalid base64 image",
-            kind="bad_response",
-        ) from exc
+    return _decode_provider_image(b64)
 
 
 def edit_image_via_gemini(
@@ -176,6 +199,7 @@ def edit_image_via_gemini(
     instruction: str,
     *,
     mime_type: str = "image/png",
+    timeout_seconds: float = 120,
 ) -> bytes:
     """Edit ``image_bytes`` according to ``instruction`` and return new PNG bytes.
 
@@ -224,35 +248,33 @@ def edit_image_via_gemini(
     session.trust_env = False
 
     try:
-        response = session.post(url, headers=headers, json=payload, timeout=120)
+        response = session.post(
+            url, headers=headers, json=payload, timeout=timeout_seconds
+        )
     except requests.RequestException as exc:
-        logger.error("Gemini edit transport error: %s", exc)
+        logger.error(
+            "gemini_edit_transport_error",
+            extra={"exception_type": type(exc).__name__},
+        )
         raise GeminiImageError(
             "Gemini provider unavailable",
             kind="unavailable",
         ) from exc
 
     if response.status_code in (401, 403):
-        body = (response.text or "")[:1000]
-        logger.error(
-            "Gemini edit rejected: status=%s body=%s",
-            response.status_code, body,
-        )
+        logger.error("Gemini edit rejected: status=%s", response.status_code)
         raise GeminiImageError(
             "Gemini rejected the request (check GEMINI_API_KEY and project access).",
             kind="forbidden",
             provider_status=response.status_code,
-            provider_body=body,
         )
 
     if response.status_code >= 400:
-        body = (response.text or "")[:1000]
-        logger.error("Gemini edit error: status=%s body=%s", response.status_code, body)
+        logger.error("Gemini edit error: status=%s", response.status_code)
         raise GeminiImageError(
             f"Gemini returned HTTP {response.status_code}",
             kind="error",
             provider_status=response.status_code,
-            provider_body=body,
         )
 
     try:
@@ -278,17 +300,11 @@ def edit_image_via_gemini(
         for part in parts:
             inline = part.get("inlineData") or part.get("inline_data")
             if inline and inline.get("data"):
-                try:
-                    return base64.b64decode(inline["data"])
-                except (ValueError, base64.binascii.Error) as exc:
-                    raise GeminiImageError(
-                        "Gemini returned invalid base64 image",
-                        kind="bad_response",
-                    ) from exc
+                return _decode_provider_image(inline["data"])
 
     # No inline image in any candidate — likely a safety filter or the model
     # only returned text describing what it would do.
-    logger.warning("Gemini edit returned no image parts: %s", str(data)[:500])
+    logger.warning("Gemini edit returned no image parts")
     raise GeminiImageError(
         "Gemini did not return an edited image (likely a safety filter hit).",
         kind="empty",

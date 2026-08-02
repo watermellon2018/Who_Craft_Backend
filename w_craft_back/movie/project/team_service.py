@@ -104,6 +104,22 @@ def get_member(project: Project, member_id: int) -> ProjectMember:
     return member
 
 
+def _lock_project(project: Project) -> Project:
+    return Project.objects.select_for_update().get(pk=project.pk)
+
+
+def _get_member_for_update(project: Project, member_id: int) -> ProjectMember:
+    member = (
+        ProjectMember.objects.select_for_update()
+        .filter(project=project, pk=member_id)
+        .select_related("user")
+        .first()
+    )
+    if member is None:
+        raise errors.MemberNotFound()
+    return member
+
+
 def active_member_count(project: Project) -> int:
     return ProjectMember.objects.filter(project=project).count()
 
@@ -400,36 +416,45 @@ def cancel_invitation(actor: User, project: Project, invitation_id: int) -> None
 def change_member_access_role(
     actor: User, project: Project, member_id: int, new_role: str
 ) -> ProjectMember:
-    actor_role = _require_manage(actor, project)
-    new_role = _validate_access_role(new_role)
-    member = get_member(project, member_id)
+    with transaction.atomic():
+        locked_project = _lock_project(project)
+        actor_role = _require_manage(actor, locked_project)
+        new_role = _validate_access_role(new_role)
+        member = _get_member_for_update(locked_project, member_id)
 
-    if member.role == ProjectMemberRole.OWNER:
-        # The owner's role is immutable through this path.
-        raise errors.CannotAssignOwner()
+        if (
+            member.user_id == locked_project.owner_id
+            or member.role == ProjectMemberRole.OWNER
+        ):
+            # The canonical owner's access role is immutable through this path.
+            raise errors.CannotAssignOwner()
 
-    # Admins may only manage editors/viewers, not other admins (task §1: admin
-    # "изменять роли редакторов и наблюдателей"). Owner may manage anyone.
-    if actor_role == ProjectMemberRole.ADMIN and member.role == ProjectMemberRole.ADMIN:
-        raise errors.InsufficientPermissions()
+        # Admins may only manage editors/viewers, not other admins (task §1:
+        # admin "изменять роли редакторов и наблюдателей"). Owner may manage
+        # anyone.
+        if (
+            actor_role == ProjectMemberRole.ADMIN
+            and member.role == ProjectMemberRole.ADMIN
+        ):
+            raise errors.InsufficientPermissions()
 
-    if member.role == new_role:
+        if member.role == new_role:
+            return member
+
+        old_role = member.role
+        member.role = new_role
+        member.save(update_fields=["role", "updated_at"])
+        record_activity(
+            locked_project,
+            actor,
+            "member_role_changed",
+            title=member.user.username,
+            description=f"{old_role} → {new_role}",
+            metadata={"from": old_role, "to": new_role},
+            target_type="member",
+            target_id=str(member.id),
+        )
         return member
-
-    old_role = member.role
-    member.role = new_role
-    member.save(update_fields=["role", "updated_at"])
-    record_activity(
-        project,
-        actor,
-        "member_role_changed",
-        title=member.user.username,
-        description=f"{old_role} → {new_role}",
-        metadata={"from": old_role, "to": new_role},
-        target_type="member",
-        target_id=str(member.id),
-    )
-    return member
 
 
 def change_member_team_role(
@@ -449,95 +474,138 @@ def change_member_team_role(
 
 
 def remove_member(actor: User, project: Project, member_id: int) -> None:
-    actor_role = _require_manage(actor, project)
-    member = get_member(project, member_id)
+    with transaction.atomic():
+        locked_project = _lock_project(project)
+        actor_role = _require_manage(actor, locked_project)
+        member = _get_member_for_update(locked_project, member_id)
 
-    if member.role == ProjectMemberRole.OWNER:
-        raise errors.CannotRemoveOwner()
-    # Admin cannot remove another admin (only the owner can).
-    if actor_role == ProjectMemberRole.ADMIN and member.role == ProjectMemberRole.ADMIN:
-        raise errors.InsufficientPermissions()
+        if (
+            member.user_id == locked_project.owner_id
+            or member.role == ProjectMemberRole.OWNER
+        ):
+            raise errors.CannotRemoveOwner()
+        # Admin cannot remove another admin (only the owner can).
+        if (
+            actor_role == ProjectMemberRole.ADMIN
+            and member.role == ProjectMemberRole.ADMIN
+        ):
+            raise errors.InsufficientPermissions()
 
-    username = member.user.username
-    member_pk = member.id
-    member.delete()
-    record_activity(
-        project,
-        actor,
-        "member_removed",
-        title=username,
-        description="участник удалён",
-        target_type="member",
-        target_id=str(member_pk),
-    )
+        username = member.user.username
+        member_pk = member.id
+        member.delete()
+        record_activity(
+            locked_project,
+            actor,
+            "member_removed",
+            title=username,
+            description="участник удалён",
+            target_type="member",
+            target_id=str(member_pk),
+        )
 
 
 def leave_project(actor: User, project: Project) -> None:
-    role = policy.get_role(actor, project)
-    if role is None:
-        raise errors.MemberNotFound()
-    if role == ProjectMemberRole.OWNER:
-        raise errors.OwnerCannotLeave()
+    with transaction.atomic():
+        locked_project = _lock_project(project)
+        role = policy.get_role(actor, locked_project)
+        if role is None:
+            raise errors.MemberNotFound()
+        if role == ProjectMemberRole.OWNER:
+            raise errors.OwnerCannotLeave()
 
-    member = ProjectMember.objects.filter(project=project, user=actor).first()
-    if member is None:
-        raise errors.MemberNotFound()
-    member_pk = member.id
-    member.delete()
-    record_activity(
-        project,
-        actor,
-        "member_left",
-        title=actor.username,
-        description="участник покинул проект",
-        target_type="member",
-        target_id=str(member_pk),
-    )
+        member = (
+            ProjectMember.objects.select_for_update()
+            .filter(project=locked_project, user=actor)
+            .first()
+        )
+        if member is None:
+            raise errors.MemberNotFound()
+        member_pk = member.id
+        member.delete()
+        record_activity(
+            locked_project,
+            actor,
+            "member_left",
+            title=actor.username,
+            description="участник покинул проект",
+            target_type="member",
+            target_id=str(member_pk),
+        )
+
+
+def delete_project(actor: User, project_id: int) -> None:
+    """Delete a project only after locking and re-authorizing its owner."""
+    with transaction.atomic():
+        locked_project = (
+            Project.objects.select_for_update()
+            .filter(pk=project_id)
+            .first()
+        )
+        if locked_project is None:
+            raise Project.DoesNotExist()
+        if not policy.can_delete_project(actor, locked_project):
+            raise errors.InsufficientPermissions()
+        locked_project.delete()
 
 
 def transfer_ownership(actor: User, project: Project, new_owner_member_id: int) -> None:
     """Atomically hand ownership to another active member.
 
-    Old owner becomes admin; the target becomes owner; the project's owner FK is
-    repointed. Exactly one owner remains.
+    The Project row is the serialization point for ownership changes. Permission
+    is re-evaluated only after that row is locked, so a stale/concurrent request
+    from the former owner cannot perform a second transfer.
     """
-    if not policy.can_transfer_ownership(actor, project):
-        raise errors.InsufficientPermissions()
-
     with transaction.atomic():
+        locked_project = Project.objects.select_for_update().get(pk=project.pk)
+        if not policy.can_transfer_ownership(actor, locked_project):
+            raise errors.InsufficientPermissions()
+
         target = (
             ProjectMember.objects.select_for_update()
-            .filter(project=project, pk=new_owner_member_id)
+            .filter(project=locked_project, pk=new_owner_member_id)
             .select_related("user")
             .first()
         )
         if target is None:
             raise errors.MemberNotFound()
         if target.user_id == actor.id:
-            # Transferring to self is a no-op that would break the single-owner
-            # invariant logic below — reject clearly.
             raise errors.InvalidRole("Нельзя передать владение самому себе.")
 
-        # Resolve / ensure the current owner's membership row.
-        owner_member, _ = ProjectMember.objects.select_for_update().get_or_create(
-            project=project,
-            user=actor,
-            defaults={"role": ProjectMemberRole.OWNER, "joined_at": timezone.now()},
+        former_owner_member = (
+            ProjectMember.objects.select_for_update()
+            .filter(project=locked_project, user_id=locked_project.owner_id)
+            .first()
+        )
+        if former_owner_member is None:
+            former_owner_member = ProjectMember.objects.create(
+                project=locked_project,
+                user_id=locked_project.owner_id,
+                role=ProjectMemberRole.ADMIN,
+                joined_at=timezone.now(),
+            )
+
+        now = timezone.now()
+        ProjectMember.objects.filter(
+            project=locked_project,
+            role=ProjectMemberRole.OWNER,
+        ).exclude(pk=target.pk).update(
+            role=ProjectMemberRole.ADMIN,
+            updated_at=now,
         )
 
-        owner_member.role = ProjectMemberRole.ADMIN
-        owner_member.save(update_fields=["role", "updated_at"])
+        if former_owner_member.pk != target.pk:
+            former_owner_member.role = ProjectMemberRole.ADMIN
+            former_owner_member.save(update_fields=["role", "updated_at"])
 
         target.role = ProjectMemberRole.OWNER
         target.save(update_fields=["role", "updated_at"])
 
-        # Keep the Project.owner FK consistent (the policy treats owner_id as an
-        # ownership signal). Legacy ``user`` (UserKey) is left untouched.
-        project.owner_id = target.user_id
-        project.save(update_fields=["owner"])
+        locked_project.owner_id = target.user_id
+        locked_project.save(update_fields=["owner"])
 
         record_activity(
-            project,
+            locked_project,
             actor,
             "ownership_transferred",
             title=target.user.username,

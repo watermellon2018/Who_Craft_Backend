@@ -1,26 +1,23 @@
 from django.urls import path
 
-from w_craft_back.movie.project.views import (
-    ProjectView,
-    delete_project,
-    get_list_projects,
-    select_project_info,
-    update_info_project,
-)
 from w_craft_back.movie.project.dashboard_views import (
+    ProjectAssetDetailView,
     ProjectAssetsView,
     ProjectCharactersView,
     ProjectDashboardView,
     ProjectDetailView,
-    ProjectGenerationJobsView,
     ProjectListCreateView,
     ProjectLocationsView,
     ProjectMusicView,
     ProjectScenesView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
+    ProjectPosterEditView,
     ProjectPosterGenerateView,
     ProjectPosterJobDetailView,
+    ProjectPosterJobCancellationView,
+    ProjectPosterJobRetryView,
+    ProjectPosterJobsView,
     ProjectPosterSelectView,
     ProjectPosterVariantDeleteView,
     ProjectPosterVariantsView,
@@ -42,13 +39,6 @@ from w_craft_back.movie.project.scene_views import (
 )
 
 urlpatterns = [
-    # Legacy endpoints (kept for back-compat).
-    path('create/', ProjectView.as_view(), name='project'),
-    path('get-list-projects/', get_list_projects, name='get_list_projects'),
-    path('delete-project-by-id/', delete_project, name='delete_project'),
-    path('select-project-by-id/', select_project_info, name='select_project_info'),
-    path('update-project-by-id/', update_info_project, name='update_info_project'),
-
     # New dashboard / project API.
     path('', ProjectListCreateView.as_view(), name='project-list-create'),
     path('<int:project_id>/', ProjectDetailView.as_view(), name='project-detail'),
@@ -58,7 +48,11 @@ urlpatterns = [
     path('<int:project_id>/music/', ProjectMusicView.as_view(), name='project-music'),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
-    path('<int:project_id>/generation-jobs/', ProjectGenerationJobsView.as_view(), name='project-generation-jobs'),
+    path(
+        '<int:project_id>/assets/<int:asset_id>/',
+        ProjectAssetDetailView.as_view(),
+        name='project-asset-detail',
+    ),
 
     # Concurrent-edit-guarded entity detail endpoints (GET/PATCH with version).
     path('<int:project_id>/scenes/<int:scene_id>/', SceneDetailView.as_view(), name='project-scene-detail'),
@@ -77,6 +71,26 @@ urlpatterns = [
     # Poster generation page (/create-project/gen-poster).
     path('<int:project_id>/poster/', ProjectPosterView.as_view(), name='project-poster'),
     path('<int:project_id>/poster/generate/', ProjectPosterGenerateView.as_view(), name='project-poster-generate'),
+    path(
+        '<int:project_id>/poster/edit/',
+        ProjectPosterEditView.as_view(),
+        name='project-poster-edit',
+    ),
+    path(
+        '<int:project_id>/poster/jobs/',
+        ProjectPosterJobsView.as_view(),
+        name='project-poster-jobs',
+    ),
+    path(
+        '<int:project_id>/poster/jobs/<int:job_id>/retry/',
+        ProjectPosterJobRetryView.as_view(),
+        name='project-poster-job-retry',
+    ),
+    path(
+        '<int:project_id>/poster/jobs/<int:job_id>/cancellation-request/',
+        ProjectPosterJobCancellationView.as_view(),
+        name='project-poster-job-cancellation',
+    ),
     path('<int:project_id>/poster/jobs/<int:job_id>/', ProjectPosterJobDetailView.as_view(), name='project-poster-job'),
     path('<int:project_id>/poster/variants/', ProjectPosterVariantsView.as_view(), name='project-poster-variants'),
     path('<int:project_id>/poster/variants/<int:variant_id>/', ProjectPosterVariantDeleteView.as_view(), name='project-poster-variant-detail'),

@@ -8,7 +8,9 @@ validation is done with the small DRF input serializers at the bottom.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urljoin
 
+from django.conf import settings
 from rest_framework import serializers
 
 from w_craft_back.movie.project.dashboard_models import (
@@ -17,6 +19,7 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectTeamRole,
 )
 from w_craft_back.movie.project.team_models import ProjectInvitation
+from w_craft_back.storage_gateway import signed_url_for_file
 
 try:
     from w_craft_back.profile.models import UserProfile  # type: ignore
@@ -36,14 +39,8 @@ def access_role_label(role: Optional[str]) -> str:
     return _ACCESS_ROLE_LABELS.get(role, "")
 
 
-def _absolute(request, file_field) -> Optional[str]:
-    if not file_field:
-        return None
-    try:
-        url = file_field.url
-    except Exception:
-        return None
-    return request.build_absolute_uri(url) if request is not None else url
+def _absolute(request, file_field, *, project=None) -> Optional[str]:
+    return signed_url_for_file(file_field, request, project=project)
 
 
 def _initials(name: str) -> str:
@@ -77,7 +74,11 @@ def member_payload(member: ProjectMember, profile, request, *, full: bool = Fals
             or ""
         )
         username = getattr(profile, "public_username", "") or username
-        avatar_url = _absolute(request, getattr(profile, "avatar", None))
+        avatar_url = _absolute(
+            request,
+            getattr(profile, "avatar", None),
+            project=member.project,
+        )
     if not display_name:
         display_name = user.username or f"User #{user.id}"
 
@@ -135,9 +136,13 @@ def invitation_payload(
     }
     if include_token_url and raw_token:
         # Build the accept-link the inviter shares. Frontend route handles it.
-        data["inviteUrl"] = request.build_absolute_uri(
-            f"/invite/{raw_token}"
-        ) if request is not None else f"/invite/{raw_token}"
+        frontend_base_url = str(
+            getattr(settings, "FRONTEND_BASE_URL", "http://localhost:3000")
+        ).strip()
+        data["inviteUrl"] = urljoin(
+            f"{frontend_base_url.rstrip('/')}/",
+            f"invite/{raw_token}",
+        )
         data["token"] = raw_token
     return data
 

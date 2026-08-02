@@ -12,15 +12,13 @@ import logging
 from typing import Optional
 
 from django.contrib.auth.models import User
-from django.db import transaction
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from w_craft_back.auth.models import UserKey
-from w_craft_back.auth.utils import extract_user_token
-from w_craft_back.movie.project import policy
+from w_craft_back.movie.project import policy, project_mutations
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
@@ -28,10 +26,8 @@ from w_craft_back.movie.project.dashboard_models import (
 )
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.script_workspace import (
-    replace_scene_characters,
     scene_payload,
     scenes_queryset,
-    script_text_from_blocks,
 )
 from w_craft_back.movie.project.serializers import SceneWorkspaceUpdateSerializer
 
@@ -39,13 +35,10 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_user(request) -> Optional[User]:
-    token = extract_user_token(request)
-    if not token:
-        return None
-    try:
-        return UserKey.objects.select_related("user").get(key=token).user
-    except (UserKey.DoesNotExist, ValueError, TypeError):
-        return None
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+    return None
 
 
 def _conflict(current_version: int):
@@ -60,6 +53,24 @@ def _conflict(current_version: int):
         },
         status=status.HTTP_409_CONFLICT,
     )
+
+
+def _mutation_error_response(exc):
+    if isinstance(exc, project_mutations.VersionConflict):
+        return _conflict(exc.current_version)
+    if isinstance(exc, project_mutations.ProjectMutationForbidden):
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if isinstance(exc, ValidationError):
+        return Response(
+            {
+                "detail": "validation error",
+                "errors": getattr(exc, "message_dict", {"detail": exc.messages}),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if isinstance(exc, ObjectDoesNotExist):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+    raise exc
 
 
 class _VersionedEntityView(APIView):
@@ -112,41 +123,43 @@ class _VersionedEntityView(APIView):
         user, project, obj, err = self._resolve(request, project_id, **kwargs)
         if err:
             return err
-        if not policy.can_edit(user, project):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         data = request.data if isinstance(request.data, dict) else {}
-
-        # Optimistic-lock check. The client MUST send the version it loaded.
         expected = data.get("version")
         if expected is not None:
             try:
                 expected = int(expected)
             except (TypeError, ValueError):
                 return Response(
-                    {"code": "VALIDATION_ERROR", "detail": "version must be an integer"},
+                    {
+                        "code": "VALIDATION_ERROR",
+                        "detail": "version must be an integer",
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if expected != obj.version:
-                return _conflict(obj.version)
 
-        with transaction.atomic():
-            # Re-read under lock and re-check version to close the race window.
-            locked = self.model.objects.select_for_update().get(pk=obj.pk)
-            if expected is not None and expected != locked.version:
-                return _conflict(locked.version)
-
-            changed = False
-            for field in self.editable_fields:
-                if field in data:
-                    setattr(locked, field, data[field])
-                    changed = True
-            if changed:
-                locked.version = (locked.version or 1) + 1
-                if hasattr(locked, "updated_by_id"):
-                    locked.updated_by = user
-                locked.save()
-            obj = locked
+        changes = {
+            field: data[field]
+            for field in self.editable_fields
+            if field in data
+        }
+        try:
+            obj = project_mutations.update_versioned_entity(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                model=self.model,
+                object_id=obj.pk,
+                expected_version=expected,
+                changes=changes,
+            )
+        except (
+            ObjectDoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            project_mutations.VersionConflict,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
         return Response(self.serialize(obj))
 
 
@@ -168,8 +181,6 @@ class SceneDetailView(_VersionedEntityView):
         user, project, obj, err = self._resolve(request, project_id, **kwargs)
         if err:
             return err
-        if not policy.can_edit(user, project):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = SceneWorkspaceUpdateSerializer(
             data=request.data,
@@ -182,63 +193,48 @@ class SceneDetailView(_VersionedEntityView):
             )
         data = dict(serializer.validated_data)
         expected = data.pop("version")
-        if expected != obj.version:
-            return _conflict(obj.version)
-
         character_ids = data.pop("character_ids", None)
         location_supplied = "location_id" in data
         location_id = data.pop("location_id", None)
-        location = None
-        if location_supplied and location_id is not None:
-            location = Location.objects.filter(
-                pk=location_id,
-                project=project,
-            ).first()
-            if location is None:
-                return Response(
-                    {
-                        "detail": "validation error",
-                        "errors": {
-                            "location_id": ["location not found in this project"]
-                        },
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
 
-        if "script_blocks" in data:
-            data["script_text"] = script_text_from_blocks(data["script_blocks"])
-        elif "script_text" in data:
-            data["script_blocks"] = []
-
-        with transaction.atomic():
-            locked = Scene.objects.select_for_update().get(
-                pk=obj.pk,
-                project=project,
+        try:
+            scene = project_mutations.update_scene(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                scene_id=obj.pk,
+                expected_version=expected,
+                data=data,
+                character_ids=character_ids,
+                location_supplied=location_supplied,
+                location_id=location_id,
             )
-            if expected != locked.version:
-                return _conflict(locked.version)
-
-            changed = bool(data) or character_ids is not None or location_supplied
-            for field, value in data.items():
-                setattr(locked, field, value)
-            if location_supplied:
-                locked.location = location
-            if character_ids is not None:
-                replace_scene_characters(locked, project, character_ids)
-            if changed:
-                locked.version = (locked.version or 1) + 1
-                locked.updated_by = user
-                locked.save()
-
-        return Response(self.serialize(locked, request))
+        except (
+            ObjectDoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            project_mutations.VersionConflict,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
+        return Response(self.serialize(scene, request))
 
     def delete(self, request, project_id, **kwargs):
         user, project, obj, err = self._resolve(request, project_id, **kwargs)
         if err:
             return err
-        if not policy.can_edit(user, project):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-        obj.delete()
+        try:
+            project_mutations.delete_project_entity(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project.id,
+                model=Scene,
+                object_id=obj.pk,
+            )
+        except (
+            ObjectDoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+        ) as exc:
+            return _mutation_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

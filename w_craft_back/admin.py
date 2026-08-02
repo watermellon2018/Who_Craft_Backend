@@ -12,7 +12,6 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectAsset,
     ProjectProgress,
     ProjectActivity,
-    ProjectGenerationJob,
 )
 
 
@@ -104,14 +103,5 @@ class ProjectActivityAdmin(admin.ModelAdmin):
     list_display = ("id", "project", "activity_type", "title", "user", "created_at")
     list_filter = ("activity_type",)
     search_fields = ("title", "description")
-    raw_id_fields = ("project", "user")
-    ordering = ("-created_at",)
-
-
-@admin.register(ProjectGenerationJob)
-class ProjectGenerationJobAdmin(admin.ModelAdmin):
-    list_display = ("id", "project", "job_type", "status", "user", "created_at")
-    list_filter = ("job_type", "status")
-    search_fields = ("prompt",)
     raw_id_fields = ("project", "user")
     ordering = ("-created_at",)

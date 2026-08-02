@@ -18,6 +18,7 @@ keys (so the file lands under ``MEDIA_ROOT`` like every other upload).
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from w_craft_back.movie.project.dashboard_models import ProjectAsset
@@ -35,11 +36,17 @@ class ProjectPosterStatus(models.TextChoices):
 
 
 class PosterJobStatus(models.TextChoices):
+    CANCELLATION_REQUESTED = "cancellation_requested", "Cancellation requested"
     QUEUED = "queued", "В очереди"
     PROCESSING = "processing", "В процессе"
     COMPLETED = "completed", "Завершено"
     FAILED = "failed", "Ошибка"
     CANCELLED = "cancelled", "Отменено"
+
+
+class PosterJobOperation(models.TextChoices):
+    GENERATE = "generate", "Генерация"
+    EDIT = "edit", "Редактирование"
 
 
 class PosterStyle(models.TextChoices):
@@ -73,7 +80,9 @@ class ProjectPoster(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="project_posters",
     )
     # FK is set after a user picks a variant. ``SET_NULL`` because soft-deleting
@@ -99,6 +108,25 @@ class ProjectPoster(models.Model):
             models.Index(fields=["status"]),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.selected_variant_id:
+            if self.selected_variant.project_id != self.project_id:
+                errors["selected_variant"] = (
+                    "Selected variant must belong to the poster project."
+                )
+            if not self.pk or self.selected_variant.poster_id != self.pk:
+                errors["selected_variant"] = (
+                    "Selected variant must belong to this poster."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"Poster[{self.project_id}] {self.status}"
 
@@ -116,8 +144,36 @@ class PosterGenerationJob(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="poster_generation_jobs",
+    )
+
+    operation = models.CharField(
+        max_length=16,
+        choices=PosterJobOperation.choices,
+        default=PosterJobOperation.GENERATE,
+    )
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
+    request_hash = models.CharField(max_length=64, blank=True, default="")
+    requested_model = models.CharField(max_length=128, blank=True, default="")
+    reference_storage_key = models.CharField(max_length=500, blank=True, default="")
+    reference_mime_type = models.CharField(max_length=100, blank=True, default="")
+    progress = models.PositiveSmallIntegerField(default=0)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True)
+    cancellation_requested_at = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="retries",
     )
 
     prompt = models.TextField()
@@ -139,12 +195,19 @@ class PosterGenerationJob(models.Model):
         blank=True,
         related_name="poster_jobs",
     )
+    source_variant = models.ForeignKey(
+        "PosterVariant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="edit_jobs",
+    )
 
     model_provider = models.CharField(max_length=64, blank=True, default="")
     model_name = models.CharField(max_length=128, blank=True, default="")
 
     status = models.CharField(
-        max_length=20,
+        max_length=32,
         choices=PosterJobStatus.choices,
         default=PosterJobStatus.QUEUED,
     )
@@ -152,6 +215,7 @@ class PosterGenerationJob(models.Model):
 
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=128, blank=True, default="")
+    error_http_status = models.PositiveSmallIntegerField(null=True, blank=True)
 
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -166,9 +230,69 @@ class PosterGenerationJob(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["poster", "-created_at"]),
         ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(progress__gte=0) & models.Q(progress__lte=100),
+                name="chk_poster_job_progress_range",
+            ),
+            models.CheckConstraint(
+                check=models.Q(attempts__lte=models.F("max_attempts")),
+                name="chk_poster_job_attempts",
+            ),
+            models.UniqueConstraint(
+                fields=[
+                    "project",
+                    "user",
+                    "operation",
+                    "idempotency_key",
+                ],
+                condition=~models.Q(idempotency_key=""),
+                name="uniq_poster_job_idempotency_key",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"PosterJob#{self.id} [{self.status}]"
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.poster_id and self.project_id:
+            if self.poster.project_id != self.project_id:
+                errors["poster"] = (
+                    "Poster must belong to the generation job project."
+                )
+        if self.reference_asset_id and self.project_id:
+            if self.reference_asset.project_id != self.project_id:
+                errors["reference_asset"] = (
+                    "Reference asset must belong to the generation job project."
+                )
+        if self.source_variant_id and self.project_id:
+            if self.source_variant.project_id != self.project_id:
+                errors["source_variant"] = (
+                    "Source variant must belong to the generation job project."
+                )
+        if self.source_variant_id and self.poster_id:
+            if self.source_variant.poster_id != self.poster_id:
+                errors["source_variant"] = (
+                    "Source variant must belong to the generation job poster."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class PosterProviderCircuit(models.Model):
+    provider_key = models.CharField(max_length=255, unique=True)
+    failure_count = models.PositiveSmallIntegerField(default=0)
+    opened_until = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"{self.provider_key}: failures={self.failure_count}"
 
 
 class PosterVariant(models.Model):
@@ -189,7 +313,9 @@ class PosterVariant(models.Model):
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="poster_variants",
     )
 
@@ -228,6 +354,31 @@ class PosterVariant(models.Model):
                 condition=models.Q(is_selected=True),
             ),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "variant_index"],
+                name="uniq_poster_job_variant_index",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"PosterVariant#{self.id} job={self.job_id} sel={self.is_selected}"
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.poster_id and self.project_id:
+            if self.poster.project_id != self.project_id:
+                errors["poster"] = "Poster must belong to the variant project."
+        if self.job_id and self.project_id:
+            if self.job.project_id != self.project_id:
+                errors["job"] = "Job must belong to the variant project."
+        if self.job_id and self.poster_id:
+            if self.job.poster_id != self.poster_id:
+                errors["job"] = "Job must belong to the variant poster."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)

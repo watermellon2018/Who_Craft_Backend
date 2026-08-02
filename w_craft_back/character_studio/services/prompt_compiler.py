@@ -1,8 +1,34 @@
+import hashlib
 import logging
+
+from django.conf import settings
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
 
 logger = logging.getLogger(__name__)
+
+
+def _log_compiled_prompt(
+    *,
+    prompt: str,
+    image_type: str,
+    region: str | None = None,
+) -> None:
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    metadata = {
+        "image_type": image_type,
+        "prompt_hash": prompt_hash,
+        "prompt_len": len(prompt),
+    }
+    if region:
+        metadata["region"] = region
+    logger.info("character_prompt_compiled", extra=metadata)
+
+    # Break-glass diagnostics only: requires both this explicit flag and a
+    # DEBUG logger level. Never enable in shared or production environments.
+    if getattr(settings, "GENERATION_LOG_RAW_PROMPTS", False):
+        logger.debug("character_prompt_raw_debug prompt=%r", prompt)
+
 
 NEGATIVE_BASE = (
     "different person, changed face, changed eyes, changed outfit, changed age, "
@@ -320,9 +346,10 @@ class CharacterPromptCompiler:
             )
             zone_edit_meta = {"selection": sel, "instruction": instr, "quadrant": quadrant}
 
-        logger.info(
-            "compile: image_type=%s region=%s prompt_len=%d prompt=%r",
-            image_type, region, len(positive_prompt), positive_prompt[:400],
+        _log_compiled_prompt(
+            prompt=positive_prompt,
+            image_type=image_type,
+            region=region,
         )
 
         edit_instruction = self._edit_instruction(region, controls, preserve, identity_locked, image_type)
@@ -375,9 +402,10 @@ class CharacterPromptCompiler:
             f"{positive_prompt} {INITIAL_PORTRAIT_FRAME} {PORTRAIT_VARIATION_GUIDE}"
         )
 
-        logger.info(
-            "compile_initial_portrait_selection: prompt_len=%d prompt=%r",
-            len(positive_prompt), positive_prompt[:400],
+        _log_compiled_prompt(
+            prompt=positive_prompt,
+            image_type="portrait",
+            region="face",
         )
 
         return {

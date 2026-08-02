@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -51,6 +52,7 @@ class Model3DReconstructionTests(TestCase):
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
             user=self.user_key,
+            owner=user,
             title="3D film",
             format="series",
             annot="Short",
@@ -196,7 +198,7 @@ class Model3DReconstructionTests(TestCase):
         state, dispatch = self._ensure_and_dispatch()
         self.assertEqual(state["status"], "queued")
         self.assertEqual(state["progress"], 0)
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
         self.assertEqual(
             CharacterGenerationJob.objects.filter(
                 job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
@@ -232,6 +234,26 @@ class Model3DReconstructionTests(TestCase):
         self.assertEqual(state["status"], "missing")
         self.assertIn("different identity", state["error_message"])
         dispatch.assert_not_called()
+
+    def test_shared_identity_anchor_survives_portrait_regeneration(self):
+        identity_source_id = "canonical-identity-asset"
+        for asset in self.reference_assets.values():
+            asset.metadata = {
+                **asset.metadata,
+                "source_identity_asset_id": identity_source_id,
+            }
+            asset.save(update_fields=("metadata", "updated_at"))
+
+        state, dispatch = self._ensure_and_dispatch()
+
+        self.assertEqual(state["status"], "queued")
+        self.assertIsNotNone(state["job_id"])
+        dispatch.assert_not_called()
+        self.assertTrue(
+            CharacterGenerationJob.objects.filter(
+                job_id=state["job_id"],
+            ).exists()
+        )
 
     def test_pipeline_passes_profile_and_three_quarter_in_order(self):
 
@@ -543,14 +565,11 @@ class Model3DReconstructionTests(TestCase):
                 self.assertEqual(job.progress, 100)
                 ready = reconstruction_state(self.character)
                 self.assertEqual(ready["status"], "ready")
-                self.assertEqual(
-                    ready["model_url"],
-                    f"http://testserver/media/{asset.storage_path}",
+                self.assertTrue(
+                    urlparse(ready["model_url"]).path.startswith("/api/media/")
                 )
-                self.assertEqual(
-                    ready["hair_url"],
-                    "http://testserver/media/"
-                    f"{Path(asset.storage_path).with_name('hair.glb').as_posix()}",
+                self.assertTrue(
+                    urlparse(ready["hair_url"]).path.startswith("/api/media/")
                 )
                 self.assertEqual(ready["assets"]["hair"]["source"], "generated")
                 self.assertEqual(
@@ -583,23 +602,35 @@ class Model3DReconstructionTests(TestCase):
 
         self.assertEqual(retried["status"], "queued")
         self.assertNotEqual(retried["job_id"], state["job_id"])
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
-    def test_worker_failure_is_visible_and_retry_creates_new_job(self):
+    def test_worker_failure_is_safe_and_retry_creates_new_job(self):
+        private_fragment = "log01-private-provider-fragment-3d"
         state, _ = self._ensure_and_dispatch()
-        with patch(PIPELINE, side_effect=RuntimeError("CUDA unavailable")):
+        with self.assertLogs(
+            "w_craft_back.character_studio.services.model3d_reconstruction_service",
+            level="ERROR",
+        ) as captured, patch(
+            PIPELINE,
+            side_effect=RuntimeError(private_fragment),
+        ):
             result = run_reconstruction_job(state["job_id"])
         self.assertIsNone(result)
         failed = reconstruction_state(self.character)
         self.assertEqual(failed["status"], "failed")
-        self.assertIn("CUDA unavailable", failed["error_message"])
+        self.assertEqual(
+            failed["error_message"],
+            "Reconstruction failed. Try again.",
+        )
+        self.assertNotIn(private_fragment, "\n".join(captured.output))
+        self.assertNotIn(private_fragment, failed["error_message"])
 
         with patch(DISPATCH) as dispatch:
             with self.captureOnCommitCallbacks(execute=True):
                 retried = retry_reconstruction(self.character)
         self.assertEqual(retried["status"], "queued")
         self.assertNotEqual(retried["job_id"], state["job_id"])
-        dispatch.assert_called_once()
+        dispatch.assert_not_called()
 
     def test_unlocked_character_does_not_auto_create_from_state(self):
         self.character.status = CharacterStatus.ACTIVE

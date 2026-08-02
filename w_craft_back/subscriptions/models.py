@@ -32,4 +32,9 @@ class ChannelSubscription(models.Model):
                 check=~models.Q(subscriber=models.F('subscribed_to')),
                 name='channel_subscriptions_no_self',
             ),
+            models.UniqueConstraint(
+                fields=('subscriber', 'subscribed_to'),
+                condition=models.Q(deleted_at__isnull=True),
+                name='uniq_active_channel_subscription',
+            ),
         ]

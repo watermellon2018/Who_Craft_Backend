@@ -61,7 +61,11 @@ class GeminiNativeProvider:
             # Native client returns one image per call; loop for multi-variant.
             for _ in range(max(1, int(variant_count or 1))):
                 results.append(
-                    generate_image_via_gemini(prompt, poster_format=poster_format)
+                    generate_image_via_gemini(
+                        prompt,
+                        poster_format=poster_format,
+                        timeout_seconds=kwargs.get("timeout", 120),
+                    )
                 )
         except Exception as exc:  # noqa: BLE001 — funnel through unified mapper
             raise map_to_provider_error(exc) from exc
@@ -79,7 +83,10 @@ class GeminiNativeProvider:
 
         try:
             return edit_image_via_gemini(
-                image_bytes, instruction, mime_type=mime_type
+                image_bytes,
+                instruction,
+                mime_type=mime_type,
+                timeout_seconds=kwargs.get("timeout", 120),
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc

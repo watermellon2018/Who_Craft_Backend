@@ -1,6 +1,7 @@
 from w_craft_back.movie.properties.utils import translit
 import logging
 
+from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
 from w_craft_back.movie.properties.models import Genre
@@ -10,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class GenreView(APIView):
+    permission_classes = [AllowAny]
+
     def get(self, request):
         logger.info('Запрашиваем список всех жанров кино')
         items = Genre.objects.all()

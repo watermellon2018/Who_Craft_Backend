@@ -13,6 +13,7 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.movie.project.dashboard_models import Scene, SceneCharacter
 from w_craft_back.movie.project.models import Project
+from w_craft_back.storage_gateway import signed_url_for_asset
 
 
 CHARACTER_ROLE_LABELS = dict(CharacterRole.choices)
@@ -33,7 +34,12 @@ def character_image_url(character: StudioCharacter, request) -> Optional[str]:
     reference = character.canonical_reference_image
     if reference is None:
         return None
-    return _absolute_image_url(request, reference.image_url)
+    return signed_url_for_asset(
+        storage_key=reference.storage_path,
+        legacy_url=reference.image_url,
+        request=request,
+        project=character.project,
+    )
 
 
 def compact_character_payload(character: StudioCharacter, request) -> dict:

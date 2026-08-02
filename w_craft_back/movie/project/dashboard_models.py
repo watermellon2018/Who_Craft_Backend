@@ -8,6 +8,7 @@ SceneCharacter therefore links Scene -> StudioCharacter directly.
 """
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
@@ -90,23 +91,6 @@ class ActivityType(models.TextChoices):
     OWNERSHIP_TRANSFERRED = "ownership_transferred", "Владение передано"
 
 
-class GenerationJobType(models.TextChoices):
-    CHARACTER_IMAGE = "character_image", "Генерация персонажа"
-    SCENE_IMAGE = "scene_image", "Генерация сцены"
-    REFERENCE_SHEET = "reference_sheet", "Референсы персонажа"
-    VIDEO = "video", "Генерация видео"
-    MUSIC = "music", "Генерация музыки"
-    LOCATION = "location", "Генерация локации"
-
-
-class ProjectGenerationJobStatus(models.TextChoices):
-    QUEUED = "queued", "В очереди"
-    PROCESSING = "processing", "В процессе"
-    COMPLETED = "completed", "Завершено"
-    FAILED = "failed", "Ошибка"
-    CANCELLED = "cancelled", "Отменено"
-
-
 class ProjectTag(models.Model):
     project = models.ForeignKey(
         Project,
@@ -167,6 +151,11 @@ class ProjectMember(models.Model):
             models.UniqueConstraint(
                 fields=["project", "user"],
                 name="uniq_project_member",
+            ),
+            models.UniqueConstraint(
+                fields=["project"],
+                condition=models.Q(role=ProjectMemberRole.OWNER),
+                name="uniq_active_owner_per_project",
             ),
         ]
         indexes = [
@@ -242,7 +231,7 @@ class Scene(models.Model):
         related_name="scenes",
     )
     title = models.CharField(max_length=255)
-    order = models.PositiveIntegerField(default=0)
+    order = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True, default="")
     script_text = models.TextField(blank=True, default="")
     script_blocks = models.JSONField(default=list, blank=True)
@@ -304,6 +293,32 @@ class Scene(models.Model):
             models.Index(fields=["project", "updated_at"]),
         ]
 
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(order__gte=1),
+                name="chk_scene_order_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["project", "order"],
+                name="uniq_scene_order_per_project",
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.order is not None and self.order < 1:
+            errors["order"] = "Scene order must be at least 1."
+        if self.location_id and self.project_id:
+            if self.location.project_id != self.project_id:
+                errors["location"] = "Location must belong to the scene project."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.order:02d} — {self.title}"
 
@@ -330,6 +345,18 @@ class SceneCharacter(models.Model):
                 name="uniq_scene_character",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.scene_id and self.character_id:
+            if self.scene.project_id != self.character.project_id:
+                raise ValidationError(
+                    {"character": "Character must belong to the scene project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class MusicTrack(models.Model):
@@ -396,6 +423,18 @@ class SceneMusic(models.Model):
                 name="uniq_scene_music",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.scene_id and self.track_id:
+            if self.scene.project_id != self.track.project_id:
+                raise ValidationError(
+                    {"track": "Music track must belong to the scene project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class ProjectAsset(models.Model):
@@ -498,45 +537,3 @@ class ProjectActivity(models.Model):
     @actor.setter
     def actor(self, value):
         self.user = value
-
-
-class ProjectGenerationJob(models.Model):
-    """Project-level generation job. Distinct from CharacterGenerationJob in
-    character_studio.models, which is scoped to a specific StudioCharacter."""
-
-    project = models.ForeignKey(
-        Project,
-        on_delete=models.CASCADE,
-        related_name="generation_jobs",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="project_generation_jobs",
-    )
-    job_type = models.CharField(max_length=30, choices=GenerationJobType.choices)
-    status = models.CharField(
-        max_length=20,
-        choices=ProjectGenerationJobStatus.choices,
-        default=ProjectGenerationJobStatus.QUEUED,
-    )
-    prompt = models.TextField(blank=True, default="")
-    negative_prompt = models.TextField(blank=True, default="")
-    input_data = models.JSONField(default=dict, blank=True)
-    output_data = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True, default="")
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["project", "status"]),
-            models.Index(fields=["user", "status"]),
-            models.Index(fields=["job_type", "status"]),
-            models.Index(fields=["created_at"]),
-        ]
-
-    def __str__(self):
-        return f"{self.job_type}#{self.id} [{self.status}]"

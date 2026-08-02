@@ -13,8 +13,13 @@ class ProjectStatus(models.TextChoices):
 
 
 class Project(models.Model):
-    # Legacy fields (kept for back-compat with existing views/templates).
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE)
+    # Legacy creator attribution. It is intentionally NOT an ownership signal.
+    user = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     title = models.CharField(max_length=255)
     image = models.ImageField(upload_to='project/poster/', blank=True, default='')
     genre = models.ManyToManyField(Genre)
@@ -26,9 +31,7 @@ class Project(models.Model):
     # Dashboard fields.
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
+        on_delete=models.PROTECT,
         related_name="owned_projects",
     )
     slug = models.SlugField(max_length=255, blank=True, default="")
@@ -42,6 +45,7 @@ class Project(models.Model):
         default=ProjectStatus.DRAFT,
     )
     is_favorite = models.BooleanField(default=False)
+    generation_settings = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
     archived_at = models.DateTimeField(null=True, blank=True)

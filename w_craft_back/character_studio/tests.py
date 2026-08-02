@@ -53,13 +53,16 @@ from w_craft_back.character_studio.services.prompt_compiler import (
 )
 from w_craft_back.character_studio.services.providers import (
     GeminiProvider,
+    MockProvider,
     ProviderContentBlockedError,
+    ProviderUserFacingError,
 )
 from w_craft_back.character_studio.services.revision_service import (
     CharacterRevisionService,
 )
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project.policy import Action
 
 PROVIDER_SESSION = "w_craft_back.character_studio.services.providers.requests.Session"
 
@@ -75,6 +78,7 @@ class CharacterStudioTestCase(TestCase):
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
             user=self.user_key,
+            owner=user,
             title="Film",
             format="series",
             annot="Short",
@@ -83,6 +87,9 @@ class CharacterStudioTestCase(TestCase):
         self.service = CharacterService()
         self.previous_provider = os.environ.get("CHARACTER_STUDIO_IMAGE_PROVIDER")
         os.environ["CHARACTER_STUDIO_IMAGE_PROVIDER"] = "mock"
+
+    def generation_headers(self):
+        return {"HTTP_IDEMPOTENCY_KEY": f"test-{uuid4()}"}
 
     def tearDown(self):
         if self.previous_provider is None:
@@ -140,7 +147,7 @@ class CharacterServiceTests(CharacterStudioTestCase):
             self.user_key, self.project.id, character.character_id,
         )
         with self.assertRaises(NotFoundError):
-            self.service.get_character(
+            self.service.get_viewable_character(
                 self.user_key, self.project.id, character.character_id,
             )
 
@@ -248,9 +255,18 @@ class RevisionTests(CharacterStudioTestCase):
         character = self.create_character()
         revision_service = CharacterRevisionService()
         revision = revision_service.create_revision(
-            character, "manual_update", change_summary="checkpoint",
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            "manual_update",
+            change_summary="checkpoint",
         )
-        restored = revision_service.restore_revision(character, revision)
+        restored = revision_service.restore_revision(
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            revision,
+        )
         self.assertEqual(restored.change_type, "restore_revision")
         self.assertEqual(character.revisions.count(), 3)
 
@@ -301,7 +317,12 @@ class GenerationFlowTests(CharacterStudioTestCase):
             hair_variant.variant_id, {"apply_as": "current_reference"},
         )
         previous = character.revisions.order_by("revision_number").first()
-        restored = CharacterRevisionService().restore_revision(character, previous)
+        restored = CharacterRevisionService().restore_revision(
+            self.user_key,
+            Action.EDIT_CONTENT,
+            character,
+            previous,
+        )
         self.assertEqual(restored.change_type, "restore_revision")
 
     def test_generation_validation(self):
@@ -418,7 +439,7 @@ class GenerationFlowTests(CharacterStudioTestCase):
         )
         self.assertEqual(portrait_image.asset.source_job_id, portrait_job.job_id)
         self.assertEqual(full_body_image.asset.source_job_id, full_body_job.job_id)
-        self.assertNotEqual(portrait_image.image_url, full_body_image.image_url)
+        self.assertNotEqual(portrait_image.storage_path, full_body_image.storage_path)
 
         generation.generate_edit_variants(
             self.user_key,
@@ -470,7 +491,7 @@ class GenerationFlowTests(CharacterStudioTestCase):
 
 class GeminiProviderTests(TestCase):
     def test_predict_request_uses_documented_imagen_payload(self):
-        image_bytes = base64.b64encode(b"png-bytes").decode("ascii")
+        image_bytes = base64.b64encode(MockProvider._PLACEHOLDER_PNG).decode("ascii")
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
@@ -518,12 +539,9 @@ class GeminiProviderTests(TestCase):
         self.assertTrue(
             variants[0]["storage_path"].startswith("character-studio/jobs/")
         )
-        self.assertEqual(
-            variants[0]["image_url"],
-            f"/media/{variants[0]['storage_path']}",
-        )
+        self.assertEqual(variants[0]["image_url"], "")
 
-    def test_http_error_includes_google_response_without_api_key(self):
+    def test_http_error_omits_google_response_and_api_key(self):
         response = Mock()
         response.status_code = 400
         response.reason = "Bad Request"
@@ -536,7 +554,7 @@ class GeminiProviderTests(TestCase):
 
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=False):
             with patch(PROVIDER_SESSION, return_value=session):
-                with self.assertRaises(RuntimeError) as ctx:
+                with self.assertRaises(ProviderUserFacingError) as ctx:
                     GeminiProvider().generate_character_variants(
                         SimpleNamespace(job_id=uuid4()),
                         {
@@ -546,7 +564,12 @@ class GeminiProviderTests(TestCase):
                         4,
                     )
 
-        self.assertIn("Unknown name negativePrompt", str(ctx.exception))
+        self.assertEqual(ctx.exception.error_code, "PROVIDER_HTTP_ERROR")
+        self.assertEqual(
+            str(ctx.exception),
+            "Провайдер отклонил запрос (HTTP 400).",
+        )
+        self.assertNotIn("Unknown name negativePrompt", str(ctx.exception))
         self.assertNotIn("test-key", str(ctx.exception))
 
     def test_non_ascii_prompt_is_translated_before_imagen_request(self):
@@ -572,7 +595,7 @@ class GeminiProviderTests(TestCase):
         image_response.raise_for_status.return_value = None
         image_response.json.return_value = {
             "predictions": [
-                {"bytesBase64Encoded": base64.b64encode(b"png-bytes").decode("ascii")},
+                {"bytesBase64Encoded": base64.b64encode(MockProvider._PLACEHOLDER_PNG).decode("ascii")},
             ],
         }
         session = Mock()
@@ -633,9 +656,13 @@ class GeminiProviderTests(TestCase):
                         4,
                     )
 
-        self.assertEqual(ctx.exception.error_code, "GEMINI_PROHIBITED_CONTENT")
+        self.assertEqual(
+            ctx.exception.error_code,
+            "PROVIDER_CONTENT_BLOCKED",
+        )
         self.assertIn("Gemini заблокировал промпт", ctx.exception.user_message)
         self.assertNotIn("promptFeedback", str(ctx.exception))
+        self.assertNotIn("PROHIBITED_CONTENT", repr(ctx.exception.__dict__))
 
 
 class CharacterStudioApiTests(CharacterStudioTestCase):
@@ -663,6 +690,7 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
             "/generate-initial-variants",
             {"token_user": self.token, "variant_count": 4},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(job_response.status_code, 200)
         job_id = job_response.json()["job_id"]
@@ -1208,7 +1236,57 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate"),
             {"token_user": self.token, "reference_type": reference_type, **extra},
             format="json",
+            **self.generation_headers(),
         )
+
+    def _confirm_quality(self):
+        response = self.client.patch(
+            self._url("/checklist"),
+            {
+                "token_user": self.token,
+                "appearance_stable": True,
+                "face_matches_base": True,
+                "outfit_readable": True,
+                "suitable_for_3d": True,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def _seed_ready_references(self, *side_types):
+        side_types = side_types or (
+            CharacterAssetType.PROFILE, CharacterAssetType.THREE_QUARTER,
+        )
+        portrait = CharacterAsset.objects.create(
+            character=self.character,
+            project=self.project,
+            user=self.user_key,
+            asset_type=CharacterAssetType.PORTRAIT,
+            image_url="/media/tests/portrait.png",
+            storage_path="tests/portrait.png",
+            source="test",
+            status=CharacterAssetStatus.READY,
+            metadata={"sha256": "portrait-hash"},
+        )
+        for asset_type in (
+            CharacterAssetType.FULL_BODY,
+            *side_types,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            CharacterAsset.objects.create(
+                character=self.character,
+                project=self.project,
+                user=self.user_key,
+                asset_type=asset_type,
+                image_url=f"/media/tests/{asset_type}.png",
+                storage_path=f"tests/{asset_type}.png",
+                source="test",
+                status=CharacterAssetStatus.READY,
+                metadata={
+                    "sha256": f"{asset_type}-hash",
+                    "source_identity_asset_id": str(portrait.asset_id),
+                },
+            )
 
     def test_get_returns_all_nine_reference_types_in_stable_order(self):
         response = self.client.get(self._url(), HTTP_X_USER_TOKEN=self.token)
@@ -1272,6 +1350,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "preserve_identity": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
         rows = CharacterAsset.objects.filter(
@@ -1287,8 +1366,8 @@ class ReferencesStageTests(CharacterStudioTestCase):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         png_bytes = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
-            "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+            "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             upload = SimpleUploadedFile(
@@ -1354,34 +1433,56 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_proceed_to_3d_blocked_without_required_references(self):
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         body = response.json()
         self.assertFalse(body["can_proceed"])
         self.assertIn("missing_portrait", body["blockers"])
 
-    def test_proceed_to_3d_succeeds_when_required_ready(self):
-        for ref_type in ("portrait", "full_body", "profile", "back_view"):
-            response = self._generate(ref_type)
-            self.assertEqual(response.status_code, 200, response.content)
+    def test_proceed_to_3d_blocked_until_quality_is_confirmed(self):
+        self._seed_ready_references()
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        self.assertFalse(body["can_proceed"])
+        self.assertIn("appearance_not_confirmed", body["blockers"])
+        self.assertIn("face_not_confirmed", body["blockers"])
+        self.assertIn("outfit_not_confirmed", body["blockers"])
+        self.assertIn("suitability_for_3d_not_confirmed", body["blockers"])
+        self.character.refresh_from_db()
+        self.assertNotEqual(self.character.status, CharacterStatus.REFERENCES_LOCKED)
+
+    def test_proceed_to_3d_succeeds_when_ready_and_quality_confirmed(self):
+        self._seed_ready_references()
+        self._confirm_quality()
+        response = self.client.post(
+            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
+        )
+        self.assertEqual(response.status_code, 202, response.content)
         body = response.json()
         self.assertTrue(body["can_proceed"])
         self.assertEqual(body["next_stage"], "3d_model")
         self.character.refresh_from_db()
+        self.assertEqual(body["reconstruction"]["status"], "queued")
+        self.assertIsNotNone(body["job_id"])
         self.assertEqual(self.character.status, CharacterStatus.REFERENCES_LOCKED)
 
     def test_three_quarter_satisfies_profile_requirement(self):
         # profile OR three_quarter is acceptable for the side requirement.
-        for ref_type in ("portrait", "full_body", "three_quarter", "back_view"):
-            self._generate(ref_type)
+        self._seed_ready_references(
+            CharacterAssetType.THREE_QUARTER,
+        )
+        self._confirm_quality()
         response = self.client.post(
             self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 202, response.content)
 
     def test_checklist_patch_persists_user_state(self):
         response = self.client.patch(
@@ -1438,6 +1539,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "preserve_identity": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
@@ -1465,6 +1567,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "only_missing": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(first.status_code, 200, first.content)
         # All 4 jobs created the first time. The mock provider runs the job
@@ -1478,6 +1581,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
                 "only_missing": True,
             },
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(second.status_code, 200, second.content)
         body = second.json()
@@ -1505,6 +1609,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate-missing"),
             {"token_user": self.token, "reference_types": ["portrait", "moonwalk"]},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1514,6 +1619,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             self._url("/generate-missing"),
             {"token_user": self.token, "reference_types": []},
             format="json",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -1537,8 +1643,8 @@ class ReferencesStageTests(CharacterStudioTestCase):
 
 
 PNG_1X1_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA"
-    "C0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
 
@@ -1574,6 +1680,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                     "reference_image": self._png(),
                 },
                 format="multipart",
+                **self.generation_headers(),
             )
         self.assertEqual(response.status_code, 201, response.content)
         body = response.json()
@@ -1598,6 +1705,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 "character_type": "human",
             },
             format="multipart",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1615,6 +1723,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 "reference_image": bad,
             },
             format="multipart",
+            **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
@@ -1623,7 +1732,12 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         other_user = User.objects.create_user(username="intruder", password="x")
         other_key = UserKey.objects.create(user=other_user)
         other_project = Project.objects.create(
-            user=other_key, title="Other", format="series", annot="x", desc="y",
+            user=other_key,
+            owner=other_user,
+            title="Other",
+            format="series",
+            annot="x",
+            desc="y",
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             response = self.client.post(
@@ -1635,6 +1749,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                     "reference_image": self._png(),
                 },
                 format="multipart",
+                **self.generation_headers(),
             )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error_code"], "PERMISSION_DENIED")
@@ -1666,6 +1781,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                         "reference_image": self._png(),
                     },
                     format="multipart",
+                    **self.generation_headers(),
                 )
         finally:
             providers_module.get_image_provider = original
@@ -1703,6 +1819,7 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
             self._references_url("/generate"),
             {"token_user": self.token, "reference_type": reference_type},
             format="json",
+            **self.generation_headers(),
         )
 
     def test_full_body_requires_identity_asset(self):
@@ -1940,6 +2057,42 @@ class Model3DStageTests(CharacterStudioTestCase):
         body = response.json()
         self.assertEqual(body["params"], {})
         self.assertIn("updated_at", body)
+
+    def test_get_recovers_reconstruction_for_locked_shared_identity_views(self):
+        self.character.status = CharacterStatus.REFERENCES_LOCKED
+        self.character.save(update_fields=("status", "updated_at"))
+        identity_source_id = "canonical-identity-asset"
+        for asset_type in (
+            CharacterAssetType.PORTRAIT,
+            CharacterAssetType.FULL_BODY,
+            CharacterAssetType.PROFILE,
+            CharacterAssetType.THREE_QUARTER,
+            CharacterAssetType.BACK_VIEW,
+        ):
+            CharacterAsset.objects.create(
+                character=self.character,
+                project=self.project,
+                user=self.user_key,
+                asset_type=asset_type,
+                image_url=f"/media/tests/{asset_type}.png",
+                storage_path=f"tests/{asset_type}.png",
+                source="test",
+                status=CharacterAssetStatus.READY,
+                metadata={
+                    "sha256": f"{asset_type}-hash",
+                    "source_identity_asset_id": identity_source_id,
+                },
+            )
+
+        response = self.client.get(
+            self._url(),
+            HTTP_X_USER_TOKEN=self.token,
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        reconstruction = response.json()["reconstruction"]
+        self.assertEqual(reconstruction["status"], "queued")
+        self.assertIsNotNone(reconstruction["job_id"])
 
     def test_put_then_get_roundtrip(self):
         params = {

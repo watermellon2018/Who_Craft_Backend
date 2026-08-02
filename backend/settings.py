@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 
+import datetime
 import os
 from pathlib import Path
 
@@ -52,7 +53,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'mptt',
-    'w_craft_back',
+    'w_craft_back.apps.WCraftBackConfig',
     'corsheaders',
     'rest_framework',
 ]
@@ -74,10 +75,18 @@ if CORS_ORIGIN_ALLOW_ALL and CORS_ALLOW_CREDENTIALS and not DEBUG:
     )
 
 from corsheaders.defaults import default_headers as _cors_default_headers
-CORS_ALLOW_HEADERS = (*_cors_default_headers, "x-user-token")
+CORS_ALLOW_HEADERS = (
+    *_cors_default_headers,
+    "x-user-token",
+    "x-request-id",
+    "idempotency-key",
+)
+CORS_EXPOSE_HEADERS = ("X-Request-ID",)
 
 
 MIDDLEWARE = [
+    'w_craft_back.observability.RequestContextMiddleware',
+    'w_craft_back.upload_protection.UploadProtectionMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -86,7 +95,20 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'w_craft_back.api_errors.ApiErrorEnvelopeMiddleware',
 ]
+
+UPLOAD_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+UPLOAD_DEFAULT_MULTIPART_FILE_LIMIT_BYTES = 12 * 1024 * 1024
+UPLOAD_ENDPOINT_FILE_LIMITS = {
+    'character-create-from-reference': 10 * 1024 * 1024,
+    'character-outfit-reference-upload': 10 * 1024 * 1024,
+    'character-clothing-reference-upload': 10 * 1024 * 1024,
+    'character-reference-upload': 10 * 1024 * 1024,
+    'project-assets': 100 * 1024 * 1024,
+    'profile-me-avatar': 5 * 1024 * 1024,
+    'profile-me-cover': 10 * 1024 * 1024,
+}
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -162,7 +184,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
@@ -173,22 +195,29 @@ DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 # production without a code change. Defaults preserve the previous behaviour
 # (quiet by default).
 _APP_LOG_LEVEL = os.getenv('CRAFT_LOG_LEVEL', 'DEBUG' if DEBUG else 'INFO').upper()
+GENERATION_LOG_RAW_PROMPTS = (
+    os.getenv('GENERATION_LOG_RAW_PROMPTS', 'false').lower()
+    in {'1', 'true', 'yes', 'on'}
+)
 _DJANGO_REQUEST_LOG_LEVEL = os.getenv('CRAFT_REQUEST_LOG_LEVEL', 'INFO' if DEBUG else 'WARNING').upper()
 
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'filters': {
+        'safe_django_request': {
+            '()': 'w_craft_back.observability.SafeDjangoRequestFilter',
+        },
+    },
     'formatters': {
-        'verbose': {
-            'format': '[{asctime}] {levelname} {name}: {message}',
-            'style': '{',
-            'datefmt': '%H:%M:%S',
+        'json': {
+            '()': 'w_craft_back.observability.JsonLogFormatter',
         },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
+            'formatter': 'json',
         },
     },
     'root': {
@@ -203,13 +232,39 @@ LOGGING = {
         },
         'django.request': {
             'handlers': ['console'],
+            'filters': ['safe_django_request'],
+            'level': _DJANGO_REQUEST_LOG_LEVEL,
+            'propagate': False,
+        },
+        'django.server': {
+            'handlers': ['console'],
+            'filters': ['safe_django_request'],
             'level': _DJANGO_REQUEST_LOG_LEVEL,
             'propagate': False,
         },
     },
 }
 
+USER_KEY_ACCESS_TTL = datetime.timedelta(hours=1)
+USER_KEY_REFRESH_TTL = datetime.timedelta(days=30)
+# Temporary compatibility window for legacy JSON/form clients. The frontend
+# uses X-User-Token; remove the body fallback after this UTC deadline.
+USER_KEY_BODY_FALLBACK_DISABLE_AT = datetime.datetime(
+    2026,
+    10,
+    1,
+    tzinfo=datetime.timezone.utc,
+)
+# Includes multipart framing around the existing 10 MiB image limit.
+USER_KEY_LEGACY_MULTIPART_MAX_BYTES = 12 * 1024 * 1024
+
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'w_craft_back.auth.authentication.UserKeyAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -218,13 +273,35 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '600/min',
         'auth': '10/min',
+        'legacy_body_auth': '120/min',
+        'legacy_multipart_auth': '10/min',
     },
 }
 
 MEDIA_URL = '/media/'
-STATIC_ROOT = BASE_DIR
-MEDIA_ROOT = BASE_DIR / "static" / "media"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_ROOT = Path(
+    os.getenv("MEDIA_ROOT", BASE_DIR.parent / "w_craft_data" / "media")
+)
+SIGNED_MEDIA_BASE_URL = os.getenv("SIGNED_MEDIA_BASE_URL", "")
+SIGNED_MEDIA_TTL_SECONDS = int(os.getenv("SIGNED_MEDIA_TTL_SECONDS", "300"))
+MEDIA_ORPHAN_RETENTION_HOURS = int(
+    os.getenv("MEDIA_ORPHAN_RETENTION_HOURS", "168")
+)
+MEDIA_REMOTE_FETCH_ALLOW_HTTP = (
+    os.getenv("MEDIA_REMOTE_FETCH_ALLOW_HTTP", "false").lower() == "true"
+)
+IMAGE_PROVIDER_FETCH_TIMEOUT_SECONDS = float(
+    os.getenv("IMAGE_PROVIDER_FETCH_TIMEOUT_SECONDS", "15")
+)
+IMAGE_PROVIDER_MAX_OUTPUT_BYTES = int(
+    os.getenv("IMAGE_PROVIDER_MAX_OUTPUT_BYTES", str(20 * 1024 * 1024))
+)
+IMAGE_PROVIDER_MAX_OUTPUT_PIXELS = int(
+    os.getenv("IMAGE_PROVIDER_MAX_OUTPUT_PIXELS", "20000000")
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 
 # Per-character 3D reconstruction. The web process stays in the lightweight
 # ``backend`` environment; the detached worker invokes these tools through the
@@ -243,4 +320,8 @@ MODEL3D_HUNYUAN_ROOT = os.getenv(
 MODEL3D_MODEL_ROOT = os.getenv(
     "MODEL3D_MODEL_ROOT",
     str(BASE_DIR.parent / "external" / "Hunyuan3D-2" / "models"),
+)
+READINESS_REQUIRE_MODEL3D_WORKER = (
+    os.getenv("READINESS_REQUIRE_MODEL3D_WORKER", "true").lower()
+    in {"1", "true", "yes", "on"}
 )

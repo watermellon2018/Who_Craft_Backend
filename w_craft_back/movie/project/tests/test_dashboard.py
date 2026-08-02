@@ -12,7 +12,6 @@ from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
     ProjectActivity,
-    ProjectGenerationJob,
     ProjectMember,
     ProjectMemberRole,
     ProjectProgress,
@@ -257,19 +256,6 @@ class ProjectCrudTests(TestCase):
                 project=project, activity_type=ActivityType.SCENE_CREATED
             ).exists()
         )
-
-    def test_create_generation_job_queued(self):
-        project = _make_project(self.owner, title="X")
-        url = f"/api/projects/{project.id}/generation-jobs/"
-        resp = self.client.post(
-            url,
-            data={"job_type": "scene_image", "prompt": "neon street"},
-            format="json",
-            HTTP_X_USER_TOKEN=self.token,
-        )
-        self.assertEqual(resp.status_code, 201, resp.content)
-        job = ProjectGenerationJob.objects.get(project=project)
-        self.assertEqual(job.status, "queued")
 
     def test_outsider_cannot_create_character(self):
         project = _make_project(self.owner, title="X")

@@ -76,3 +76,41 @@ class PosterVariantNotFound(PosterError):
 
 class PosterVariantDeleted(PosterError):
     code = "POSTER_VARIANT_DELETED"
+
+
+class IdempotencyKeyRequired(PosterError):
+    code = "IDEMPOTENCY_KEY_REQUIRED"
+
+
+class IdempotencyKeyInvalid(PosterError):
+    code = "IDEMPOTENCY_KEY_INVALID"
+
+
+class IdempotencyConflict(PosterError):
+    http_status = status.HTTP_409_CONFLICT
+    code = "IDEMPOTENCY_KEY_REUSED"
+
+
+class PosterConcurrencyLimit(PosterError):
+    http_status = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "POSTER_CONCURRENCY_LIMIT"
+
+
+class PosterQuotaExceeded(PosterError):
+    http_status = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "POSTER_DAILY_QUOTA_EXCEEDED"
+
+
+class PosterProviderCircuitOpen(PosterError):
+    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "POSTER_PROVIDER_CIRCUIT_OPEN"
+
+
+class PosterProviderFailure(PosterError):
+    http_status = status.HTTP_502_BAD_GATEWAY
+    code = "POSTER_PROVIDER_FAILURE"
+
+
+class PosterImageTooLarge(PosterError):
+    http_status = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    code = "POSTER_IMAGE_TOO_LARGE"
