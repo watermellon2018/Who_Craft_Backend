@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
+from w_craft_back.movie.music.models import MusicAsset, MusicTrackVersion
 from w_craft_back.movie.project.dashboard_models import (
     ActivityType,
     Location,
@@ -20,6 +24,7 @@ from w_craft_back.movie.project.dashboard_models import (
     SceneMusic,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
+from w_craft_back.movie.project.services import _music_payload
 
 
 def _make_user(username: str) -> tuple[User, str]:
@@ -204,6 +209,107 @@ class DashboardShapeTests(TestCase):
         activities = data["recentActivity"]
         self.assertEqual(len(activities), 1)
         self.assertEqual(activities[0]["type"], "scene_render_completed")
+
+    def test_music_uses_active_immutable_version_audio(self):
+        track = MusicTrack.objects.create(
+            project=self.project,
+            title="Versioned score",
+            duration_seconds=9,
+            source="generated",
+        )
+        asset = MusicAsset.objects.create(
+            project=self.project,
+            file="tests/music/versioned.wav",
+            asset_role="generated",
+            origin="legacy",
+            original_name="versioned.wav",
+            duration_seconds=Decimal("12.500"),
+            verification_status="legacy_unverified",
+        )
+        version = MusicTrackVersion.objects.create(
+            track=track,
+            version_number=1,
+            asset=asset,
+        )
+        track.active_version = version
+        track.save(update_fields=["active_version", "updated_at"])
+
+        data = self._get()
+
+        music = data["music"][0]
+        self.assertEqual(music["activeVersionId"], str(version.id))
+        self.assertEqual(music["activeVersionNumber"], 1)
+        self.assertEqual(music["activeVersion"]["versionId"], str(version.id))
+        self.assertEqual(music["activeVersion"]["versionNumber"], 1)
+        self.assertEqual(music["activeVersion"]["audioUrl"], music["audioUrl"])
+        self.assertEqual(music["durationSeconds"], 12.5)
+        self.assertEqual(music["durationLabel"], "00:12")
+        self.assertEqual(music["source"], "generated")
+        self.assertEqual(music["version"], 1)
+        self.assertIsNotNone(music["audioUrl"])
+        self.assertIsNotNone(music["audioUrlExpiresAt"])
+        self.assertNotIn("tests/music/versioned.wav", music["audioUrl"])
+
+    def test_music_retains_signed_legacy_audio_fallback(self):
+        track = MusicTrack.objects.create(
+            project=self.project,
+            title="Legacy score",
+            duration_seconds=31,
+        )
+        track.audio_file.name = "projects/music/legacy.mp3"
+        track.save(update_fields=["audio_file", "updated_at"])
+
+        data = self._get()
+
+        music = data["music"][0]
+        self.assertIsNone(music["activeVersionId"])
+        self.assertIsNone(music["activeVersionNumber"])
+        self.assertIsNone(music["activeVersion"])
+        self.assertEqual(music["durationSeconds"], 31.0)
+        self.assertIsNotNone(music["audioUrl"])
+        self.assertNotIn("projects/music/legacy.mp3", music["audioUrl"])
+
+    def test_music_hides_archived_tracks(self):
+        MusicTrack.objects.create(
+            project=self.project,
+            title="Archived score",
+            archived_at=timezone.now(),
+        )
+        MusicTrack.objects.create(
+            project=self.project,
+            title="Active score",
+        )
+
+        data = self._get()
+        self.assertEqual([track["title"] for track in data["music"]], ["Active score"])
+
+    def test_music_payload_fetches_versioned_tracks_in_one_query(self):
+        for index in range(3):
+            track = MusicTrack.objects.create(
+                project=self.project,
+                title=f"Track {index}",
+            )
+            asset = MusicAsset.objects.create(
+                project=self.project,
+                file=f"tests/music/{index}.wav",
+                asset_role="generated",
+                origin="legacy",
+                original_name=f"{index}.wav",
+                duration_seconds=Decimal("10.000"),
+                verification_status="legacy_unverified",
+            )
+            version = MusicTrackVersion.objects.create(
+                track=track,
+                version_number=1,
+                asset=asset,
+            )
+            track.active_version = version
+            track.save(update_fields=["active_version", "updated_at"])
+
+        request = RequestFactory().get("/")
+        with self.assertNumQueries(1):
+            payload = _music_payload(self.project, request)
+            self.assertEqual(len(payload), 3)
 
 
 class ProjectCrudTests(TestCase):

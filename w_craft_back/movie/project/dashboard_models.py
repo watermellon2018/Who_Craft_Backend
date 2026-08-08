@@ -359,6 +359,12 @@ class SceneCharacter(models.Model):
         return super().save(*args, **kwargs)
 
 
+class MusicTrackSource(models.TextChoices):
+    MANUAL = "manual", "Manual"
+    GENERATED = "generated", "Generated"
+    LEGACY = "legacy", "Legacy"
+
+
 class MusicTrack(models.Model):
     project = models.ForeignKey(
         Project,
@@ -389,6 +395,19 @@ class MusicTrack(models.Model):
         blank=True,
         related_name="updated_music_tracks",
     )
+    active_version = models.ForeignKey(
+        "MusicTrackVersion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="active_for_tracks",
+    )
+    source = models.CharField(
+        max_length=16,
+        choices=MusicTrackSource.choices,
+        default=MusicTrackSource.MANUAL,
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -398,6 +417,18 @@ class MusicTrack(models.Model):
             models.Index(fields=["project"]),
             models.Index(fields=["project", "updated_at"]),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.active_version_id:
+            if not self.pk or self.active_version.track_id != self.pk:
+                raise ValidationError(
+                    {"active_version": "Active version must belong to the track."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return self.title
@@ -412,6 +443,13 @@ class SceneMusic(models.Model):
     track = models.ForeignKey(
         MusicTrack,
         on_delete=models.CASCADE,
+        related_name="scene_usages",
+    )
+    track_version = models.ForeignKey(
+        "MusicTrackVersion",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="scene_usages",
     )
     start_time_seconds = models.PositiveIntegerField(default=0)
@@ -430,6 +468,20 @@ class SceneMusic(models.Model):
             if self.scene.project_id != self.track.project_id:
                 raise ValidationError(
                     {"track": "Music track must belong to the scene project."}
+                )
+
+        if self.track_version_id and self.track_id:
+            if self.track_version.track_id != self.track_id:
+                raise ValidationError(
+                    {"track_version": "Track version must belong to the track."}
+                )
+            if self.track_version.track.project_id != self.scene.project_id:
+                raise ValidationError(
+                    {
+                        "track_version": (
+                            "Track version must belong to the scene project."
+                        )
+                    }
                 )
 
     def save(self, *args, **kwargs):

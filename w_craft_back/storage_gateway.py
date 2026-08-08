@@ -8,7 +8,9 @@ import io
 import mimetypes
 import posixpath
 import socket
+import struct
 import tempfile
+import wave
 import time
 import uuid
 import warnings
@@ -80,9 +82,18 @@ class InvalidImage(StorageGatewayError):
     http_status = 415
 
 
+class InvalidAudio(StorageGatewayError):
+    code = "INVALID_AUDIO"
+    http_status = 415
+
+
 class UnsafeRemoteMedia(StorageGatewayError):
     code = "UNSAFE_REMOTE_MEDIA"
     http_status = 502
+
+
+DEFAULT_MUSIC_MAX_OUTPUT_BYTES = 50 * 1024 * 1024
+DEFAULT_MUSIC_MAX_REFERENCE_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,17 @@ class NormalizedImage:
 
 
 @dataclass(frozen=True)
+class NormalizedAudio:
+    """Structurally validated audio with a safely probed duration."""
+
+    data: bytes
+    mime_type: str
+    extension: str
+    duration_seconds: float
+    sha256: str
+
+
+@dataclass(frozen=True)
 class StoredMedia:
     """Metadata returned after a validated object is saved."""
 
@@ -107,6 +129,7 @@ class StoredMedia:
     sha256: str
     width: int | None = None
     height: int | None = None
+    duration_seconds: float | None = None
 
 
 def _positive_setting(name: str, default: int) -> int:
@@ -338,6 +361,358 @@ def _sniff_non_image(head: bytes) -> tuple[str, str] | None:
     return None
 
 
+def _probe_wav_duration(payload: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as audio:
+            channels = audio.getnchannels()
+            sample_width = audio.getsampwidth()
+            sample_rate = audio.getframerate()
+            frame_count = audio.getnframes()
+            if not 1 <= channels <= 8:
+                raise InvalidAudio("WAV channel count is invalid.")
+            if sample_width not in (1, 2, 3, 4):
+                raise InvalidAudio("WAV sample width is invalid.")
+            if not 8000 <= sample_rate <= 192000 or frame_count <= 0:
+                raise InvalidAudio("WAV sample rate or duration is invalid.")
+            frames = audio.readframes(frame_count)
+            expected = frame_count * channels * sample_width
+            if len(frames) != expected:
+                raise InvalidAudio("WAV data is truncated.")
+    except InvalidAudio:
+        raise
+    except (EOFError, OSError, ValueError, wave.Error) as exc:
+        raise InvalidAudio("File contents are not a valid WAV stream.") from exc
+    return frame_count / sample_rate
+
+
+def _synchsafe_size(raw: bytes) -> int:
+    if len(raw) != 4 or any(byte & 0x80 for byte in raw):
+        raise InvalidAudio("MP3 ID3 header is invalid.")
+    return sum(byte << shift for byte, shift in zip(raw, (21, 14, 7, 0)))
+
+
+def _mp3_frame_details(header: bytes) -> tuple[int, int, int]:
+    if len(header) != 4:
+        raise InvalidAudio("MP3 frame header is truncated.")
+    bits = int.from_bytes(header, "big")
+    if bits >> 21 != 0x7FF:
+        raise InvalidAudio("MP3 frame sync is invalid.")
+    version_bits = (bits >> 19) & 0x3
+    layer_bits = (bits >> 17) & 0x3
+    bitrate_index = (bits >> 12) & 0xF
+    sample_index = (bits >> 10) & 0x3
+    padding = (bits >> 9) & 0x1
+    if version_bits == 1 or layer_bits != 1:
+        raise InvalidAudio("Only MPEG Layer III MP3 streams are supported.")
+    if bitrate_index in (0, 15) or sample_index == 3:
+        raise InvalidAudio("MP3 bitrate or sample rate is invalid.")
+    version = {3: 1, 2: 2, 0: 25}[version_bits]
+    mpeg1_bitrates = (
+        0, 32, 40, 48, 56, 64, 80, 96,
+        112, 128, 160, 192, 224, 256, 320, 0,
+    )
+    mpeg2_bitrates = (
+        0, 8, 16, 24, 32, 40, 48, 56,
+        64, 80, 96, 112, 128, 144, 160, 0,
+    )
+    bitrate_kbps = (
+        mpeg1_bitrates[bitrate_index]
+        if version == 1
+        else mpeg2_bitrates[bitrate_index]
+    )
+    base_rate = (44100, 48000, 32000)[sample_index]
+    sample_rate = base_rate if version == 1 else base_rate // (2 if version == 2 else 4)
+    coefficient = 144 if version == 1 else 72
+    frame_length = coefficient * bitrate_kbps * 1000 // sample_rate + padding
+    samples_per_frame = 1152 if version == 1 else 576
+    if frame_length <= 4:
+        raise InvalidAudio("MP3 frame length is invalid.")
+    return frame_length, samples_per_frame, sample_rate
+
+
+def _probe_mp3_duration(payload: bytes) -> float:
+    offset = 0
+    if payload.startswith(b"ID3"):
+        if len(payload) < 10:
+            raise InvalidAudio("MP3 ID3 header is truncated.")
+        offset = 10 + _synchsafe_size(payload[6:10])
+        if payload[5] & 0x10:
+            offset += 10
+    total_seconds = 0.0
+    frames = 0
+    while offset < len(payload):
+        remaining = len(payload) - offset
+        if remaining == 128 and payload[offset:offset + 3] == b"TAG":
+            offset = len(payload)
+            break
+        if remaining < 4:
+            raise InvalidAudio("MP3 stream is truncated.")
+        frame_length, samples, sample_rate = _mp3_frame_details(
+            payload[offset:offset + 4]
+        )
+        if offset + frame_length > len(payload):
+            raise InvalidAudio("MP3 frame is truncated.")
+        total_seconds += samples / sample_rate
+        frames += 1
+        offset += frame_length
+    if frames == 0 or offset != len(payload) or total_seconds <= 0:
+        raise InvalidAudio("File contents are not a complete MP3 stream.")
+    return total_seconds
+
+
+def _probe_ogg_vorbis_duration(payload: bytes) -> float:
+    offset = 0
+    first_packet = bytearray()
+    first_packet_complete = False
+    sample_rate: int | None = None
+    last_granule: int | None = None
+    saw_eos = False
+    expected_serial: int | None = None
+    expected_sequence = 0
+    while offset < len(payload):
+        if len(payload) - offset < 27 or payload[offset:offset + 4] != b"OggS":
+            raise InvalidAudio("OGG page header is invalid or truncated.")
+        if payload[offset + 4] != 0:
+            raise InvalidAudio("Unsupported OGG bitstream version.")
+        flags = payload[offset + 5]
+        granule = struct.unpack_from("<Q", payload, offset + 6)[0]
+        serial = struct.unpack_from("<I", payload, offset + 14)[0]
+        sequence = struct.unpack_from("<I", payload, offset + 18)[0]
+        segment_count = payload[offset + 26]
+        table_end = offset + 27 + segment_count
+        if table_end > len(payload):
+            raise InvalidAudio("OGG segment table is truncated.")
+        lacing = payload[offset + 27:table_end]
+        body_size = sum(lacing)
+        body_end = table_end + body_size
+        if body_end > len(payload):
+            raise InvalidAudio("OGG page body is truncated.")
+        if expected_serial is None:
+            expected_serial = serial
+            expected_sequence = sequence
+        if serial != expected_serial or sequence != expected_sequence:
+            raise InvalidAudio("Chained or discontinuous OGG streams are unsupported.")
+        expected_sequence += 1
+        cursor = table_end
+        if not first_packet_complete:
+            for segment_size in lacing:
+                first_packet.extend(payload[cursor:cursor + segment_size])
+                cursor += segment_size
+                if segment_size < 255:
+                    first_packet_complete = True
+                    break
+        if granule != 0xFFFFFFFFFFFFFFFF:
+            last_granule = granule
+        if flags & 0x04:
+            saw_eos = True
+        offset = body_end
+    if not first_packet_complete or not first_packet.startswith(b"\x01vorbis"):
+        raise InvalidAudio("Only OGG Vorbis audio is supported.")
+    if len(first_packet) < 16:
+        raise InvalidAudio("OGG Vorbis identification header is truncated.")
+    sample_rate = struct.unpack_from("<I", first_packet, 12)[0]
+    if not 8000 <= sample_rate <= 192000:
+        raise InvalidAudio("OGG Vorbis sample rate is invalid.")
+    if not saw_eos or last_granule is None or last_granule <= 0:
+        raise InvalidAudio("OGG Vorbis stream is truncated or has no duration.")
+    return last_granule / sample_rate
+
+
+def normalize_audio_bytes(
+    payload: bytes,
+    *,
+    max_bytes: int = DEFAULT_MUSIC_MAX_OUTPUT_BYTES,
+    allowed_mime_types: Iterable[str] = ("audio/mpeg", "audio/wav", "audio/ogg"),
+    min_duration_seconds: float = 0.01,
+    max_duration_seconds: float = 300.0,
+) -> NormalizedAudio:
+    """Validate audio magic/structure and probe duration without external tools."""
+
+    if not isinstance(payload, bytes) or not payload:
+        raise InvalidAudio("Audio payload is empty.")
+    if len(payload) > max_bytes:
+        raise MediaTooLarge(f"Audio exceeds the {max_bytes}-byte limit.")
+    sniffed = _sniff_non_image(payload[:32])
+    allowed = set(allowed_mime_types)
+    if sniffed is None or sniffed[0] not in allowed:
+        raise UnsupportedMedia("Only allowed MP3, WAV or OGG audio is supported.")
+    mime_type, extension = sniffed
+    if mime_type == "audio/wav":
+        duration = _probe_wav_duration(payload)
+    elif mime_type == "audio/mpeg":
+        duration = _probe_mp3_duration(payload)
+    else:
+        duration = _probe_ogg_vorbis_duration(payload)
+    if not min_duration_seconds <= duration <= max_duration_seconds:
+        raise InvalidAudio(
+            "Audio duration is outside the configured supported range."
+        )
+    return NormalizedAudio(
+        data=payload,
+        mime_type=mime_type,
+        extension=extension,
+        duration_seconds=duration,
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def normalize_audio_upload(
+    upload,
+    *,
+    max_bytes: int = DEFAULT_MUSIC_MAX_REFERENCE_BYTES,
+    allowed_mime_types: Iterable[str] = ("audio/mpeg", "audio/wav", "audio/ogg"),
+    min_duration_seconds: float = 0.01,
+    max_duration_seconds: float = 300.0,
+) -> NormalizedAudio:
+    """Read and validate an upload without trusting its name or content type."""
+
+    return normalize_audio_bytes(
+        _read_upload_bounded(upload, max_bytes),
+        max_bytes=max_bytes,
+        allowed_mime_types=allowed_mime_types,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+    )
+
+
+def store_normalized_audio(
+    audio: NormalizedAudio,
+    *,
+    namespace: str,
+) -> StoredMedia:
+    """Save validated audio under a generated server-controlled filename."""
+
+    filename = f"{uuid.uuid4().hex}.{audio.extension}"
+    requested_key = f"{_safe_namespace(namespace)}/{filename}"
+    stored_key = safe_storage_key(
+        default_storage.save(requested_key, ContentFile(audio.data, name=filename))
+    )
+    return StoredMedia(
+        storage_key=stored_key,
+        mime_type=audio.mime_type,
+        size_bytes=len(audio.data),
+        sha256=audio.sha256,
+        duration_seconds=audio.duration_seconds,
+    )
+
+
+def store_audio_bytes(
+    payload: bytes,
+    *,
+    namespace: str,
+    max_bytes: int = DEFAULT_MUSIC_MAX_OUTPUT_BYTES,
+    allowed_mime_types: Iterable[str] = ("audio/mpeg", "audio/wav"),
+    min_duration_seconds: float = 0.01,
+    max_duration_seconds: float = 300.0,
+) -> StoredMedia:
+    """Validate and store generated/provider audio bytes."""
+
+    audio = normalize_audio_bytes(
+        payload,
+        max_bytes=max_bytes,
+        allowed_mime_types=allowed_mime_types,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+    )
+    return store_normalized_audio(audio, namespace=namespace)
+
+
+def store_audio_upload(
+    upload,
+    *,
+    namespace: str,
+    max_bytes: int = DEFAULT_MUSIC_MAX_REFERENCE_BYTES,
+    allowed_mime_types: Iterable[str] = ("audio/mpeg", "audio/wav", "audio/ogg"),
+    min_duration_seconds: float = 0.01,
+    max_duration_seconds: float = 300.0,
+) -> StoredMedia:
+    """Validate and store a private uploaded audio object."""
+
+    audio = normalize_audio_upload(
+        upload,
+        max_bytes=max_bytes,
+        allowed_mime_types=allowed_mime_types,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+    )
+    return store_normalized_audio(audio, namespace=namespace)
+
+
+def store_music_reference_upload(
+    upload,
+    *,
+    project_id: int,
+    max_bytes: int | None = None,
+) -> StoredMedia:
+    """Validate/store one project-private MP3/WAV/OGG reference upload."""
+
+    byte_limit = max_bytes or _positive_setting(
+        "MUSIC_MAX_REFERENCE_BYTES", DEFAULT_MUSIC_MAX_REFERENCE_BYTES
+    )
+    minimum = float(getattr(settings, "MUSIC_MIN_REFERENCE_DURATION_SECONDS", 10))
+    maximum = float(getattr(settings, "MUSIC_MAX_REFERENCE_DURATION_SECONDS", 300))
+    return store_audio_upload(
+        upload,
+        namespace=f"projects/{int(project_id)}/music/references",
+        max_bytes=byte_limit,
+        min_duration_seconds=minimum,
+        max_duration_seconds=maximum,
+    )
+
+
+def store_generated_audio(
+    payload: bytes,
+    *,
+    project_id: int,
+    job_id: object,
+    variant_index: int,
+    max_bytes: int | None = None,
+) -> StoredMedia:
+    """Validate/store one generated MP3/WAV candidate in a managed namespace."""
+
+    byte_limit = max_bytes or _positive_setting(
+        "MUSIC_MAX_OUTPUT_BYTES", DEFAULT_MUSIC_MAX_OUTPUT_BYTES
+    )
+    maximum = float(getattr(settings, "MUSIC_MAX_DURATION_SECONDS", 300))
+    return store_audio_bytes(
+        payload,
+        namespace=(
+            f"projects/{int(project_id)}/music/jobs/{str(job_id).lower()}"
+            f"/variant-{int(variant_index)}"
+        ),
+        max_bytes=byte_limit,
+        max_duration_seconds=maximum,
+    )
+
+
+def probe_stored_audio(
+    storage_key: str,
+    *,
+    max_bytes: int | None = None,
+) -> NormalizedAudio:
+    """Boundedly validate an existing managed object for legacy metadata backfill."""
+
+    key = safe_storage_key(storage_key)
+    byte_limit = max_bytes or _positive_setting(
+        "MUSIC_MAX_REFERENCE_BYTES", DEFAULT_MUSIC_MAX_REFERENCE_BYTES
+    )
+    if not default_storage.exists(key):
+        raise FileNotFoundError(key)
+    with default_storage.open(key, "rb") as handle:
+        payload = handle.read(byte_limit + 1)
+    return normalize_audio_bytes(payload, max_bytes=byte_limit)
+
+
+def safe_audio_display_name(raw_name: str | None) -> str:
+    """Return a display-only basename without paths or control characters."""
+
+    name = PurePosixPath(str(raw_name or "").replace("\\", "/")).name
+    cleaned = "".join(
+        char for char in name if char.isprintable() and char not in "\r\n"
+    )
+    return cleaned[:255]
+
+
 def _allowed_mimes_for_asset_type(asset_type: str) -> set[str]:
     if asset_type in {"image", "reference", "storyboard"}:
         return {mime for mime, _extension in _IMAGE_FORMATS.values()}
@@ -469,6 +844,18 @@ def signed_url_for_file(file_field, request=None, *, project=None) -> str | None
     if not file_field:
         return None
     return signed_media_url(getattr(file_field, "name", ""), request, project=project)
+
+
+def signed_url_for_music_asset(asset, request=None) -> str | None:
+    """Issue a project-scoped signed URL for a ``MusicAsset`` FileField."""
+
+    if asset is None:
+        return None
+    return signed_url_for_file(
+        asset.file,
+        request,
+        project=asset.project,
+    )
 
 
 def storage_key_from_legacy_url(raw_url: str | None) -> str | None:

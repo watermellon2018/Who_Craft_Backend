@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 
 from w_craft_back.character_studio.models import (
@@ -21,17 +21,28 @@ from w_craft_back.character_studio.services.generation_service import (
 from w_craft_back.character_studio.services.model3d_reconstruction_service import (
     run_reconstruction_job,
 )
+from w_craft_back.movie.music.lifecycle import recover_stale_music_jobs
+from w_craft_back.movie.music.worker import execute_next_music_job
 from w_craft_back.movie.poster.lifecycle import recover_stale_poster_jobs
 from w_craft_back.movie.poster.models import PosterGenerationJob, PosterJobStatus
 from w_craft_back.movie.poster.worker import execute_poster_job
-
-
+from w_craft_back.movie.reference_library.lifecycle import (
+    recover_stale_reference_jobs,
+)
+from w_craft_back.movie.reference_library.worker import (
+    execute_next_reference_job,
+)
 
 
 class Command(BaseCommand):
-    help = "Poll the database and execute queued character, poster and 3D jobs."
+    help = "Poll selected durable character, poster, 3D, music and reference queues."
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            "--queue",
+            default="all",
+            help="Comma-separated character,poster,music,reference queues or all.",
+        )
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-interval", type=float, default=2.0)
         parser.add_argument("--batch-size", type=int, default=10)
@@ -40,12 +51,28 @@ class Command(BaseCommand):
         once = bool(options["once"])
         poll_interval = max(0.1, float(options["poll_interval"]))
         batch_size = max(1, min(int(options["batch_size"]), 1000))
+        raw_queues = str(options["queue"] or "all").lower().split(",")
+        selected = {item.strip() for item in raw_queues if item.strip()}
+        if "all" in selected:
+            selected = {"character", "poster", "music", "reference"}
+        unknown = selected - {"character", "poster", "music", "reference"}
+        if unknown or not selected:
+            raise CommandError(
+                "Unknown generation queue(s): " + ", ".join(sorted(unknown))
+            )
 
         while True:
             if not once:
                 close_old_connections()
-            processed = self._poll_character_jobs(batch_size)
-            processed += self._poll_poster_jobs(batch_size)
+            processed = 0
+            if "character" in selected:
+                processed += self._poll_character_jobs(batch_size)
+            if "poster" in selected:
+                processed += self._poll_poster_jobs(batch_size)
+            if "music" in selected:
+                processed += self._poll_music_jobs(batch_size)
+            if "reference" in selected:
+                processed += self._poll_reference_jobs(batch_size)
             if not once:
                 close_old_connections()
             if once:
@@ -101,4 +128,26 @@ class Command(BaseCommand):
             ).values_list("status", flat=True).first()
             if status != PosterJobStatus.QUEUED:
                 processed += 1
+        return processed
+
+    @staticmethod
+    def _poll_music_jobs(batch_size: int) -> int:
+        recover_stale_music_jobs(limit=batch_size)
+        processed = 0
+        while processed < batch_size:
+            job = execute_next_music_job()
+            if job is None:
+                break
+            processed += 1
+        return processed
+
+    @staticmethod
+    def _poll_reference_jobs(batch_size: int) -> int:
+        recover_stale_reference_jobs(limit=batch_size)
+        processed = 0
+        while processed < batch_size:
+            job = execute_next_reference_job()
+            if job is None:
+                break
+            processed += 1
         return processed

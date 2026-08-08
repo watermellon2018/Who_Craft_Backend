@@ -19,6 +19,7 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.characters.creating.models import Character
 from w_craft_back.movie.poster.models import PosterVariant
+from w_craft_back.movie.music.models import MusicAsset
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
@@ -43,6 +44,7 @@ _FILE_FIELDS = {
     Location: ("image",),
     Scene: ("preview_image",),
     MusicTrack: ("audio_file", "cover_image"),
+    MusicAsset: ("file",),
     PosterVariant: ("image", "thumbnail"),
     UserProfile: ("avatar", "cover"),
     Character: ("photo",),

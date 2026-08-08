@@ -5,9 +5,10 @@ Aggregates everything the project dashboard page needs into a single payload.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any, Optional
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Count, Q
@@ -31,6 +32,7 @@ from w_craft_back.movie.project.models import Project, ProjectStatus
 from w_craft_back.storage_gateway import (
     signed_url_for_asset,
     signed_url_for_file,
+    signed_url_for_music_asset,
 )
 
 try:  # UserProfile is optional — guard against absence.
@@ -401,6 +403,8 @@ def _characters_payload(project: Project, request, limit: int = 6) -> list[dict]
 # --------------------------------------------------------------------------- #
 
 def _pipeline_payload(project: Project, scenes_total: int) -> dict:
+    from w_craft_back.movie.reference_library.models import ProjectReference
+
     progress = getattr(project, "progress", None)
     script_p = _clamp_progress(getattr(progress, "script_progress", 0))
     visual_p = _clamp_progress(getattr(progress, "visual_progress", 0))
@@ -418,7 +422,11 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
     )
     counts_by_type = {row[0]: row[1] for row in asset_counts}
     storyboard_count = counts_by_type.get("storyboard", 0)
-    reference_count = counts_by_type.get("reference", 0)
+    reference_count = ProjectReference.objects.filter(
+        project=project,
+        archived_at__isnull=True,
+        active_version__isnull=False,
+    ).count()
     models3d_count = counts_by_type.get("model_3d", 0)
     video_count = counts_by_type.get("video", 0)
 
@@ -427,6 +435,9 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
 
     def _pluralize_files(n):
         return f"{n} {_plural_ru(n, 'файл', 'файла', 'файлов')}"
+
+    def _pluralize_references(n):
+        return f"{n} {_plural_ru(n, 'опора', 'опоры', 'опор')}"
 
     def _pluralize_models(n):
         return f"{n} {_plural_ru(n, 'модель', 'модели', 'моделей')}"
@@ -444,9 +455,9 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
             "subtitle": _pluralize_scenes(storyboard_count),
         },
         "references": {
-            "label": "Референсы",
+            "label": "Опорные изображения",
             "progress": visual_p,
-            "subtitle": _pluralize_files(reference_count),
+            "subtitle": _pluralize_references(reference_count),
         },
         "models3d": {
             "label": "3D",
@@ -465,24 +476,75 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
 # Music
 # --------------------------------------------------------------------------- #
 
+def _signed_music_expiry(audio_url: Optional[str]) -> Optional[str]:
+    if not audio_url:
+        return None
+    ttl_seconds = max(1, int(getattr(settings, "SIGNED_MEDIA_TTL_SECONDS", 300)))
+    return (timezone.now() + timedelta(seconds=ttl_seconds)).isoformat()
+
+
 def _music_payload(project: Project, request, limit: int = 5) -> list[dict]:
     tracks = list(
-        MusicTrack.objects.filter(project=project)
+        MusicTrack.objects.filter(project=project, archived_at__isnull=True)
+        .select_related("active_version__asset__project")
         .annotate(usage_count=Count("scene_usages"))
         .order_by("-usage_count", "-updated_at")[:limit]
     )
     out = []
     for t in tracks:
         usage = int(getattr(t, "usage_count", 0) or 0)
+        active_version = t.active_version
+        if active_version is not None:
+            asset = active_version.asset
+            audio_url = signed_url_for_music_asset(asset, request=request)
+            duration_seconds = (
+                float(asset.duration_seconds)
+                if asset.duration_seconds is not None
+                else float(t.duration_seconds or 0)
+            )
+            active_version_id = str(active_version.id)
+            active_version_number = active_version.version_number
+        else:
+            audio_url = _absolute_url(
+                request,
+                t.audio_file,
+                project=project,
+            )
+            duration_seconds = float(t.duration_seconds or 0)
+            active_version_id = None
+            active_version_number = None
+        audio_url_expires_at = _signed_music_expiry(audio_url)
+        active_version_payload = (
+            {
+                "versionId": active_version_id,
+                "versionNumber": active_version_number,
+                "durationSeconds": duration_seconds,
+                "audioUrl": audio_url,
+                "audioUrlExpiresAt": audio_url_expires_at,
+            }
+            if active_version is not None
+            else None
+        )
         out.append(
             {
                 "id": t.id,
                 "title": t.title,
                 "author": t.author or "",
-                "durationSeconds": int(t.duration_seconds or 0),
-                "durationLabel": _format_duration(t.duration_seconds),
+                "durationSeconds": duration_seconds,
+                "durationLabel": _format_duration(duration_seconds),
                 "tags": list(t.tags or []),
-                "coverImageUrl": _absolute_url(request, t.cover_image, project=project),
+                "coverImageUrl": _absolute_url(
+                    request,
+                    t.cover_image,
+                    project=project,
+                ),
+                "audioUrl": audio_url,
+                "audioUrlExpiresAt": audio_url_expires_at,
+                "activeVersionId": active_version_id,
+                "activeVersionNumber": active_version_number,
+                "activeVersion": active_version_payload,
+                "version": t.version,
+                "source": t.source,
                 "usageCount": usage,
                 "usageLabel": _scenes_usage_label(usage),
             }
@@ -513,6 +575,11 @@ def _quick_actions_payload(project: Project) -> list[dict]:
     base = f"/project-list/project"
     return [
         {"key": "new_scene", "label": "Новая сцена", "url": f"{base}/scenes/create"},
+        {
+            "key": "upload_reference",
+            "label": "Создать опору",
+            "url": f"/project/{project.id}/references/create",
+        },
         {"key": "generate_video", "label": "Генерация видео", "url": f"{base}/generate-video"},
         {"key": "create_location", "label": "Создать локацию", "url": f"{base}/locations/create"},
     ]

@@ -15,6 +15,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, Prefetch, Q
+from django.db.models.deletion import ProtectedError, RestrictedError
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -808,4 +809,13 @@ class ProjectAssetDetailView(_ProjectScopedView):
             project_mutations.ProjectMutationForbidden,
         ) as exc:
             return _mutation_error_response(exc)
+        except (ProtectedError, RestrictedError):
+            return Response(
+                {
+                    "code": "REFERENCE_ASSET_IN_USE",
+                    "detail": "Asset is used by a reference version or variant.",
+                    "retryable": False,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)

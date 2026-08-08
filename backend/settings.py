@@ -106,6 +106,7 @@ UPLOAD_ENDPOINT_FILE_LIMITS = {
     'character-clothing-reference-upload': 10 * 1024 * 1024,
     'character-reference-upload': 10 * 1024 * 1024,
     'project-assets': 100 * 1024 * 1024,
+    'project-music-reference-assets': 50 * 1024 * 1024,
     'profile-me-avatar': 5 * 1024 * 1024,
     'profile-me-cover': 10 * 1024 * 1024,
 }

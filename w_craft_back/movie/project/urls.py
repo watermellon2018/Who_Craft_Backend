@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from w_craft_back.movie.project.dashboard_views import (
     ProjectAssetDetailView,
@@ -8,7 +8,6 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectDetailView,
     ProjectListCreateView,
     ProjectLocationsView,
-    ProjectMusicView,
     ProjectScenesView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
@@ -35,8 +34,8 @@ from w_craft_back.movie.project.team_views import (
 from w_craft_back.movie.project.scene_views import (
     SceneDetailView,
     LocationDetailView,
-    MusicTrackDetailView,
 )
+from w_craft_back.movie.reference_library.views import SceneReferencesView
 
 urlpatterns = [
     # New dashboard / project API.
@@ -45,7 +44,19 @@ urlpatterns = [
     path('<int:project_id>/dashboard/', ProjectDashboardView.as_view(), name='project-dashboard'),
     path('<int:project_id>/characters/', ProjectCharactersView.as_view(), name='project-characters'),
     path('<int:project_id>/scenes/', ProjectScenesView.as_view(), name='project-scenes'),
-    path('<int:project_id>/music/', ProjectMusicView.as_view(), name='project-music'),
+    path(
+        '<int:project_id>/scenes/<int:scene_id>/references/',
+        SceneReferencesView.as_view(),
+        name='project-scene-references',
+    ),
+    path(
+        '<int:project_id>/references/',
+        include('w_craft_back.movie.reference_library.urls'),
+    ),
+    path(
+        '<int:project_id>/music/',
+        include('w_craft_back.movie.music.urls'),
+    ),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
     path(
@@ -57,7 +68,6 @@ urlpatterns = [
     # Concurrent-edit-guarded entity detail endpoints (GET/PATCH with version).
     path('<int:project_id>/scenes/<int:scene_id>/', SceneDetailView.as_view(), name='project-scene-detail'),
     path('<int:project_id>/locations/<int:location_id>/', LocationDetailView.as_view(), name='project-location-detail'),
-    path('<int:project_id>/music/<int:track_id>/', MusicTrackDetailView.as_view(), name='project-music-detail'),
 
     # Team collaboration.
     path('<int:project_id>/team/', ProjectTeamView.as_view(), name='project-team'),
