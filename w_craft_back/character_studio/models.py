@@ -1,5 +1,6 @@
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
@@ -25,9 +26,38 @@ class CharacterRole(models.TextChoices):
 
 
 class CharacterStatus(models.TextChoices):
+    # A character that has been started but not yet confirmed by the user.
+    # We persist drafts because generation needs a character_id to attach
+    # variants to, but drafts must NOT show up in the gallery or tree.
     DRAFT = "draft", "Draft"
+    # A character the user has confirmed (applied a variant or otherwise
+    # explicitly saved). This is the default "visible" state.
     ACTIVE = "active", "Active"
     REFERENCES_LOCKED = "references_locked", "References locked"
+
+
+# Statuses that should appear in normal user-facing lists (gallery + tree).
+# Drafts are intentionally excluded — they're unfinished creation attempts.
+VISIBLE_CHARACTER_STATUSES = (
+    CharacterStatus.ACTIVE,
+    CharacterStatus.REFERENCES_LOCKED,
+)
+
+
+def _character_link_errors(
+    instance: models.Model,
+    character_id,
+    field_names: tuple[str, ...],
+) -> dict[str, str]:
+    """Return validation errors for links outside one character aggregate."""
+    errors = {}
+    for field_name in field_names:
+        if not getattr(instance, f"{field_name}_id"):
+            continue
+        linked = getattr(instance, field_name)
+        if linked.character_id != character_id:
+            errors[field_name] = "Related object must belong to the same character."
+    return errors
 
 
 class CharacterAssetType(models.TextChoices):
@@ -52,6 +82,7 @@ class CharacterAssetType(models.TextChoices):
     OUTFIT_REFERENCE = "outfit_reference", "Outfit reference"
     CLOTHING_REFERENCE = "clothing_reference", "Clothing reference"
     THUMBNAIL = "thumbnail", "Thumbnail"
+    MODEL_3D = "model_3d", "3D model"
 
 
 class CharacterAssetStatus(models.TextChoices):
@@ -67,11 +98,14 @@ class GenerationJobType(models.TextChoices):
     EXPRESSION_VARIANTS = "expression_variants", "Expression variants"
     CHARACTER_SHEET = "character_sheet", "Character sheet"
     REFERENCE_EXTRACTION = "reference_extraction", "Reference extraction"
+    REFERENCE_VARIANTS = "reference_variants", "Reference-based variants"
+    MODEL3D_RECONSTRUCTION = "model3d_reconstruction", "3D reconstruction"
 
 
 class GenerationJobStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
     PROCESSING = "processing", "Processing"
+    CANCELLATION_REQUESTED = "cancellation_requested", "Cancellation requested"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
     CANCELLED = "cancelled", "Cancelled"
@@ -132,7 +166,23 @@ class ExpressionType(models.TextChoices):
 class StudioCharacter(models.Model):
     character_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="studio_characters")
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE, related_name="studio_characters")
+    user = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="studio_characters",
+    )
+    creation_idempotency_key = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+    )
+    creation_request_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+    )
     name = models.CharField(max_length=255)
     character_type = models.CharField(max_length=32, choices=CharacterType.choices, default=CharacterType.HUMAN)
     role = models.CharField(max_length=100, blank=True, default="", choices=CharacterRole.choices)
@@ -200,6 +250,18 @@ class StudioCharacter(models.Model):
     # User-editable references checklist (subjective items only). Auto-derived
     # items (full_body_ready, front_side_back_ready) are computed at request time.
     references_state = models.JSONField(default=dict, blank=True)
+    # Parametric state of the 3D editor stage: {zone_id: {param_id: value}}.
+    # Leaf values are numbers in [-1, 1], short strings (color hex / preset
+    # ids) or booleans — validated in services/model3d_service.py.
+    model3d_params = models.JSONField(default=dict, blank=True)
+    # Whether autofit-from-references has already run for the 3D stage. The
+    # editor seeds parameters from the portrait automatically on first open;
+    # this flag stops it from overwriting the user's manual edits on later
+    # opens, even if they reset everything back to defaults.
+    model3d_autofit_done = models.BooleanField(default=False)
+    # Incremented when a new autofit profile has been applied. This lets the
+    # editor upgrade old sparse fits without overwriting manual parameters.
+    model3d_autofit_version = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -217,8 +279,38 @@ class StudioCharacter(models.Model):
             models.CheckConstraint(
                 check=Q(character_type__in=CharacterType.values),
                 name="chk_studio_character_type",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["project", "user", "creation_idempotency_key"],
+                condition=~Q(creation_idempotency_key=""),
+                name="uniq_char_create_idempotency",
+            ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            (
+                "active_appearance",
+                "active_outfit",
+                "active_version",
+                "current_revision",
+                "canonical_reference_image",
+            ),
+        )
+        if self.canonical_reference_image_id and self.project_id:
+            if self.canonical_reference_image.project_id != self.project_id:
+                errors["canonical_reference_image"] = (
+                    "Canonical reference image must belong to the character project."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -293,6 +385,20 @@ class CharacterOutfit(models.Model):
             )
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            ("reference_image",),
+        )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class CharacterVersion(models.Model):
     version_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -323,12 +429,32 @@ class CharacterVersion(models.Model):
             ),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            ("appearance", "outfit", "reference_image"),
+        )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class CharacterAsset(models.Model):
     asset_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     character = models.ForeignKey(StudioCharacter, on_delete=models.CASCADE, related_name="assets")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="character_assets")
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE, related_name="character_assets")
+    user = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="character_assets",
+    )
     asset_type = models.CharField(max_length=64, choices=CharacterAssetType.choices)
     image_url = models.TextField(blank=True, default="")
     storage_path = models.TextField(blank=True, default="")
@@ -383,6 +509,18 @@ class CharacterAsset(models.Model):
             ),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        if self.character_id and self.project_id:
+            if self.character.project_id != self.project_id:
+                raise ValidationError(
+                    {"character": "Character must belong to the asset project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class CharacterImage(models.Model):
     image_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -423,31 +561,82 @@ class CharacterImage(models.Model):
             ),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            ("asset",),
+        )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class CharacterGenerationJob(models.Model):
     job_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     character = models.ForeignKey(StudioCharacter, on_delete=models.CASCADE, related_name="generation_jobs")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="character_generation_jobs")
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE, related_name="character_generation_jobs")
+    user = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="character_generation_jobs",
+    )
+    actor = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="requested_character_generation_jobs",
+    )
     job_type = models.CharField(max_length=64, choices=GenerationJobType.choices)
     status = models.CharField(max_length=32, choices=GenerationJobStatus.choices, default=GenerationJobStatus.QUEUED)
     region = models.CharField(max_length=32, choices=CharacterRegion.choices, default=CharacterRegion.FULL_CHARACTER)
     variant_count = models.PositiveSmallIntegerField(default=4)
     request_payload = models.JSONField(default=dict, blank=True)
+    request_hash = models.CharField(max_length=64, blank=True, default="")
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
     compiled_prompt = models.TextField(blank=True, default="")
     negative_prompt = models.TextField(blank=True, default="")
     edit_instruction = models.TextField(blank=True, default="")
     preserve_options = models.JSONField(default=dict, blank=True)
+    compiled_metadata = models.JSONField(default=dict, blank=True)
     provider = models.CharField(max_length=100, blank=True, default="mock")
+    provider_operation = models.CharField(
+        max_length=32,
+        blank=True,
+        default="generate",
+    )
     model_name = models.CharField(max_length=100, blank=True, default="")
     model_version = models.CharField(max_length=100, blank=True, default="")
     progress = models.PositiveSmallIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=100, blank=True, default="")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=3)
+    timeout_seconds = models.PositiveIntegerField(default=120)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    provider_started_at = models.DateTimeField(null=True, blank=True)
+    cancellation_requested_at = models.DateTimeField(null=True, blank=True)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="retries",
+    )
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     failed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "character_generation_jobs"
@@ -455,6 +644,10 @@ class CharacterGenerationJob(models.Model):
             models.Index(fields=["character"], name="character_g_charact_18486e_idx"),
             models.Index(fields=["project"], name="character_g_project_a65b63_idx"),
             models.Index(fields=["status"], name="character_g_status_a1b6e0_idx"),
+            models.Index(
+                fields=["status", "lease_expires_at"],
+                name="char_job_status_lease_idx",
+            ),
         ]
         constraints = [
             models.CheckConstraint(
@@ -465,7 +658,36 @@ class CharacterGenerationJob(models.Model):
                 check=Q(variant_count__in=[1, 2, 4]),
                 name="chk_generation_variant_count",
             ),
+            models.CheckConstraint(
+                check=Q(attempts__lte=models.F("max_attempts")),
+                name="chk_generation_attempts",
+            ),
+            models.UniqueConstraint(
+                fields=["project", "actor", "idempotency_key"],
+                condition=~Q(idempotency_key=""),
+                name="uniq_char_job_idempotency",
+            ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.character_id and self.project_id:
+            if self.character.project_id != self.project_id:
+                raise ValidationError(
+                    {"character": "Character must belong to the generation job project."}
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class CharacterGenerationGuard(models.Model):
+    key = models.CharField(max_length=64, primary_key=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "character_generation_guards"
 
 
 class CharacterVariant(models.Model):
@@ -500,12 +722,38 @@ class CharacterVariant(models.Model):
             )
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            ("job", "asset"),
+        )
+        if self.job_id and self.character_id:
+            if self.job.project_id != self.character.project_id:
+                errors["job"] = "Job must belong to the character project."
+        if self.asset_id and self.character_id:
+            if self.asset.project_id != self.character.project_id:
+                errors["asset"] = "Asset must belong to the character project."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
 
 class CharacterRevision(models.Model):
     revision_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     character = models.ForeignKey(StudioCharacter, on_delete=models.CASCADE, related_name="revisions")
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="character_revisions")
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE, related_name="character_revisions")
+    user = models.ForeignKey(
+        UserKey,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="character_revisions",
+    )
     revision_number = models.PositiveIntegerField()
     source_variant = models.ForeignKey(CharacterVariant, null=True, blank=True, on_delete=models.SET_NULL)
     source_job = models.ForeignKey(CharacterGenerationJob, null=True, blank=True, on_delete=models.SET_NULL)
@@ -530,6 +778,35 @@ class CharacterRevision(models.Model):
                 name="uniq_character_revision_number",
             )
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            (
+                "source_variant",
+                "source_job",
+                "reference_image",
+                "appearance",
+                "outfit",
+                "version",
+            ),
+        )
+        if self.character_id and self.project_id:
+            if self.character.project_id != self.project_id:
+                errors["character"] = "Character must belong to the revision project."
+        if self.source_variant_id and self.source_job_id:
+            if self.source_variant.job_id != self.source_job_id:
+                errors["source_variant"] = (
+                    "Source variant must belong to the revision source job."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class CharacterExpression(models.Model):
@@ -556,6 +833,20 @@ class CharacterExpression(models.Model):
                 name="uniq_default_expression",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = _character_link_errors(
+            self,
+            self.character_id,
+            ("asset",),
+        )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class CharacterRelationship(models.Model):
@@ -589,3 +880,23 @@ class CharacterRelationship(models.Model):
                 name="uniq_character_relationship",
             )
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.source_character_id and self.project_id:
+            if self.source_character.project_id != self.project_id:
+                errors["source_character"] = (
+                    "Source character must belong to the relationship project."
+                )
+        if self.target_character_id and self.project_id:
+            if self.target_character.project_id != self.project_id:
+                errors["target_character"] = (
+                    "Target character must belong to the relationship project."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)

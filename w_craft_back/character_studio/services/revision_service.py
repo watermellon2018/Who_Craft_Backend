@@ -1,8 +1,14 @@
 from django.db import transaction
 
-from w_craft_back.character_studio.models import CharacterRegion, RevisionChangeType
+from w_craft_back.character_studio.models import (
+    CharacterRegion,
+    RevisionChangeType,
+    StudioCharacter,
+)
 from w_craft_back.character_studio.repositories.repositories import RevisionRepository
+from w_craft_back.character_studio.services.permissions import get_project_for_action
 from w_craft_back.character_studio.services.serialization import character_dict, revision_dict
+from w_craft_back.movie.project.policy import Action
 
 
 class CharacterRevisionService:
@@ -12,6 +18,8 @@ class CharacterRevisionService:
     @transaction.atomic
     def create_revision(
         self,
+        actor,
+        action,
         character,
         change_type,
         snapshot=None,
@@ -26,12 +34,20 @@ class CharacterRevisionService:
         text_refinement="",
         before_snapshot=None,
     ):
+        if action is not Action.EDIT_CONTENT:
+            raise ValueError(
+                f"Revision mutation requires edit_content, received {action.value}"
+            )
+        get_project_for_action(actor, character.project_id, action)
+        character = StudioCharacter.objects.select_for_update().get(
+            pk=character.pk,
+        )
         number = self.revisions.next_revision_number(character)
         after_snapshot = snapshot or character_dict(character, include_related=True)
         revision = self.revisions.create(
             character=character,
             project=character.project,
-            user=character.user,
+            user=actor,
             revision_number=number,
             source_variant=source_variant,
             source_job=source_job,
@@ -54,7 +70,15 @@ class CharacterRevisionService:
         return [revision_dict(revision) for revision in character.revisions.order_by("-revision_number")]
 
     @transaction.atomic
-    def restore_revision(self, character, revision, user=None):
+    def restore_revision(self, actor, action, character, revision):
+        if action is not Action.EDIT_CONTENT:
+            raise ValueError(
+                f"Revision mutation requires edit_content, received {action.value}"
+            )
+        get_project_for_action(actor, character.project_id, action)
+        character = StudioCharacter.objects.select_for_update().get(
+            pk=character.pk,
+        )
         before = character_dict(character, include_related=True)
         if revision.reference_image:
             character.canonical_reference_image = revision.reference_image
@@ -66,6 +90,8 @@ class CharacterRevisionService:
             character.active_version = revision.version
         character.save()
         return self.create_revision(
+            actor,
+            action,
             character,
             RevisionChangeType.RESTORE_REVISION,
             source_variant=revision.source_variant,

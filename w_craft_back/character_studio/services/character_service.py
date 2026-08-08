@@ -4,11 +4,21 @@ from copy import deepcopy
 from django.core.exceptions import ObjectDoesNotExist
 
 logger = logging.getLogger(__name__)
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from w_craft_back.character_studio.constants import VISUAL_STYLES
-from w_craft_back.character_studio.models import CharacterImageType, CharacterRole, CharacterStatus, CharacterType, RevisionChangeType
+from w_craft_back.character_studio.models import (
+    CharacterAsset,
+    CharacterAssetStatus,
+    CharacterAssetType,
+    CharacterImageType,
+    CharacterRole,
+    CharacterStatus,
+    CharacterType,
+    RevisionChangeType,
+    StudioCharacter,
+)
 from w_craft_back.character_studio.repositories.repositories import (
     AppearanceRepository,
     CharacterImageRepository,
@@ -16,11 +26,25 @@ from w_craft_back.character_studio.repositories.repositories import (
     OutfitRepository,
     VariantRepository,
 )
-from w_craft_back.character_studio.services.errors import IdentityLockedError, NotFoundError, ValidationError
+from w_craft_back.character_studio.services.errors import (
+    ConflictError,
+    IdentityLockedError,
+    NotFoundError,
+    ValidationError,
+)
+from w_craft_back.character_studio.services.generation_lifecycle import (
+    validate_idempotency_key,
+)
+from w_craft_back.character_studio.services.permissions import (
+    get_editable_project,
+    get_project_for_action,
+    get_viewable_project,
+)
 from w_craft_back.character_studio.services.profile_parser import CharacterProfileParser
 from w_craft_back.character_studio.services.revision_service import CharacterRevisionService
 from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.character_studio.services.serialization import character_dict
+from w_craft_back.movie.project.policy import Action
 
 
 class CharacterService:
@@ -53,6 +77,7 @@ class CharacterService:
 
     @transaction.atomic
     def create_character(self, user, project, payload):
+        project = get_editable_project(user, project.id)
         name = (payload.get("name") or "").strip()
         if not name:
             raise ValidationError("name is required.")
@@ -105,6 +130,8 @@ class CharacterService:
         character.active_appearance = appearance
         character.save(update_fields=["active_appearance", "updated_at"])
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.INITIAL_CREATE,
             changed_region="full_character",
@@ -112,13 +139,198 @@ class CharacterService:
         )
         return character
 
-    def get_character(self, user, project_id, character_id):
+    def create_character_from_reference(
+        self,
+        user,
+        project,
+        payload,
+        uploaded_file,
+        *,
+        idempotency_key="",
+        request_hash="",
+    ):
+        """Create or replay the character + uploaded-reference aggregate."""
+        if not uploaded_file:
+            raise ValidationError("reference_image is required.")
+        project = get_editable_project(user, project.id)
+        idempotency_key = validate_idempotency_key(idempotency_key)
+        if idempotency_key and len(request_hash or "") != 64:
+            raise ValidationError("A valid request hash is required.")
+
+        replay = self._reference_creation_replay(
+            user,
+            project,
+            idempotency_key,
+            request_hash,
+        )
+        if replay is not None:
+            return replay
+
+        from w_craft_back.character_studio.services.asset_service import (
+            CharacterAssetService,
+        )
+
+        try:
+            with transaction.atomic():
+                character = self.create_character(user, project, payload)
+                if idempotency_key:
+                    character.creation_idempotency_key = idempotency_key
+                    character.creation_request_hash = request_hash
+                    character.save(
+                        update_fields=[
+                            "creation_idempotency_key",
+                            "creation_request_hash",
+                            "updated_at",
+                        ]
+                    )
+                reference_asset = (
+                    CharacterAssetService().save_uploaded_source_reference(
+                        character,
+                        user,
+                        uploaded_file,
+                    )
+                )
+                return character, reference_asset
+        except IntegrityError:
+            if not idempotency_key:
+                raise
+            replay = self._reference_creation_replay(
+                user,
+                project,
+                idempotency_key,
+                request_hash,
+            )
+            if replay is None:
+                raise
+            return replay
+
+    @staticmethod
+    def _reference_creation_replay(
+        user,
+        project,
+        idempotency_key,
+        request_hash,
+    ):
+        if not idempotency_key:
+            return None
+        character = (
+            StudioCharacter.objects.filter(
+                project=project,
+                user=user,
+                creation_idempotency_key=idempotency_key,
+            )
+            .order_by("created_at")
+            .first()
+        )
+        if character is None:
+            return None
+        if character.creation_request_hash != request_hash:
+            raise ConflictError(
+                "Idempotency-Key was already used for a different request."
+            )
+        reference_asset = (
+            character.assets.filter(
+                asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+            )
+            .order_by("created_at")
+            .first()
+        )
+        if reference_asset is None:
+            raise ConflictError("Reference character creation is incomplete.")
+        return character, reference_asset
+
+    def _get_character_for_action(
+        self, user, project_id, character_id, action: Action,
+    ):
+
+        get_project_for_action(user, project_id, action)
         try:
             return self.characters.get_for_project_user(user, project_id, character_id)
         except Exception as exc:
             raise NotFoundError("Character not found.") from exc
 
+    def get_viewable_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.VIEW,
+        )
+
+    def get_editable_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.EDIT_CONTENT,
+        )
+
+    def get_generation_character(self, user, project_id, character_id):
+        return self._get_character_for_action(
+            user, project_id, character_id, Action.RUN_GENERATION,
+        )
+
+
+    def get_identity_asset(self, character):
+        """Find the best identity-source asset for this character, or None.
+
+        Priority chain (first match wins):
+            1. character.canonical_reference_image — the user's explicit choice
+               (set via apply_variant(apply_as='current_reference') or
+               lock_identity()). This is the strongest signal of "the official
+               look of this character".
+            2. Latest READY ``UPLOADED_REFERENCE`` asset — for characters created
+               via the from-reference flow, where the user gave us a real photo.
+            3. Latest READY ``PORTRAIT`` asset — best-effort fallback when the
+               user generated portrait variants but didn't explicitly mark one
+               canonical.
+
+        Returns ``None`` if no identity source exists yet — callers should
+        translate that into an IdentityAssetRequiredError.
+        """
+        return self._identity_asset(character, allow_portrait_fallback=True)
+
+    def get_explicit_identity_asset(self, character):
+        """Like :meth:`get_identity_asset` but skips the latest-portrait fallback.
+
+        For portrait edits we MUST NOT anchor on the latest portrait (that's
+        the very thing we're editing — anchoring on it would lock in whatever
+        random face the previous edit produced). Only an explicit identity
+        source — canonical reference or uploaded reference — should drive a
+        portrait-edit's image-to-image input.
+        """
+        return self._identity_asset(character, allow_portrait_fallback=False)
+
+    def _identity_asset(self, character, *, allow_portrait_fallback):
+        canonical = character.canonical_reference_image
+        if canonical and canonical.status == CharacterAssetStatus.READY:
+            return canonical
+
+        uploaded = (
+            CharacterAsset.objects
+            .filter(
+                character=character,
+                asset_type=CharacterAssetType.UPLOADED_REFERENCE,
+                status=CharacterAssetStatus.READY,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if uploaded:
+            return uploaded
+
+        if not allow_portrait_fallback:
+            return None
+
+        portrait = (
+            CharacterAsset.objects
+            .filter(
+                character=character,
+                asset_type=CharacterAssetType.PORTRAIT,
+                status=CharacterAssetStatus.READY,
+            )
+            .order_by("-version", "-created_at")
+            .first()
+        )
+        return portrait
+
     def list_project_characters(self, user, project_id, filters=None):
+        # Gate project view-access before listing (repo scopes by project only).
+        get_viewable_project(user, project_id)
         return [
             character_dict(character)
             for character in self.characters.list_project(user, project_id, filters).select_related(
@@ -128,7 +340,7 @@ class CharacterService:
 
     @transaction.atomic
     def update_character(self, user, project_id, character_id, payload):
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         self._validate_character_type(payload.get("character_type"))
         self._validate_role(payload.get("role"))
         self._validate_age(payload.get("age"))
@@ -161,6 +373,8 @@ class CharacterService:
                 character.active_appearance = appearance
                 character.save(update_fields=["active_appearance", "updated_at"])
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.MANUAL_UPDATE,
             changed_region="full_character",
@@ -171,12 +385,12 @@ class CharacterService:
 
     @transaction.atomic
     def delete_character(self, user, project_id, character_id):
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         character.delete()
 
     @transaction.atomic
     def lock_identity(self, user, project_id, character_id, payload):
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         if not payload.get("confirm"):
             raise ValidationError("confirm=true is required to lock identity.")
         before = character_dict(character, include_related=True)
@@ -194,6 +408,8 @@ class CharacterService:
         character.locked_by = user
         character.save()
         self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.IDENTITY_LOCK,
             changed_region="full_character",
@@ -204,7 +420,7 @@ class CharacterService:
 
     @transaction.atomic
     def apply_variant(self, user, project_id, character_id, variant_id, payload):
-        character = self.get_character(user, project_id, character_id)
+        character = self.get_editable_character(user, project_id, character_id)
         try:
             variant = self.variants.get_for_character(character, variant_id)
         except Exception as exc:
@@ -241,15 +457,18 @@ class CharacterService:
                     "image_type": image_type,
                 },
             )
-        if image_type == CharacterImageType.PORTRAIT:
+        # Applying a variant is the user's explicit "this is the character I
+        # want" signal — that's when a draft graduates to a visible character.
+        if character.status == CharacterStatus.DRAFT:
             character.status = CharacterStatus.ACTIVE
-            logger.info("apply_variant: character_id=%s activated (portrait variant applied)", character.character_id)
         character.save()
         variant.applied = True
         variant.status = "applied"
         variant.applied_at = timezone.now()
         variant.save(update_fields=["applied", "status", "applied_at"])
         revision = self.revisions.create_revision(
+            user,
+            Action.EDIT_CONTENT,
             character,
             RevisionChangeType.APPLY_VARIANT,
             source_variant=variant,

@@ -1,0 +1,1726 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "W Craft API",
+    "version": "1.0.0",
+    "description": "Canonical contract for frontend-facing project, character tree, poster and Music Studio operations."
+  },
+  "servers": [
+    {"url": "/"}
+  ],
+  "security": [
+    {"userToken": []}
+  ],
+  "x-contract-constraints": {
+    "posterPromptMaxLength": 1000,
+    "projectAnnotationMaxLength": 800,
+    "projectSynopsisMaxLength": 2000,
+    "projectPosterMaxBytes": 5242880
+  },
+  "paths": {
+    "/api/schema/openapi.json": {
+      "get": {
+        "operationId": "getOpenApiSchema",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI document",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          }
+        }
+      }
+    },
+    "/api/character/select/": {
+      "get": {
+        "operationId": "listCharacterTree",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Character tree",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {"$ref": "#/components/schemas/CharacterTreeNode"}
+                }
+              }
+            }
+          },
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/character/create/": {
+      "post": {
+        "operationId": "createCharacterTreeNode",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CharacterTreeCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Tree node created"},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/character/rename/": {
+      "post": {
+        "operationId": "renameCharacterTreeNode",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CharacterTreeRenameRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tree node renamed",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CharacterTreeRenameResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/character/delete/": {
+      "post": {
+        "operationId": "deleteCharacterTreeNode",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CharacterTreeDeleteRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tree node deleted",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DeleteResponse"}
+              }
+            }
+          },
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/poster/generate/": {
+      "post": {
+        "operationId": "generateProjectPoster",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/PosterGenerateRequest"}
+            },
+            "multipart/form-data": {
+              "schema": {"$ref": "#/components/schemas/PosterGenerateMultipartRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Idempotent replay",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/PosterOperationResponse"}
+              }
+            }
+          },
+          "201": {
+            "description": "Poster generation accepted/completed",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/PosterOperationResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "413": {"$ref": "#/components/responses/ApiError"},
+          "415": {"$ref": "#/components/responses/ApiError"},
+          "429": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/": {
+      "post": {
+        "operationId": "createProject",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ProjectMutationRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Project created",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProjectMutationResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/": {
+      "get": {
+        "operationId": "getProject",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {
+            "description": "Project details",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProjectMutationResponse"}
+              }
+            }
+          },
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateProject",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ProjectMutationRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Project updated",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProjectMutationResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/team/invitations/": {
+      "post": {
+        "operationId": "createProjectInvitation",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ProjectInvitationRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Invitation created",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ProjectInvitationResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/": {
+      "get": {
+        "operationId": "listMusicTracks",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "q", "in": "query", "schema": {"type": "string"}},
+          {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["active", "archived", "all"], "default": "active"}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}},
+          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0}}
+        ],
+        "responses": {
+          "200": {"description": "Project music library", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackPage"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      },
+      "post": {
+        "operationId": "createLegacyMusicTrackMetadata",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "description": "Compatibility endpoint for creating a metadata-only track.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackRequest"}}}},
+        "responses": {
+          "201": {"description": "Track metadata created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackResponse"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/capabilities/": {
+      "get": {
+        "operationId": "getMusicCapabilities",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Effective mock-provider and brief capabilities", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicCapabilities"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/scene-options/": {
+      "get": {
+        "operationId": "listMusicSceneOptions",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "q", "in": "query", "schema": {"type": "string"}},
+          {"name": "sceneId", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+          {"name": "act", "in": "query", "schema": {"type": "integer"}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}}
+        ],
+        "responses": {
+          "200": {"description": "Scene picker options", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicSceneOptionPage"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/reference-assets/": {
+      "post": {
+        "operationId": "uploadMusicReferenceAsset",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/MusicReferenceUploadRequest"}}}},
+        "responses": {
+          "201": {"description": "Private reference stored", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicReferenceAsset"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "413": {"$ref": "#/components/responses/MusicError"},
+          "415": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/reference-assets/{assetId}/": {
+      "delete": {
+        "operationId": "deleteMusicReferenceAsset",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicAssetId"}],
+        "responses": {
+          "204": {"description": "Unreferenced private asset deleted"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/generation-jobs/": {
+      "get": {
+        "operationId": "listMusicGenerationJobs",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "status", "in": "query", "schema": {"type": "string"}},
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}},
+          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0}}
+        ],
+        "responses": {
+          "200": {"description": "Generation history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicJobPage"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      },
+      "post": {
+        "operationId": "createMusicGenerationJob",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationCreateRequest"}}}},
+        "responses": {
+          "202": {"description": "Durable generation job queued", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationAccepted"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/generation-jobs/{jobId}/": {
+      "get": {
+        "operationId": "getMusicGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicJobId"}],
+        "responses": {
+          "200": {"description": "Generation state and variants", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/generation-jobs/{jobId}/cancellation-request/": {
+      "post": {
+        "operationId": "cancelMusicGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicJobId"}],
+        "responses": {
+          "202": {"description": "Cancellation requested", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/generation-jobs/{jobId}/retry/": {
+      "post": {
+        "operationId": "retryMusicGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicJobId"}],
+        "responses": {
+          "202": {"description": "Replacement job queued", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationAccepted"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/generation-jobs/{jobId}/variants/{variantId}/apply/": {
+      "post": {
+        "operationId": "applyMusicVariant",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/MusicJobId"},
+          {"$ref": "#/components/parameters/MusicVariantId"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicVariantApplyRequest"}}}},
+        "responses": {
+          "200": {"description": "Existing application replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicVariantApplyResponse"}}}},
+          "201": {"description": "Immutable track version created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicVariantApplyResponse"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/{trackId}/": {
+      "get": {
+        "operationId": "getMusicTrack",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicTrackId"}],
+        "responses": {
+          "200": {"description": "Track with immutable version history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackDetail"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateMusicTrack",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicTrackId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackPatchRequest"}}}},
+        "responses": {
+          "200": {"description": "Track metadata or active pointer updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackDetail"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/{trackId}/archive/": {
+      "post": {
+        "operationId": "archiveMusicTrack",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicTrackId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackArchiveRequest"}}}},
+        "responses": {
+          "200": {"description": "Track archived", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicTrackDetail"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/music/{trackId}/assignments/": {
+      "get": {
+        "operationId": "getMusicTrackAssignments",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicTrackId"}],
+        "responses": {
+          "200": {"description": "Pinned scene assignments", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicAssignments"}}}},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"}
+        }
+      },
+      "put": {
+        "operationId": "replaceMusicTrackAssignments",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicTrackId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicAssignmentsReplaceRequest"}}}},
+        "responses": {
+          "200": {"description": "Assignments replaced", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicAssignments"}}}},
+          "400": {"$ref": "#/components/responses/MusicError"},
+          "401": {"$ref": "#/components/responses/MusicError"},
+          "403": {"$ref": "#/components/responses/MusicError"},
+          "404": {"$ref": "#/components/responses/MusicError"},
+          "409": {"$ref": "#/components/responses/MusicError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/": {
+      "get": {
+        "operationId": "listProjectReferences",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 1, "default": 1}},
+          {"name": "pageSize", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 24}},
+          {"name": "category", "in": "query", "schema": {"$ref": "#/components/schemas/ReferenceCategory"}},
+          {"name": "status", "in": "query", "schema": {"$ref": "#/components/schemas/ReferenceComputedStatus"}},
+          {"name": "includeArchived", "in": "query", "schema": {"type": "boolean", "default": false}},
+          {"name": "search", "in": "query", "schema": {"type": "string", "maxLength": 255}},
+          {"name": "character", "in": "query", "schema": {"type": "string", "format": "uuid"}},
+          {"name": "location", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+          {"name": "scene", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+          {"name": "ordering", "in": "query", "schema": {"type": "string", "enum": ["updatedAt", "-updatedAt", "createdAt", "-createdAt", "title", "-title"], "default": "-updatedAt"}}
+        ],
+        "responses": {
+          "200": {"description": "Paginated project reference library", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferencePage"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      },
+      "post": {
+        "operationId": "createProjectReference",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceCreateRequest"}}}},
+        "responses": {
+          "201": {"description": "Draft reference created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceDetail"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/capabilities/": {
+      "get": {
+        "operationId": "getReferenceCapabilities",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Effective Reference Library permissions and media capabilities", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceCapabilities"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/": {
+      "get": {
+        "operationId": "getProjectReference",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "responses": {
+          "200": {"description": "Reference detail", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceDetail"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"},
+          "404": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateProjectReference",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferencePatchRequest"}}}},
+        "responses": {
+          "200": {"description": "Reference metadata updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceDetail"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"},
+          "404": {"$ref": "#/components/responses/ReferenceError"},
+          "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/archive/": {
+      "post": {
+        "operationId": "archiveProjectReference",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedReferenceVersionRequest"}}}},
+        "responses": {
+          "200": {"description": "Reference archived", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceDetail"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/restore/": {
+      "post": {
+        "operationId": "restoreProjectReference",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedReferenceVersionRequest"}}}},
+        "responses": {
+          "200": {"description": "Reference restored", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceDetail"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/versions/": {
+      "get": {
+        "operationId": "listReferenceVersions",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "responses": {
+          "200": {"description": "Immutable reference version history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionPage"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/versions/upload/": {
+      "post": {
+        "operationId": "uploadReferenceVersion",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/ReferenceUploadRequest"}}}},
+        "responses": {
+          "201": {"description": "Uploaded image normalized and applied as a new immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}, "413": {"$ref": "#/components/responses/ReferenceError"}, "415": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/generation-jobs/": {
+      "get": {
+        "operationId": "listReferenceGenerationJobs",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}],
+        "responses": {
+          "200": {"description": "Reference generation history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceJobPage"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      },
+      "post": {
+        "operationId": "createReferenceGenerationJob",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationCreateRequest"}}}},
+        "responses": {
+          "202": {"description": "Durable reference generation job queued or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}, "503": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/generation-jobs/{referenceJobId}/": {
+      "get": {
+        "operationId": "getReferenceGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}],
+        "responses": {
+          "200": {"description": "Reference generation state and validated variants", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/generation-jobs/{referenceJobId}/cancellation-request/": {
+      "post": {
+        "operationId": "cancelReferenceGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}],
+        "responses": {
+          "202": {"description": "Cancellation requested or queued job cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/generation-jobs/{referenceJobId}/retry/": {
+      "post": {
+        "operationId": "retryReferenceGenerationJob",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}],
+        "responses": {
+          "202": {"description": "Replacement job queued from immutable snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/references/{referenceId}/generation-jobs/{referenceJobId}/variants/{referenceVariantId}/apply/": {
+      "post": {
+        "operationId": "applyReferenceVariant",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}, {"$ref": "#/components/parameters/ReferenceVariantId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedReferenceVersionRequest"}}}},
+        "responses": {
+          "200": {"description": "Existing application replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
+          "201": {"description": "Variant applied as a new immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/scenes/{sceneId}/references/": {
+      "get": {
+        "operationId": "getSceneReferences",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/SceneId"}],
+        "responses": {
+          "200": {"description": "Pinned reference usages for a scene", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneReferences"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      },
+      "put": {
+        "operationId": "replaceSceneReferences",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/SceneId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneReferencesReplaceRequest"}}}},
+        "responses": {
+          "200": {"description": "Pinned scene usages replaced", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneReferences"}}}},
+          "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "userToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-User-Token"
+      }
+    },
+    "parameters": {
+      "ProjectId": {
+        "name": "projectId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "integer"}
+      },
+      "MusicTrackId": {
+        "name": "trackId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "integer"}
+      },
+      "MusicJobId": {
+        "name": "jobId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "MusicAssetId": {
+        "name": "assetId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "MusicVariantId": {
+        "name": "variantId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "ReferenceId": {
+        "name": "referenceId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "ReferenceJobId": {
+        "name": "referenceJobId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "ReferenceVariantId": {
+        "name": "referenceVariantId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "SceneId": {
+        "name": "sceneId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "integer", "minimum": 1}
+      }
+    },
+    "responses": {
+      "ApiError": {
+        "description": "Canonical API error",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/ApiErrorEnvelope"}
+          }
+        }
+      },
+      "MusicError": {
+        "description": "Stable Music Studio error",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicErrorResponse"}}}
+      },
+      "ReferenceError": {
+        "description": "Stable Reference Library error",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceErrorResponse"}}}
+      }
+    },
+    "schemas": {
+      "ApiErrorDetail": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ApiErrorEnvelope": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {"$ref": "#/components/schemas/ApiErrorDetail"},
+          "code": {"type": "string", "deprecated": true},
+          "detail": {"type": "string", "deprecated": true},
+          "errors": {"type": "object", "additionalProperties": true, "deprecated": true}
+        }
+      },
+      "CharacterTreeNode": {
+        "type": "object",
+        "required": ["id", "key", "name", "is_folder"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "key": {"type": "string"},
+          "name": {"type": "string"},
+          "is_folder": {"type": "boolean"},
+          "character_id": {"type": "string", "format": "uuid", "nullable": true},
+          "legacy_hero_id": {"type": "integer", "nullable": true},
+          "children": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/CharacterTreeNode"}
+          }
+        }
+      },
+      "CharacterTreeCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "type", "projectId"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 255},
+          "type": {"type": "string", "enum": ["leaf", "node"]},
+          "projectId": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+          "parent": {"type": "string", "format": "uuid", "nullable": true},
+          "heroID": {"type": "integer", "nullable": true},
+          "studioCharacterId": {"type": "string", "format": "uuid", "nullable": true}
+        }
+      },
+      "CharacterTreeRenameRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 255}
+        }
+      },
+      "CharacterTreeRenameResponse": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "character_id": {"type": "string", "format": "uuid", "nullable": true}
+        }
+      },
+      "CharacterTreeDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {"id": {"type": "string"}}
+      },
+      "DeleteResponse": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {"message": {"type": "string"}}
+      },
+      "PosterGenerateRequest": {
+        "type": "object",
+        "required": ["prompt", "style", "format"],
+        "properties": {
+          "prompt": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "style": {"type": "string", "enum": ["cinematic", "anime", "dark_fantasy", "realism"]},
+          "format": {"type": "string", "enum": ["vertical", "square", "horizontal"]},
+          "reference_image_url": {"type": "string"},
+          "reference_image_asset_id": {"type": "integer"},
+          "image_model": {"type": "string", "maxLength": 128}
+        }
+      },
+      "PosterGenerateMultipartRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/PosterGenerateRequest"},
+          {
+            "type": "object",
+            "properties": {
+              "reference_image": {"type": "string", "format": "binary"}
+            }
+          }
+        ]
+      },
+      "PosterVariant": {
+        "type": "object",
+        "required": ["id", "imageUrl"],
+        "properties": {
+          "id": {"type": "integer"},
+          "imageUrl": {"type": "string", "format": "uri"}
+        }
+      },
+      "PosterOperationResponse": {
+        "type": "object",
+        "required": ["variants"],
+        "properties": {
+          "jobId": {"type": "integer"},
+          "status": {"type": "string", "enum": ["queued", "processing", "completed", "failed", "cancelled"]},
+          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/PosterVariant"}}
+        }
+      },
+      "ProjectMutationRequest": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "maxLength": 255},
+          "format": {"type": "string"},
+          "genre": {"type": "array", "items": {"type": "string"}},
+          "audience": {"type": "array", "items": {"type": "string"}},
+          "annotation": {"type": "string", "maxLength": 800},
+          "synopsis": {"type": "string", "maxLength": 2000},
+          "status": {"type": "string"},
+          "is_favorite": {"type": "boolean"},
+          "poster_image_data": {"type": "string"},
+          "poster_url": {"type": "string", "nullable": true}
+        }
+      },
+      "ProjectMutationResponse": {
+        "type": "object",
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "status": {"type": "string"},
+          "statusLabel": {"type": "string"},
+          "coverImageUrl": {"type": "string", "nullable": true},
+          "updatedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "updatedAtLabel": {"type": "string"},
+          "isFavorite": {"type": "boolean"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "stats": {"type": "object", "additionalProperties": true},
+          "format": {"type": "string"},
+          "genre": {"type": "array", "items": {"type": "string"}},
+          "audience": {"type": "array", "items": {"type": "string"}},
+          "annotation": {"type": "string"},
+          "synopsis": {"type": "string"},
+          "posterUrl": {"type": "string", "nullable": true},
+          "generationSettings": {"type": "object", "additionalProperties": true},
+          "createdAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "ProjectInvitationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["invitation_type", "access_role"],
+        "properties": {
+          "invitation_type": {"type": "string", "enum": ["username", "link"]},
+          "username": {"type": "string"},
+          "access_role": {"type": "string", "enum": ["admin", "editor", "viewer"]},
+          "team_role": {"type": "string"},
+          "custom_team_role": {"type": "string"}
+        }
+      },
+      "ProjectInvitationResponse": {
+        "type": "object",
+        "required": ["id", "invitationType", "accessRole", "status"],
+        "properties": {
+          "id": {"type": "integer"},
+          "invitationType": {"type": "string", "enum": ["username", "link"]},
+          "accessRole": {"type": "string", "enum": ["admin", "editor", "viewer"]},
+          "accessRoleLabel": {"type": "string"},
+          "teamRole": {"type": "string"},
+          "teamRoleLabel": {"type": "string"},
+          "status": {"type": "string"},
+          "invitedUsername": {"type": "string", "nullable": true},
+          "invitedByUsername": {"type": "string", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time", "nullable": true},
+          "expiresAt": {"type": "string", "format": "date-time", "nullable": true},
+          "inviteUrl": {"type": "string", "format": "uri"},
+          "token": {"type": "string"}
+        }
+      },
+      "MusicErrorResponse": {
+        "type": "object",
+        "required": ["code", "detail", "retryable"],
+        "properties": {
+          "code": {"type": "string"},
+          "detail": {"type": "string"},
+          "retryable": {"type": "boolean"},
+          "errors": {"type": "object", "additionalProperties": true},
+          "currentVersion": {"type": "integer"}
+        }
+      },
+      "MusicPermissions": {
+        "type": "object",
+        "required": ["currentUserRole", "canView", "canEdit", "canRunGeneration"],
+        "properties": {
+          "currentUserRole": {"type": "string", "nullable": true},
+          "canView": {"type": "boolean"},
+          "canEdit": {"type": "boolean"},
+          "canRunGeneration": {"type": "boolean"}
+        }
+      },
+      "MusicPage": {
+        "type": "object",
+        "required": ["limit", "offset", "total"],
+        "properties": {
+          "limit": {"type": "integer"},
+          "offset": {"type": "integer"},
+          "total": {"type": "integer"}
+        }
+      },
+      "MusicTrackVersion": {
+        "type": "object",
+        "required": ["versionId", "versionNumber", "durationSeconds", "mimeType", "audioUrl", "audioUrlExpiresAt"],
+        "properties": {
+          "versionId": {"type": "string", "format": "uuid", "nullable": true},
+          "versionNumber": {"type": "integer", "nullable": true},
+          "durationSeconds": {"type": "number", "nullable": true},
+          "mimeType": {"type": "string", "nullable": true},
+          "audioUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrlExpiresAt": {"type": "string", "format": "date-time", "nullable": true},
+          "brief": {"type": "object", "additionalProperties": true},
+          "lyrics": {"type": "array", "items": {"$ref": "#/components/schemas/MusicLyricsSection"}},
+          "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time", "nullable": true},
+          "createdById": {"type": "integer", "nullable": true},
+          "provenance": {"type": "object", "additionalProperties": true},
+          "legacy": {"type": "boolean"}
+        }
+      },
+      "MusicTrackSummary": {
+        "type": "object",
+        "required": ["id", "title", "author", "tags", "status", "source", "version", "activeVersion", "usageCount", "updatedAt"],
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string"},
+          "author": {"type": "string"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "status": {"type": "string", "enum": ["active", "archived"]},
+          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "version": {"type": "integer"},
+          "activeVersion": {"$ref": "#/components/schemas/MusicTrackVersion", "nullable": true},
+          "usageCount": {"type": "integer"},
+          "updatedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "DashboardMusicTrackVersion": {
+        "type": "object",
+        "required": ["versionId", "versionNumber", "durationSeconds", "audioUrl", "audioUrlExpiresAt"],
+        "properties": {
+          "versionId": {"type": "string", "format": "uuid"},
+          "versionNumber": {"type": "integer"},
+          "durationSeconds": {"type": "number"},
+          "audioUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrlExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "DashboardMusicTrack": {
+        "type": "object",
+        "required": ["id", "title", "author", "durationSeconds", "durationLabel", "tags", "coverImageUrl", "audioUrl", "audioUrlExpiresAt", "activeVersion", "version", "source", "usageCount", "usageLabel"],
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string"},
+          "author": {"type": "string"},
+          "durationSeconds": {"type": "number"},
+          "durationLabel": {"type": "string"},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "coverImageUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrlExpiresAt": {"type": "string", "format": "date-time", "nullable": true},
+          "activeVersionId": {"type": "string", "format": "uuid", "nullable": true},
+          "activeVersionNumber": {"type": "integer", "nullable": true},
+          "activeVersion": {"$ref": "#/components/schemas/DashboardMusicTrackVersion", "nullable": true},
+          "version": {"type": "integer"},
+          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "usageCount": {"type": "integer"},
+          "usageLabel": {"type": "string"}
+        }
+      },
+      "MusicTrackPage": {
+        "type": "object",
+        "required": ["items", "page", "permissions"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/MusicTrackSummary"}},
+          "page": {"$ref": "#/components/schemas/MusicPage"},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicTrackDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/MusicTrackSummary"},
+          {
+            "type": "object",
+            "required": ["versions", "assignments", "permissions"],
+            "properties": {
+              "versions": {"type": "array", "items": {"$ref": "#/components/schemas/MusicTrackVersion"}},
+              "assignments": {"type": "array", "items": {"$ref": "#/components/schemas/MusicAssignment"}},
+              "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+            }
+          }
+        ]
+      },
+      "LegacyMusicTrackRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "title": {"type": "string", "maxLength": 255},
+          "author": {"type": "string", "maxLength": 255},
+          "duration_seconds": {"type": "integer", "minimum": 0},
+          "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}}
+        }
+      },
+      "LegacyMusicTrackResponse": {
+        "type": "object",
+        "required": ["id", "title"],
+        "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}
+      },
+      "MusicCapabilities": {
+        "type": "object",
+        "required": ["contentModes", "variantCounts", "duration", "outputFormats", "briefFields", "lyrics", "audioReference", "providerDisplayName", "permissions"],
+        "properties": {
+          "contentModes": {"type": "array", "items": {"type": "string", "enum": ["instrumental", "song"]}},
+          "variantCounts": {"type": "array", "items": {"type": "integer", "enum": [1, 2]}},
+          "duration": {"type": "object", "additionalProperties": true},
+          "outputFormats": {"type": "array", "items": {"type": "string"}},
+          "briefFields": {"type": "object", "additionalProperties": true},
+          "lyrics": {"type": "object", "additionalProperties": true},
+          "audioReference": {"type": "object", "additionalProperties": true},
+          "supportsSeed": {"type": "boolean"},
+          "supportsCancellation": {"type": "boolean"},
+          "providerDisplayName": {"type": "string"},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicSceneOption": {
+        "type": "object",
+        "required": ["sceneId", "number", "act", "title", "location", "summary", "mood", "durationSeconds", "characters"],
+        "properties": {
+          "sceneId": {"type": "integer"},
+          "number": {"type": "integer"},
+          "act": {"type": "integer"},
+          "title": {"type": "string"},
+          "location": {"type": "string"},
+          "summary": {"type": "string"},
+          "mood": {"type": "string"},
+          "durationSeconds": {"type": "integer"},
+          "characters": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "MusicSceneOptionPage": {
+        "type": "object",
+        "required": ["items", "nextCursor", "permissions"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/MusicSceneOption"}},
+          "nextCursor": {"type": "string", "nullable": true},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicReferenceUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "rightsConfirmed", "rightsStatementVersion"],
+        "properties": {
+          "file": {"type": "string", "format": "binary"},
+          "rightsConfirmed": {"type": "boolean", "enum": [true]},
+          "rightsStatementVersion": {"type": "string", "enum": ["music-reference-v1"]}
+        }
+      },
+      "MusicReferenceAsset": {
+        "type": "object",
+        "required": ["assetId", "name", "durationSeconds", "mimeType", "audioUrl", "audioUrlExpiresAt", "localVerificationStatus", "providerModerationStatus"],
+        "properties": {
+          "assetId": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "durationSeconds": {"type": "number", "nullable": true},
+          "mimeType": {"type": "string", "nullable": true},
+          "audioUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrlExpiresAt": {"type": "string", "format": "date-time", "nullable": true},
+          "localVerificationStatus": {"type": "string", "enum": ["pending", "accepted", "rejected"]},
+          "providerModerationStatus": {"type": "string", "enum": ["not_required", "pending", "accepted", "rejected"]},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicContext": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {"type": "string", "enum": ["project", "scene"]},
+          "sceneId": {"type": "integer"}
+        }
+      },
+      "MusicLyricsSection": {
+        "type": "object",
+        "required": ["type", "text"],
+        "properties": {
+          "type": {"type": "string", "enum": ["verse", "chorus", "bridge", "outro"]},
+          "label": {"type": "string", "maxLength": 100},
+          "text": {"type": "string"}
+        }
+      },
+      "MusicContent": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": {"type": "string", "enum": ["instrumental", "song"]},
+          "lyricsLanguage": {"type": "string", "enum": ["ru", "en"]},
+          "vocalStyle": {"type": "object", "additionalProperties": true},
+          "sections": {"type": "array", "maxItems": 30, "items": {"$ref": "#/components/schemas/MusicLyricsSection"}}
+        }
+      },
+      "MusicTempo": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": {"type": "string", "enum": ["auto", "slow", "medium", "fast", "bpm"]},
+          "bpm": {"type": "integer", "minimum": 40, "maximum": 220}
+        }
+      },
+      "MusicBrief": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["content", "title", "purpose", "genre", "moods", "durationSeconds", "tempo", "energyCurve"],
+        "properties": {
+          "context": {"$ref": "#/components/schemas/MusicContext"},
+          "content": {"$ref": "#/components/schemas/MusicContent"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "purpose": {"type": "string", "enum": ["underscore", "ambience", "transition", "stinger", "song"]},
+          "genre": {"type": "string", "enum": ["cinematic", "cinematic_pop", "ambient", "electronic", "orchestral", "acoustic", "experimental", "pop"]},
+          "moods": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string"}},
+          "durationSeconds": {"type": "integer", "minimum": 3, "maximum": 300},
+          "tempo": {"$ref": "#/components/schemas/MusicTempo"},
+          "energyCurve": {"type": "string", "enum": ["steady", "build", "peak", "fade"]},
+          "instruments": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+          "exclude": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 50}},
+          "loopable": {"type": "boolean"},
+          "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "nullable": true},
+          "textRefinement": {"type": "string", "maxLength": 1000}
+        }
+      },
+      "MusicGenerationCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["brief"],
+        "properties": {
+          "targetTrackId": {"type": "integer", "nullable": true},
+          "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
+          "variantCount": {"type": "integer", "enum": [1, 2], "default": 2},
+          "brief": {"$ref": "#/components/schemas/MusicBrief"}
+        }
+      },
+      "MusicGenerationAccepted": {
+        "type": "object",
+        "required": ["jobId", "status", "stage", "idempotentReplay", "pollAfterMs", "createdAt"],
+        "properties": {
+          "jobId": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "stage": {"type": "string"},
+          "idempotentReplay": {"type": "boolean"},
+          "pollAfterMs": {"type": "integer"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "MusicVariant": {
+        "type": "object",
+        "required": ["variantId", "index", "status", "durationSeconds", "mimeType", "audioUrl", "audioUrlExpiresAt", "seed", "appliedTrackVersionId"],
+        "properties": {
+          "variantId": {"type": "string", "format": "uuid"},
+          "index": {"type": "integer"},
+          "status": {"type": "string", "enum": ["generated", "failed"]},
+          "durationSeconds": {"type": "number", "nullable": true},
+          "mimeType": {"type": "string", "nullable": true},
+          "audioUrl": {"type": "string", "format": "uri", "nullable": true},
+          "audioUrlExpiresAt": {"type": "string", "format": "date-time", "nullable": true},
+          "seed": {"type": "integer", "nullable": true},
+          "appliedTrackVersionId": {"type": "string", "format": "uuid", "nullable": true}
+        }
+      },
+      "MusicGenerationJob": {
+        "type": "object",
+        "required": ["jobId", "status", "stage", "variantCount", "brief", "targetTrackId", "attempts", "canCancel", "canRetry", "createdAt", "permissions", "variants"],
+        "properties": {
+          "jobId": {"type": "string", "format": "uuid"},
+          "status": {"type": "string", "enum": ["queued", "processing", "cancellation_requested", "completed", "failed", "cancelled"]},
+          "stage": {"type": "string"},
+          "variantCount": {"type": "integer", "enum": [1, 2]},
+          "brief": {"$ref": "#/components/schemas/MusicBrief"},
+          "referenceAsset": {"$ref": "#/components/schemas/MusicReferenceAsset", "nullable": true},
+          "targetTrackId": {"type": "integer", "nullable": true},
+          "retryOf": {"type": "string", "format": "uuid", "nullable": true},
+          "attempts": {"type": "integer"},
+          "canCancel": {"type": "boolean"},
+          "canRetry": {"type": "boolean"},
+          "error": {"$ref": "#/components/schemas/MusicErrorResponse", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "completedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"},
+          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/MusicVariant"}}
+        }
+      },
+      "MusicJobPage": {
+        "type": "object",
+        "required": ["items", "page", "permissions"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/MusicGenerationJob"}},
+          "page": {"$ref": "#/components/schemas/MusicPage"},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicVariantApplyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "targetTrackId": {"type": "integer", "nullable": true},
+          "expectedTrackVersion": {"type": "integer", "nullable": true},
+          "title": {"type": "string", "maxLength": 255},
+          "author": {"type": "string", "maxLength": 255},
+          "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}},
+          "makeActive": {"type": "boolean", "default": true}
+        }
+      },
+      "MusicVariantApplyResponse": {
+        "type": "object",
+        "required": ["trackId", "trackVersion", "activeVersion", "idempotentReplay"],
+        "properties": {
+          "trackId": {"type": "integer"},
+          "trackVersion": {"type": "integer"},
+          "activeVersion": {"$ref": "#/components/schemas/MusicTrackVersion", "nullable": true},
+          "idempotentReplay": {"type": "boolean"}
+        }
+      },
+      "MusicTrackPatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "title": {"type": "string", "maxLength": 255},
+          "author": {"type": "string", "maxLength": 255},
+          "durationSeconds": {"type": "integer", "minimum": 0},
+          "duration_seconds": {"type": "integer", "minimum": 0, "deprecated": true},
+          "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}},
+          "activeVersionId": {"type": "string", "format": "uuid"}
+        }
+      },
+      "MusicTrackArchiveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedTrackVersion"],
+        "properties": {"expectedTrackVersion": {"type": "integer", "minimum": 1}}
+      },
+      "MusicAssignment": {
+        "type": "object",
+        "required": ["sceneId", "sceneNumber", "sceneTitle", "location", "scene", "trackVersionId", "trackVersionNumber", "startTimeSeconds"],
+        "properties": {
+          "sceneId": {"type": "integer"},
+          "sceneNumber": {"type": "integer"},
+          "sceneTitle": {"type": "string"},
+          "location": {"type": "string"},
+          "scene": {"$ref": "#/components/schemas/MusicSceneOption"},
+          "trackVersionId": {"type": "string", "format": "uuid", "nullable": true},
+          "trackVersionNumber": {"type": "integer", "nullable": true},
+          "startTimeSeconds": {"type": "integer"}
+        }
+      },
+      "MusicAssignmentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sceneId", "trackVersionId"],
+        "properties": {
+          "sceneId": {"type": "integer"},
+          "trackVersionId": {"type": "string", "format": "uuid"},
+          "startTimeSeconds": {"type": "integer", "minimum": 0, "default": 0}
+        }
+      },
+      "MusicAssignments": {
+        "type": "object",
+        "required": ["trackId", "trackVersion", "items", "permissions"],
+        "properties": {
+          "trackId": {"type": "integer"},
+          "trackVersion": {"type": "integer"},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/MusicAssignment"}},
+          "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicAssignmentsReplaceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedTrackVersion", "items"],
+        "properties": {
+          "expectedTrackVersion": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/MusicAssignmentRequest"}}
+        }
+      },
+      "ReferenceErrorResponse": {
+        "type": "object",
+        "required": ["error", "code", "detail", "retryable"],
+        "properties": {
+          "error": {"$ref": "#/components/schemas/ApiErrorDetail"},
+          "code": {"type": "string", "enum": ["AUTH_REQUIRED", "PROJECT_ACCESS_DENIED", "REFERENCE_EDIT_FORBIDDEN", "REFERENCE_GENERATION_FORBIDDEN", "REFERENCE_NOT_FOUND", "REFERENCE_VERSION_NOT_FOUND", "REFERENCE_JOB_NOT_FOUND", "REFERENCE_VARIANT_NOT_FOUND", "REFERENCE_CROSS_PROJECT_LINK", "REFERENCE_INVALID_CATEGORY", "REFERENCE_INVALID_BRIEF", "REFERENCE_LOCATION_CATEGORY_REQUIRED", "REFERENCE_UPLOAD_RIGHTS_REQUIRED", "MEDIA_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE", "INVALID_IMAGE", "REFERENCE_VERSION_CONFLICT", "REFERENCE_IDEMPOTENCY_MISMATCH", "REFERENCE_JOB_ALREADY_ACTIVE", "REFERENCE_JOB_NOT_CANCELLABLE", "REFERENCE_JOB_NOT_RETRYABLE", "REFERENCE_JOB_NOT_COMPLETED", "REFERENCE_VARIANT_ALREADY_APPLIED", "REFERENCE_ARCHIVED", "REFERENCE_ASSET_IN_USE", "REFERENCE_MAX_ATTEMPTS_EXCEEDED", "REFERENCE_STORAGE_FAILED", "IMAGE_MODEL_UNKNOWN", "IMAGE_PROVIDER_EDIT_NOT_SUPPORTED", "IMAGE_PROVIDER_NOT_CONFIGURED", "IMAGE_PROVIDER_FORBIDDEN", "IMAGE_PROVIDER_UNAVAILABLE", "IMAGE_PROVIDER_BLOCKED", "IMAGE_PROVIDER_BAD_RESPONSE", "IMAGE_PROVIDER_ERROR", "REFERENCE_INTERNAL_ERROR"]},
+          "detail": {"type": "string"},
+          "retryable": {"type": "boolean"},
+          "errors": {"type": "object", "additionalProperties": true},
+          "currentVersion": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ReferenceCategory": {"type": "string", "enum": ["location", "prop", "wardrobe", "vehicle", "symbol", "other"]},
+      "ReferenceComputedStatus": {"type": "string", "enum": ["draft", "generating", "ready", "failed", "archived"]},
+      "ReferenceCharacterRelation": {"type": "string", "enum": ["owns", "wears", "carries", "uses", "important", "associated"]},
+      "ReferenceBrief": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {"type": "string", "enum": ["reference_brief.v1"], "default": "reference_brief.v1"},
+          "aspectRatio": {"type": "string", "enum": ["1:1", "4:3", "3:2", "16:9", "2:3"], "default": "1:1"},
+          "description": {"type": "string", "maxLength": 4000},
+          "condition": {"type": "string", "maxLength": 4000},
+          "era": {"type": "string", "maxLength": 4000},
+          "style": {"type": "string", "maxLength": 4000},
+          "view": {"type": "string", "maxLength": 4000},
+          "dimensions": {"type": "string", "maxLength": 4000},
+          "continuityNotes": {"type": "string", "maxLength": 2000},
+          "negativePrompt": {"type": "string", "maxLength": 2000},
+          "materials": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 100}},
+          "palette": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 100}},
+          "distinctiveFeatures": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 100}},
+          "continuityProperties": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 100}},
+          "markings": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 100}}
+        }
+      },
+      "ReferenceCharacterLinkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["characterId", "relation"],
+        "properties": {
+          "characterId": {"type": "string", "format": "uuid"},
+          "relation": {"$ref": "#/components/schemas/ReferenceCharacterRelation"},
+          "note": {"type": "string", "maxLength": 500}
+        }
+      },
+      "ReferenceCharacterLink": {
+        "type": "object",
+        "required": ["characterId", "name", "relation", "note"],
+        "properties": {
+          "characterId": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "relation": {"$ref": "#/components/schemas/ReferenceCharacterRelation"},
+          "note": {"type": "string"}
+        }
+      },
+      "ReferenceVersion": {
+        "type": "object",
+        "required": ["id", "number", "origin", "imageUrl", "thumbnailUrl", "provider", "modelName", "createdById", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "number": {"type": "integer", "minimum": 1},
+          "origin": {"type": "string", "enum": ["upload", "generated", "edit", "legacy"]},
+          "imageUrl": {"type": "string", "nullable": true},
+          "thumbnailUrl": {"type": "string", "nullable": true},
+          "provider": {"type": "string", "nullable": true},
+          "modelName": {"type": "string", "nullable": true},
+          "createdById": {"type": "integer", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ReferenceJobWarning": {
+        "type": "object",
+        "required": ["code", "detail", "retryable"],
+        "properties": {"code": {"type": "string"}, "detail": {"type": "string"}, "retryable": {"type": "boolean"}}
+      },
+      "ReferenceUsageSummary": {
+        "type": "object",
+        "required": ["sceneCount", "characters"],
+        "properties": {
+          "sceneCount": {"type": "integer", "minimum": 0},
+          "characters": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceCharacterLink"}}
+        }
+      },
+      "ReferenceSummary": {
+        "type": "object",
+        "required": ["id", "title", "category", "categoryLabel", "status", "activeVersion", "tags", "usage", "lastJobWarning", "version", "archivedAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "title": {"type": "string"},
+          "category": {"$ref": "#/components/schemas/ReferenceCategory"},
+          "categoryLabel": {"type": "string"},
+          "status": {"$ref": "#/components/schemas/ReferenceComputedStatus"},
+          "activeVersion": {"oneOf": [{"$ref": "#/components/schemas/ReferenceVersion"}, {"type": "object", "nullable": true, "enum": [null]}]},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "usage": {"$ref": "#/components/schemas/ReferenceUsageSummary"},
+          "lastJobWarning": {"oneOf": [{"$ref": "#/components/schemas/ReferenceJobWarning"}, {"type": "object", "nullable": true, "enum": [null]}]},
+          "version": {"type": "integer", "minimum": 1},
+          "archivedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ReferenceDetail": {
+        "allOf": [
+          {"$ref": "#/components/schemas/ReferenceSummary"},
+          {
+            "type": "object",
+            "required": ["description", "brief", "locationId", "characterLinks", "createdAt"],
+            "properties": {
+              "description": {"type": "string"},
+              "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
+              "locationId": {"type": "integer", "nullable": true},
+              "characterLinks": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceCharacterLink"}},
+              "createdAt": {"type": "string", "format": "date-time"}
+            }
+          }
+        ]
+      },
+      "ReferencePage": {
+        "type": "object",
+        "required": ["items", "page", "pageSize", "total"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceSummary"}},
+          "page": {"type": "integer", "minimum": 1},
+          "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+          "total": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ReferenceCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "category"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "category": {"$ref": "#/components/schemas/ReferenceCategory"},
+          "description": {"type": "string", "maxLength": 4000},
+          "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
+          "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 50}},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "characterLinks": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceCharacterLinkRequest"}}
+        }
+      },
+      "ReferencePatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version"],
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "category": {"$ref": "#/components/schemas/ReferenceCategory"},
+          "description": {"type": "string", "maxLength": 4000},
+          "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
+          "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 50}},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "characterLinks": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceCharacterLinkRequest"}}
+        }
+      },
+      "ExpectedReferenceVersionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedReferenceVersion"],
+        "properties": {"expectedReferenceVersion": {"type": "integer", "minimum": 1}}
+      },
+      "ReferenceUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "expectedReferenceVersion", "rightsConfirmed", "rightsStatementVersion"],
+        "properties": {
+          "file": {"type": "string", "format": "binary"},
+          "expectedReferenceVersion": {"type": "integer", "minimum": 1},
+          "rightsConfirmed": {"type": "boolean", "enum": [true]},
+          "rightsStatementVersion": {"type": "string", "enum": ["reference-upload-v1"]}
+        }
+      },
+      "ReferenceCapabilities": {
+        "type": "object",
+        "required": ["permissions", "categories", "generation", "upload"],
+        "properties": {
+          "permissions": {"type": "object", "required": ["canView", "canEdit", "canRunGeneration"], "properties": {"canView": {"type": "boolean"}, "canEdit": {"type": "boolean"}, "canRunGeneration": {"type": "boolean"}}},
+          "categories": {"type": "array", "items": {"type": "object", "required": ["key", "label"], "properties": {"key": {"$ref": "#/components/schemas/ReferenceCategory"}, "label": {"type": "string"}}}},
+          "generation": {"type": "object", "required": ["configured", "providerMode", "effectiveModel", "canGenerate", "canEdit", "generateVariantCounts", "editVariantCounts", "aspectRatios"], "properties": {"configured": {"type": "boolean"}, "providerMode": {"type": "string", "enum": ["mock", "registry"]}, "effectiveModel": {"type": "string", "nullable": true}, "canGenerate": {"type": "boolean"}, "canEdit": {"type": "boolean"}, "generateVariantCounts": {"type": "array", "items": {"type": "integer", "enum": [1, 2, 4]}}, "editVariantCounts": {"type": "array", "items": {"type": "integer", "enum": [1]}}, "aspectRatios": {"type": "array", "items": {"type": "string", "enum": ["1:1", "4:3", "3:2", "16:9", "2:3"]}}}},
+          "upload": {"type": "object", "required": ["maxBytes", "maxPixels", "mimeTypes", "rightsStatementVersion"], "properties": {"maxBytes": {"type": "integer"}, "maxPixels": {"type": "integer"}, "mimeTypes": {"type": "array", "items": {"type": "string", "enum": ["image/jpeg", "image/png", "image/webp"]}}, "rightsStatementVersion": {"type": "string", "enum": ["reference-upload-v1"]}}}
+        }
+      },
+      "ReferenceVersionPage": {
+        "type": "object",
+        "required": ["items", "activeVersionId"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceVersion"}},
+          "activeVersionId": {"type": "string", "format": "uuid", "nullable": true}
+        }
+      },
+      "ReferenceVersionMutationResponse": {
+        "type": "object",
+        "required": ["referenceId", "referenceVersion", "activeVersion"],
+        "properties": {
+          "referenceId": {"type": "string", "format": "uuid"},
+          "referenceVersion": {"type": "integer", "minimum": 1},
+          "activeVersion": {"$ref": "#/components/schemas/ReferenceVersion"}
+        }
+      },
+      "ReferenceGenerationCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedReferenceVersion", "operation", "variantCount"],
+        "properties": {
+          "expectedReferenceVersion": {"type": "integer", "minimum": 1},
+          "operation": {"type": "string", "enum": ["generate", "edit"]},
+          "sourceVersionId": {"type": "string", "format": "uuid", "nullable": true},
+          "variantCount": {"type": "integer", "enum": [1, 2, 4]},
+          "imageModel": {"type": "string", "maxLength": 128},
+          "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
+          "editInstruction": {"type": "string", "maxLength": 2000}
+        },
+        "description": "generate accepts variantCount 1, 2 or 4; edit requires sourceVersionId and editInstruction and accepts only 1."
+      },
+      "ReferenceGenerationError": {
+        "type": "object",
+        "required": ["code", "detail", "retryable"],
+        "properties": {"code": {"type": "string"}, "detail": {"type": "string"}, "retryable": {"type": "boolean"}}
+      },
+      "ReferenceVariant": {
+        "type": "object",
+        "required": ["id", "index", "status", "imageUrl", "thumbnailUrl", "width", "height"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "index": {"type": "integer", "minimum": 0},
+          "status": {"type": "string", "enum": ["generated", "applied", "discarded"]},
+          "imageUrl": {"type": "string", "nullable": true},
+          "thumbnailUrl": {"type": "string", "nullable": true},
+          "width": {"type": "integer", "nullable": true},
+          "height": {"type": "integer", "nullable": true}
+        }
+      },
+      "ReferenceGenerationJobSummary": {
+        "type": "object",
+        "required": ["id", "referenceId", "operation", "status", "stage", "progress", "variantCount", "attempts", "canCancel", "canRetry", "error", "createdAt", "completedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "referenceId": {"type": "string", "format": "uuid"},
+          "operation": {"type": "string", "enum": ["generate", "edit"]},
+          "status": {"type": "string", "enum": ["queued", "processing", "cancellation_requested", "completed", "failed", "cancelled"]},
+          "stage": {"type": "string", "enum": ["queued", "compiling", "generating", "validating", "storing", "finalized", "failed", "cancelled"]},
+          "progress": {"type": "integer", "minimum": 0, "maximum": 100},
+          "variantCount": {"type": "integer", "enum": [1, 2, 4]},
+          "attempts": {"type": "integer", "minimum": 0},
+          "canCancel": {"type": "boolean"},
+          "canRetry": {"type": "boolean"},
+          "error": {"oneOf": [{"$ref": "#/components/schemas/ReferenceGenerationError"}, {"type": "object", "nullable": true, "enum": [null]}]},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "completedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "ReferenceGenerationJob": {
+        "allOf": [
+          {"$ref": "#/components/schemas/ReferenceGenerationJobSummary"},
+          {"type": "object", "required": ["variants"], "properties": {"variants": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceVariant"}}}}
+        ]
+      },
+      "ReferenceJobPage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ReferenceGenerationJobSummary"}}}
+      },
+      "SceneReferenceUsage": {"type": "string", "enum": ["environment", "hero_prop", "set_dressing", "wardrobe", "vehicle", "symbol", "other"]},
+      "SceneReferenceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["referenceId", "versionId", "usage"],
+        "properties": {
+          "referenceId": {"type": "string", "format": "uuid"},
+          "versionId": {"type": "string", "format": "uuid"},
+          "usage": {"$ref": "#/components/schemas/SceneReferenceUsage"},
+          "note": {"type": "string", "maxLength": 500}
+        }
+      },
+      "SceneReference": {
+        "type": "object",
+        "required": ["referenceId", "title", "category", "versionId", "versionNumber", "usage", "note", "thumbnailUrl", "updateAvailable", "activeVersionId"],
+        "properties": {
+          "referenceId": {"type": "string", "format": "uuid"},
+          "title": {"type": "string"},
+          "category": {"$ref": "#/components/schemas/ReferenceCategory"},
+          "versionId": {"type": "string", "format": "uuid"},
+          "versionNumber": {"type": "integer", "minimum": 1},
+          "usage": {"$ref": "#/components/schemas/SceneReferenceUsage"},
+          "note": {"type": "string"},
+          "thumbnailUrl": {"type": "string", "nullable": true},
+          "updateAvailable": {"type": "boolean"},
+          "activeVersionId": {"type": "string", "format": "uuid", "nullable": true}
+        }
+      },
+      "SceneReferences": {
+        "type": "object",
+        "required": ["sceneId", "sceneVersion", "items"],
+        "properties": {
+          "sceneId": {"type": "integer"},
+          "sceneVersion": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/SceneReference"}}
+        }
+      },
+      "SceneReferencesReplaceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedSceneVersion", "items"],
+        "properties": {
+          "expectedSceneVersion": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/SceneReferenceRequest"}}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+"""Music Studio test package."""

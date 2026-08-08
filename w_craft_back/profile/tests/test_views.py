@@ -6,7 +6,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
-from w_craft_back.profile.models import UserProfile
+from w_craft_back.profile.models import Interest, UserInterest, UserProfile
 
 
 class DashboardViewTest(TestCase):
@@ -22,15 +22,15 @@ class DashboardViewTest(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_invalid_token_returns_401(self):
-        response = self.client.get(self.url, {'token_user': 'not-a-real-token'})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN='not-a-real-token')
         self.assertEqual(response.status_code, 401)
 
     def test_valid_token_returns_200(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.status_code, 200)
 
     def test_response_contains_required_top_level_keys(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         data = response.json()
         for key in ('user', 'profile_completion', 'stats', 'awards',
                     'interests', 'favorite_genres', 'views_analytics',
@@ -38,11 +38,11 @@ class DashboardViewTest(TestCase):
             self.assertIn(key, data, f'Missing key: {key}')
 
     def test_user_section_contains_correct_username(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['username'], 'craftuser')
 
     def test_profile_completion_structure(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         completion = response.json()['profile_completion']
         self.assertIn('percent', completion)
         self.assertIn('items', completion)
@@ -52,39 +52,87 @@ class DashboardViewTest(TestCase):
         self.assertIn('socials', completion['items'])
 
     def test_stats_section_has_all_fields(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         stats = response.json()['stats']
+        self.assertFalse(stats['available'])
         for field in ('new_messages', 'subscriptions_count', 'watch_history_count',
                       'total_views', 'recommendations_count', 'completed_lessons'):
-            self.assertIn(field, stats)
+            self.assertEqual(stats[field], 0)
 
     def test_settings_reflect_profile_defaults(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         settings = response.json()['settings']
         self.assertEqual(settings['language'], 'ru')
         self.assertFalse(settings['private_account'])
         self.assertTrue(settings['notifications_enabled'])
 
     def test_display_name_falls_back_to_username(self):
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['display_name'], 'craftuser')
 
     def test_display_name_uses_profile_value_when_set(self):
         UserProfile.objects.create(user=self.user, display_name='Джеймс Кэмерон')
-        response = self.client.get(self.url, {'token_user': self.token})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['display_name'], 'Джеймс Кэмерон')
 
-    def test_analytics_has_30_points(self):
-        response = self.client.get(self.url, {'token_user': self.token})
-        points = response.json()['views_analytics']['points']
-        self.assertEqual(len(points), 30)
+    def test_unimplemented_dashboard_sections_are_empty_or_unavailable(self):
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        data = response.json()
 
-    def test_awards_list_is_not_empty(self):
-        response = self.client.get(self.url, {'token_user': self.token})
-        awards = response.json()['awards']
-        self.assertGreater(len(awards), 0)
-        self.assertIn('code', awards[0])
-        self.assertIn('unlocked', awards[0])
+        for field in ('awards', 'recent_activity', 'favorite_authors',
+                      'continue_watching'):
+            self.assertEqual(data[field], [])
+
+        analytics = data['views_analytics']
+        self.assertFalse(analytics['available'])
+        self.assertEqual(analytics['period'], '30d')
+        self.assertEqual(analytics['points'], [])
+        self.assertEqual(analytics['summary'], {
+            'views': 0,
+            'views_delta_percent': 0,
+            'unique_viewers': 0,
+            'unique_viewers_delta_percent': 0,
+            'average_watch_time': '',
+            'average_watch_time_delta_percent': 0,
+        })
+
+    def test_default_profile_has_no_fabricated_profile_values(self):
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        data = response.json()
+
+        self.assertEqual(data['user']['tagline'], '')
+        self.assertEqual(data['interests'], [])
+        self.assertEqual(data['favorite_genres'], [])
+
+    def test_dashboard_uses_saved_legacy_profile_values(self):
+        UserProfile.objects.create(
+            user=self.user,
+            tagline='Снимаю документальное кино',
+            interests=['Архитектура'],
+            favorite_genres=['Документальный'],
+        )
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        data = response.json()
+
+        self.assertEqual(data['user']['tagline'], 'Снимаю документальное кино')
+        self.assertEqual(data['interests'], ['Архитектура'])
+        self.assertEqual(data['favorite_genres'], ['Документальный'])
+
+    def test_normalized_interests_take_precedence_over_legacy_profile_values(self):
+        UserProfile.objects.create(
+            user=self.user,
+            interests=['Legacy interest'],
+        )
+        interest = Interest.objects.create(
+            name='Real interest',
+            slug='real-interest',
+        )
+        UserInterest.objects.create(user=self.user, interest=interest)
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+
+        self.assertEqual(response.json()['interests'], ['Real interest'])
 
     def test_token_via_header(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
@@ -92,7 +140,7 @@ class DashboardViewTest(TestCase):
 
     def test_creates_profile_automatically_if_missing(self):
         self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
-        self.client.get(self.url, {'token_user': self.token})
+        self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertTrue(UserProfile.objects.filter(user=self.user).exists())
 
     def test_second_user_gets_own_data(self):
@@ -100,7 +148,7 @@ class DashboardViewTest(TestCase):
         other_key = UserKey.objects.create(user=other_user)
         UserProfile.objects.create(user=other_user, display_name='Другой пользователь')
 
-        response = self.client.get(self.url, {'token_user': str(other_key.key)})
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=str(other_key.key))
         self.assertEqual(response.json()['user']['username'], 'other')
         self.assertEqual(response.json()['user']['display_name'], 'Другой пользователь')
 

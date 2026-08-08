@@ -12,7 +12,7 @@ class RelationshipType(models.Model):
 
 
 class GraphEdge(models.Model):
-    user = models.ForeignKey(UserKey, on_delete=models.CASCADE)
+    user = models.ForeignKey(UserKey, null=True, blank=True, on_delete=models.SET_NULL)
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     from_node = models.CharField(max_length=255)  # Имя "откуда" узла
     to_node = models.CharField(max_length=255)  # Имя "куда" узла
@@ -24,7 +24,7 @@ class GraphEdge(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "project", "from_node", "to_node"],
+                fields=["project", "from_node", "to_node"],
                 name="uniq_graph_edge_direction",
             )
         ]
