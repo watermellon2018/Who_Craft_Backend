@@ -572,16 +572,29 @@ def _progress_payload(project: Project) -> dict:
 # --------------------------------------------------------------------------- #
 
 def _quick_actions_payload(project: Project) -> list[dict]:
-    base = f"/project-list/project"
+    base = "/project-list/project"
     return [
         {"key": "new_scene", "label": "Новая сцена", "url": f"{base}/scenes/create"},
         {
-            "key": "upload_reference",
-            "label": "Создать опору",
-            "url": f"/project/{project.id}/references/create",
+            "key": "create_location",
+            "label": "Создать локацию",
+            "url": f"/project/{project.id}/references/create?category=location",
         },
-        {"key": "generate_video", "label": "Генерация видео", "url": f"{base}/generate-video"},
-        {"key": "create_location", "label": "Создать локацию", "url": f"{base}/locations/create"},
+        {
+            "key": "create_character",
+            "label": "Создать персонажа",
+            "url": f"/project/{project.id}/characters/create",
+        },
+        {
+            "key": "create_track",
+            "label": "Создать трек",
+            "url": f"/project/{project.id}/music/create",
+        },
+        {
+            "key": "generate_video",
+            "label": "Генерация видео",
+            "url": f"{base}/generate-video",
+        },
     ]
 
 
