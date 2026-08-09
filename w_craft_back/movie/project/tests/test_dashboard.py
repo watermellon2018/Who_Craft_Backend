@@ -16,6 +16,7 @@ from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
     ProjectActivity,
+    ProjectAsset,
     ProjectMember,
     ProjectMemberRole,
     ProjectProgress,
@@ -25,6 +26,11 @@ from w_craft_back.movie.project.dashboard_models import (
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
 from w_craft_back.movie.project.services import _music_payload
+from w_craft_back.movie.reference_library.models import (
+    ProjectReference,
+    ReferenceSourceType,
+    ReferenceVersion,
+)
 
 
 def _make_user(username: str) -> tuple[User, str]:
@@ -138,7 +144,7 @@ class DashboardShapeTests(TestCase):
         self.assertEqual(data["recentActivity"], [])
         self.assertEqual(data["project"]["tags"], [])
 
-    def test_quick_actions_use_available_creation_routes(self):
+    def test_quick_actions_use_available_routes(self):
         actions = {action["key"]: action for action in self._get()["quickActions"]}
 
         self.assertNotIn("upload_reference", actions)
@@ -146,11 +152,8 @@ class DashboardShapeTests(TestCase):
             actions["create_location"],
             {
                 "key": "create_location",
-                "label": "Создать локацию",
-                "url": (
-                    f"/project/{self.project.id}/references/create"
-                    "?category=location"
-                ),
+                "label": "Открыть визуальную библиотеку",
+                "url": f"/project/{self.project.id}/references",
             },
         )
         self.assertEqual(
@@ -212,6 +215,30 @@ class DashboardShapeTests(TestCase):
             tags=["Киберпанк"],
         )
         loc = Location.objects.create(project=self.project, name="Ночной рынок")
+        reference = ProjectReference.objects.create(
+            project=self.project,
+            title="Ночной рынок — экстерьер",
+            category="location",
+            location=loc,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        asset = ProjectAsset.objects.create(
+            project=self.project,
+            uploaded_by=self.owner,
+            file="projects/assets/night-market.png",
+            asset_type="reference",
+            title="Ночной рынок",
+        )
+        version = ReferenceVersion.objects.create(
+            reference=reference,
+            version_number=1,
+            asset=asset,
+            source_type=ReferenceSourceType.LEGACY,
+            created_by=self.owner,
+        )
+        reference.active_version = version
+        reference.save(update_fields=["active_version", "updated_at"])
         scene = Scene.objects.create(
             project=self.project, title="Scene 7", order=7, location=loc, status="completed"
         )
@@ -231,6 +258,7 @@ class DashboardShapeTests(TestCase):
         self.assertEqual(data["stats"]["musicTotal"], 1)
         self.assertEqual(data["stats"]["musicUsed"], 1)
         self.assertEqual(data["stats"]["locationsTotal"], 1)
+        self.assertEqual(data["stats"]["locationsCreated"], 1)
 
         music = data["music"]
         self.assertEqual(len(music), 1)

@@ -138,9 +138,7 @@ class ProjectReference(models.Model):
         super().clean()
         errors: dict[str, str] = {}
         if self.location_id:
-            if self.category != ReferenceCategory.LOCATION:
-                errors["location"] = "Only location references may link a location."
-            elif self.location.project_id != self.project_id:
+            if self.location.project_id != self.project_id:
                 errors["location"] = "Location must belong to the reference project."
         if self.active_version_id:
             if self.active_version.reference_id != self.id:

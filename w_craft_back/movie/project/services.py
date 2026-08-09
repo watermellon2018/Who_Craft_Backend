@@ -16,7 +16,6 @@ from django.utils import timezone
 
 from w_craft_back.character_studio.models import CharacterRole, StudioCharacter
 from w_craft_back.movie.project.dashboard_models import (
-    Location,
     MusicTrack,
     ProjectActivity,
     ProjectAsset,
@@ -287,6 +286,8 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
 # --------------------------------------------------------------------------- #
 
 def _stats_payload(project: Project) -> dict:
+    from w_craft_back.movie.reference_library.models import ProjectReference
+
     visible = _visible_studio_characters(project)
     chars_total = len(visible)
     chars_active = chars_total
@@ -302,8 +303,12 @@ def _stats_payload(project: Project) -> dict:
         .count()
     )
 
-    locations_total = Location.objects.filter(project=project).count()
-    locations_created = Location.objects.filter(project=project, is_created=True).count()
+    visual_library = ProjectReference.objects.filter(
+        project=project,
+        archived_at__isnull=True,
+    )
+    locations_total = visual_library.count()
+    locations_created = visual_library.filter(active_version__isnull=False).count()
 
     return {
         "charactersTotal": chars_total,
@@ -436,8 +441,8 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
     def _pluralize_files(n):
         return f"{n} {_plural_ru(n, 'файл', 'файла', 'файлов')}"
 
-    def _pluralize_references(n):
-        return f"{n} {_plural_ru(n, 'опора', 'опоры', 'опор')}"
+    def _pluralize_materials(n):
+        return f"{n} {_plural_ru(n, 'материал', 'материала', 'материалов')}"
 
     def _pluralize_models(n):
         return f"{n} {_plural_ru(n, 'модель', 'модели', 'моделей')}"
@@ -455,9 +460,9 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
             "subtitle": _pluralize_scenes(storyboard_count),
         },
         "references": {
-            "label": "Опорные изображения",
+            "label": "Визуальная библиотека",
             "progress": visual_p,
-            "subtitle": _pluralize_references(reference_count),
+            "subtitle": _pluralize_materials(reference_count),
         },
         "models3d": {
             "label": "3D",
@@ -577,8 +582,8 @@ def _quick_actions_payload(project: Project) -> list[dict]:
         {"key": "new_scene", "label": "Новая сцена", "url": f"{base}/scenes/create"},
         {
             "key": "create_location",
-            "label": "Создать локацию",
-            "url": f"/project/{project.id}/references/create?category=location",
+            "label": "Открыть визуальную библиотеку",
+            "url": f"/project/{project.id}/references",
         },
         {
             "key": "create_character",

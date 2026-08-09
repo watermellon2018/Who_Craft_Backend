@@ -11,6 +11,7 @@ from w_craft_back.movie.reference_library.views import (
     ReferenceGenerationJobDetailView,
     ReferenceGenerationJobRetryView,
     ReferenceGenerationJobsView,
+    ReferenceLinkOptionsView,
     ReferenceRestoreView,
     ReferenceVariantApplyView,
     ReferenceVersionsView,
@@ -24,6 +25,11 @@ urlpatterns = [
         "capabilities/",
         ReferenceCapabilitiesView.as_view(),
         name="project-reference-capabilities",
+    ),
+    path(
+        "link-options/",
+        ReferenceLinkOptionsView.as_view(),
+        name="project-reference-link-options",
     ),
     path(
         "<uuid:reference_id>/archive/",
