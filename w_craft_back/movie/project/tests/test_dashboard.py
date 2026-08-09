@@ -138,6 +138,38 @@ class DashboardShapeTests(TestCase):
         self.assertEqual(data["recentActivity"], [])
         self.assertEqual(data["project"]["tags"], [])
 
+    def test_quick_actions_use_available_creation_routes(self):
+        actions = {action["key"]: action for action in self._get()["quickActions"]}
+
+        self.assertNotIn("upload_reference", actions)
+        self.assertEqual(
+            actions["create_location"],
+            {
+                "key": "create_location",
+                "label": "Создать локацию",
+                "url": (
+                    f"/project/{self.project.id}/references/create"
+                    "?category=location"
+                ),
+            },
+        )
+        self.assertEqual(
+            actions["create_character"],
+            {
+                "key": "create_character",
+                "label": "Создать персонажа",
+                "url": f"/project/{self.project.id}/characters/create",
+            },
+        )
+        self.assertEqual(
+            actions["create_track"],
+            {
+                "key": "create_track",
+                "label": "Создать трек",
+                "url": f"/project/{self.project.id}/music/create",
+            },
+        )
+
     def test_stats_defaults(self):
         data = self._get()
         for k in (
