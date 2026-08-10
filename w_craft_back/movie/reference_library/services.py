@@ -346,6 +346,14 @@ def list_references(
         "active_version__thumbnail_asset",
     )
     status_filter = str(params.get("status", "") or "").strip()
+    if status_filter and status_filter not in {
+        "archived",
+        "draft",
+        "generating",
+        "ready",
+        "failed",
+    }:
+        raise ReferenceError("Invalid status.", code="REFERENCE_INVALID_BRIEF")
     if status_filter == "archived":
         queryset = queryset.filter(archived_at__isnull=False)
     elif not str(params.get("includeArchived", "")).lower() in {"1", "true"}:
@@ -366,6 +374,13 @@ def list_references(
         queryset = queryset.filter(location_id=params["location"])
     if params.get("scene"):
         queryset = queryset.filter(scene_usages__scene_id=params["scene"])
+    if status_filter == "ready":
+        queryset = queryset.filter(
+            active_version__isnull=False,
+            archived_at__isnull=True,
+        ).exclude(
+            generation_jobs__status__in=NON_TERMINAL_STATUSES,
+        )
     ordering = {
         "updatedAt": "updated_at",
         "-updatedAt": "-updated_at",
@@ -374,10 +389,10 @@ def list_references(
         "title": "title",
         "-title": "-title",
     }.get(str(params.get("ordering", "-updatedAt")), "-updated_at")
-    rows = list(queryset.distinct().order_by(ordering))
-    if status_filter and status_filter != "archived":
-        if status_filter not in {"draft", "generating", "ready", "failed"}:
-            raise ReferenceError("Invalid status.", code="REFERENCE_INVALID_BRIEF")
+    ordered_queryset = queryset.distinct().order_by(ordering)
+    requires_computed_filter = status_filter in {"draft", "generating", "failed"}
+    if requires_computed_filter:
+        rows = list(ordered_queryset)
         rows = [
             reference
             for reference in rows
@@ -391,12 +406,17 @@ def list_references(
             "Invalid pagination.",
             code="REFERENCE_INVALID_BRIEF",
         ) from exc
-    total = len(rows)
     start = (page - 1) * page_size
+    if requires_computed_filter:
+        total = len(rows)
+        rows = rows[start:start + page_size]
+    else:
+        total = ordered_queryset.count()
+        rows = list(ordered_queryset[start:start + page_size])
     return {
         "items": [
             _reference_payload(reference, request)
-            for reference in rows[start:start + page_size]
+            for reference in rows
         ],
         "page": page,
         "pageSize": page_size,
@@ -404,18 +424,33 @@ def list_references(
     }
 
 
+def get_link_options(*, actor: Any, project_id: int) -> dict[str, list[dict[str, Any]]]:
+    """Return compact project-scoped entities available for reference links."""
+
+    project = _project_for_action(actor, project_id, policy.Action.VIEW)
+    characters = StudioCharacter.objects.filter(project=project).order_by(
+        "name",
+        "character_id",
+    )
+    locations = Location.objects.filter(project=project).order_by("name", "id")
+    return {
+        "characters": [
+            {"id": str(character.character_id), "name": character.name}
+            for character in characters
+        ],
+        "locations": [
+            {"id": location.id, "name": location.name}
+            for location in locations
+        ],
+    }
+
+
 def _location_for_reference(
     project: Project,
-    category: str,
     location_id: int | None,
 ) -> Location | None:
     if location_id is None:
         return None
-    if category != ReferenceCategory.LOCATION:
-        raise ReferenceError(
-            "Only location references may link a location.",
-            code="REFERENCE_LOCATION_CATEGORY_REQUIRED",
-        )
     location = Location.objects.filter(pk=location_id, project=project).first()
     if location is None:
         raise ReferenceError(
@@ -466,7 +501,7 @@ def create_reference(
 ) -> dict[str, Any]:
     project = _project_for_action(actor, project_id, policy.Action.EDIT_CONTENT)
     category = data["category"]
-    location = _location_for_reference(project, category, data.get("locationId"))
+    location = _location_for_reference(project, data.get("locationId"))
     reference = ProjectReference.objects.create(
         project=project,
         title=data["title"].strip(),
@@ -509,7 +544,7 @@ def update_reference(
     _ensure_version(reference, data["version"])
     category = data.get("category", reference.category)
     location_id = data.get("locationId", reference.location_id)
-    location = _location_for_reference(project, category, location_id)
+    location = _location_for_reference(project, location_id)
     for field in ("title", "description"):
         if field in data:
             setattr(reference, field, data[field].strip())

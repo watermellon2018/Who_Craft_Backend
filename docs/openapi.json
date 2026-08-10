@@ -567,6 +567,17 @@
         }
       }
     },
+    "/api/projects/{projectId}/references/link-options/": {
+      "get": {
+        "operationId": "getReferenceLinkOptions",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Project-scoped character and location link options", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceLinkOptions"}}}},
+          "401": {"$ref": "#/components/responses/ReferenceError"},
+          "403": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
     "/api/projects/{projectId}/references/{referenceId}/": {
       "get": {
         "operationId": "getProjectReference",
@@ -1537,6 +1548,14 @@
           "page": {"type": "integer", "minimum": 1},
           "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
           "total": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ReferenceLinkOptions": {
+        "type": "object",
+        "required": ["characters", "locations"],
+        "properties": {
+          "characters": {"type": "array", "items": {"type": "object", "required": ["id", "name"], "properties": {"id": {"type": "string", "format": "uuid"}, "name": {"type": "string"}}}},
+          "locations": {"type": "array", "items": {"type": "object", "required": ["id", "name"], "properties": {"id": {"type": "integer", "minimum": 1}, "name": {"type": "string"}}}}
         }
       },
       "ReferenceCreateRequest": {

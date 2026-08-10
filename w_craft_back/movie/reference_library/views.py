@@ -123,6 +123,17 @@ class ReferenceCapabilitiesView(ReferenceAuthedView):
         )
 
 
+class ReferenceLinkOptionsView(ReferenceAuthedView):
+    @handle_reference_errors
+    def get(self, request, project_id: int):
+        return Response(
+            services.get_link_options(
+                actor=self.actor(request),
+                project_id=project_id,
+            )
+        )
+
+
 class ReferenceDetailView(ReferenceAuthedView):
     @handle_reference_errors
     def get(self, request, project_id: int, reference_id):

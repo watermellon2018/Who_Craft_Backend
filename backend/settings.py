@@ -301,6 +301,16 @@ IMAGE_PROVIDER_MAX_OUTPUT_BYTES = int(
 IMAGE_PROVIDER_MAX_OUTPUT_PIXELS = int(
     os.getenv("IMAGE_PROVIDER_MAX_OUTPUT_PIXELS", "20000000")
 )
+REFERENCE_IMAGE_PROVIDER = (
+    os.getenv("REFERENCE_IMAGE_PROVIDER", "mock").strip().lower()
+)
+REFERENCE_ALLOW_MOCK = (
+    os.getenv("REFERENCE_ALLOW_MOCK", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+REFERENCE_PROVIDER_TIMEOUT_SECONDS = int(
+    os.getenv("REFERENCE_PROVIDER_TIMEOUT_SECONDS", "90")
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 
