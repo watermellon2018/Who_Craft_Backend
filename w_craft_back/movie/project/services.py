@@ -582,8 +582,8 @@ def _quick_actions_payload(project: Project) -> list[dict]:
         {"key": "new_scene", "label": "Новая сцена", "url": f"{base}/scenes/create"},
         {
             "key": "create_location",
-            "label": "Открыть визуальную библиотеку",
-            "url": f"/project/{project.id}/references",
+            "label": "Создать визуальную опору",
+            "url": f"/project/{project.id}/references/create",
         },
         {
             "key": "create_character",

@@ -152,8 +152,8 @@ class DashboardShapeTests(TestCase):
             actions["create_location"],
             {
                 "key": "create_location",
-                "label": "Открыть визуальную библиотеку",
-                "url": f"/project/{self.project.id}/references",
+                "label": "Создать визуальную опору",
+                "url": f"/project/{self.project.id}/references/create",
             },
         )
         self.assertEqual(
