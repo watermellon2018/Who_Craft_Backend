@@ -493,9 +493,31 @@ class CharacterPromptCompiler:
         framing instructions and explicit identity-preservation constraints —
         we cannot rely on negative prompts for chat-completion models.
         """
-        controls = dict(params or {})
-        preserve_identity = bool(controls.get("preserve_identity", True))
-        description = self._describe_character(character, appearance, outfit, controls)
+        params = dict(params or {})
+        controls = {**dict(params.get("controls") or {}), **params}
+        preserve_identity = bool(params.get("preserve_identity", True))
+        changed_fields = [
+            str(field)
+            for field in (
+                params.get("changed_fields")
+                or controls.get("changed_fields")
+                or []
+            )
+        ]
+        changed_field_set = set(changed_fields)
+        previous_values = dict(
+            params.get("previous_values")
+            or controls.get("previous_values")
+            or {}
+        )
+        new_values = dict(
+            params.get("new_values")
+            or controls.get("new_values")
+            or {}
+        )
+        description = self._describe_character(
+            character, appearance, outfit, controls,
+        )
         framing_phrase, framing_instructions = self._IDENTITY_ANCHORED_FRAMING.get(
             image_type,
             (
@@ -504,27 +526,69 @@ class CharacterPromptCompiler:
             ),
         )
 
-        identity_clause = (
-            "STRICT IDENTITY CONSTRAINTS:\n"
-            "- The output must depict the exact same individual as the reference.\n"
-            "- Preserve face identity, facial structure, eyes, nose, lips, jawline, "
-            "and facial proportions.\n"
-            "- Preserve the same age and gender presentation.\n"
-            "- Preserve the same hairstyle, hair color, and hair texture.\n"
-            "- Preserve the same skin tone and any distinctive marks or features.\n"
-            "- Preserve the established visual style and rendering style.\n"
-            "- A different person is an invalid result. Reinterpreting the character "
-            "is an invalid result.\n"
-            if preserve_identity
-            else "The reference image is the primary visual inspiration; minor stylistic "
-                 "variations are allowed but the character must remain recognizable.\n"
+        if preserve_identity:
+            identity_constraints = [
+                "- The output must depict the exact same individual as the reference.",
+                "- Preserve face identity, facial structure, eyes, nose, lips, jawline, "
+                "and facial proportions.",
+            ]
+            if "age" not in changed_field_set:
+                identity_constraints.append("- Preserve the same age presentation.")
+            if "gender" not in changed_field_set:
+                identity_constraints.append("- Preserve the same gender presentation.")
+            if not changed_field_set.intersection({"hair_length", "hair_color"}):
+                identity_constraints.append(
+                    "- Preserve the same hairstyle, hair color, and hair texture."
+                )
+            if "skin_tone" not in changed_field_set:
+                identity_constraints.append(
+                    "- Preserve the same skin tone and any distinctive marks or features."
+                )
+            if "visual_style" not in changed_field_set:
+                identity_constraints.append(
+                    "- Preserve the established visual style and rendering style."
+                )
+            identity_constraints.append(
+                "- A different person is an invalid result. Reinterpreting the character "
+                "is an invalid result."
+            )
+            identity_clause = (
+                "STRICT IDENTITY CONSTRAINTS:\n"
+                + "\n".join(identity_constraints)
+                + "\n"
+            )
+        else:
+            identity_clause = (
+                "The reference image is the primary visual inspiration; minor stylistic "
+                "variations are allowed but the character must remain recognizable.\n"
+            )
+
+        requested_changes = []
+        for field in changed_fields:
+            previous_value = previous_values.get(field)
+            new_value = new_values.get(field, controls.get(field))
+            if new_value is None:
+                continue
+            label = field.replace("_", " ")
+            if previous_value is None:
+                requested_changes.append(f"- Set {label} to {new_value}.")
+            else:
+                requested_changes.append(
+                    f"- Change {label} from {previous_value} to {new_value}."
+                )
+        change_block = (
+            "APPLY THESE REQUESTED CHARACTER CHANGES:\n"
+            + "\n".join(requested_changes)
+            + "\nPreserve identity while making these changes clearly visible.\n\n"
+            if requested_changes
+            else ""
         )
 
         positive_prompt = (
             f"Generate a {framing_phrase} of the SAME character shown in the "
             "provided reference image.\n\n"
             f"{identity_clause}\n"
-            f"ONLY CHANGE THE FRAMING:\n{framing_instructions}\n\n"
+            f"{change_block}FRAMING REQUIREMENTS:\n{framing_instructions}\n\n"
             "Do not change the outfit unless explicitly requested. "
             "Plain neutral studio background, soft studio lighting. "
             "The image must contain only this one character. "
@@ -534,7 +598,7 @@ class CharacterPromptCompiler:
         )
 
         refinement = (
-            (controls.get("text_refinement") or controls.get("correction_prompt") or "")
+            (params.get("text_refinement") or params.get("correction_prompt") or "")
             .strip()
         )
         if refinement:

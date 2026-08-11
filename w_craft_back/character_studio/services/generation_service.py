@@ -688,6 +688,22 @@ class CharacterGenerationService:
         mime_type = identity_asset.mime_type or "image/png"
         preserve_identity = bool(edit_request.get("preserve_identity", True))
         text_refinement = edit_request.get("text_refinement", "") or ""
+        edit_controls = dict(edit_request.get("controls") or {})
+        changed_fields = (
+            edit_request.get("changed_fields")
+            or edit_controls.get("changed_fields")
+            or []
+        )
+        previous_values = (
+            edit_request.get("previous_values")
+            or edit_controls.get("previous_values")
+            or {}
+        )
+        new_values = (
+            edit_request.get("new_values")
+            or edit_controls.get("new_values")
+            or {}
+        )
 
         compiled = self.compiler.compile_identity_anchored(
             character=character,
@@ -697,7 +713,11 @@ class CharacterGenerationService:
             params={
                 "preserve_identity": preserve_identity,
                 "text_refinement": text_refinement,
-                "visual_style": (edit_request.get("controls") or {}).get("visual_style"),
+                "visual_style": edit_controls.get("visual_style"),
+                "controls": edit_controls,
+                "changed_fields": changed_fields,
+                "previous_values": previous_values,
+                "new_values": new_values,
             },
         )
 
