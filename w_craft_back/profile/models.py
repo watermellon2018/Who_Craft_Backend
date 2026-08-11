@@ -154,10 +154,10 @@ class UserProfile(models.Model):
     subscribers_count = models.IntegerField(default=0)
     subscriptions_count = models.IntegerField(default=0)
     image_generation_model = models.CharField(
-        max_length=64,
+        max_length=255,
         blank=True,
         default='',
-        help_text='Registry key from MODEL_REGISTRY, e.g. "gemini-imagen-4". '
+        help_text='Image model registry or catalog key, e.g. "gemini-imagen-4". '
                   'Empty falls back to env/registry default.',
     )
     created_at = models.DateTimeField(auto_now_add=True)

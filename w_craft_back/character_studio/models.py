@@ -606,14 +606,15 @@ class CharacterGenerationJob(models.Model):
     edit_instruction = models.TextField(blank=True, default="")
     preserve_options = models.JSONField(default=dict, blank=True)
     compiled_metadata = models.JSONField(default=dict, blank=True)
-    provider = models.CharField(max_length=100, blank=True, default="mock")
+    provider = models.CharField(max_length=255, blank=True, default="mock")
+    provider_snapshot = models.JSONField(default=dict, blank=True)
     provider_operation = models.CharField(
         max_length=32,
         blank=True,
         default="generate",
     )
-    model_name = models.CharField(max_length=100, blank=True, default="")
-    model_version = models.CharField(max_length=100, blank=True, default="")
+    model_name = models.CharField(max_length=255, blank=True, default="")
+    model_version = models.CharField(max_length=255, blank=True, default="")
     progress = models.PositiveSmallIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=100, blank=True, default="")

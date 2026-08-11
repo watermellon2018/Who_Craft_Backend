@@ -43,6 +43,9 @@ class GeminiNativeProvider:
     def supports_edit(self) -> bool:
         return self.spec.supports_edit
 
+    def supports_reference(self) -> bool:
+        return self.spec.supports_reference
+
     def generate(
         self,
         prompt: str,

@@ -12,10 +12,13 @@ from w_craft_back.services.image_generation.errors import (
 )
 from w_craft_back.services.image_generation.registry import (
     MODEL_REGISTRY,
+    ModelSpec,
+    deserialize_model_spec,
     get_default_key,
     is_configured,
     list_available_models,
     resolve_model,
+    serialize_model_spec,
 )
 
 
@@ -60,11 +63,107 @@ class RegistryTest(TestCase):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}):
             self.assertTrue(is_configured(spec))
 
+    def test_openrouter_flash_alias_uses_dedicated_images_api(self):
+        spec = MODEL_REGISTRY["openrouter-flash-image"]
+
+        self.assertEqual(spec.backend, "openrouter-images")
+        self.assertEqual(spec.mode, "images")
+        self.assertEqual(
+            spec.model_id,
+            "google/gemini-3.1-flash-image-preview",
+        )
+        self.assertEqual(spec.supported_parameters["n"]["max"], 1)
+
     def test_list_available_models_includes_all(self):
-        rows = list_available_models()
+        with mock.patch(
+            "w_craft_back.services.image_generation.registry._dynamic_specs",
+            return_value=[],
+        ):
+            rows = list_available_models()
         keys = {row["key"] for row in rows}
         self.assertEqual(keys, set(MODEL_REGISTRY))
         for row in rows:
             self.assertIn("supports_edit", row)
+            self.assertIn("supports_reference", row)
+            self.assertIn("supported_parameters", row)
+            self.assertIn("backend", row)
             self.assertIn("configured", row)
             self.assertIn("default", row)
+
+    def test_resolve_dynamic_model_uses_catalog(self):
+        spec = ModelSpec(
+            key="openrouter-images:openai/gpt-image-2",
+            label="GPT Image 2",
+            backend="openrouter-images",
+            model_id="openai/gpt-image-2",
+            mode="images",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+            requires_env=("OPENROUTER_API_KEY",),
+        )
+        with mock.patch(
+            "w_craft_back.services.image_generation.registry._dynamic_specs",
+            return_value=[spec],
+        ) as catalog:
+            resolved = resolve_model(spec.key)
+        self.assertEqual(resolved, spec)
+        catalog.assert_called_once_with()
+
+    def test_model_spec_snapshot_round_trip(self):
+        spec = ModelSpec(
+            key="openrouter-images:openai/gpt-image-2",
+            label="GPT Image 2",
+            description="Image model",
+            backend="openrouter-images",
+            model_id="openai/gpt-image-2",
+            mode="images",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+            supported_parameters={
+                "n": {"type": "range", "min": 1, "max": 4},
+            },
+            input_modalities=("text", "image"),
+            output_modalities=("image",),
+            requires_env=("OPENROUTER_API_KEY",),
+        )
+        snapshot = serialize_model_spec(spec)
+        self.assertIsInstance(snapshot["input_modalities"], list)
+        self.assertEqual(deserialize_model_spec(snapshot), spec)
+
+    def test_snapshot_round_trip_preserves_legacy_backend_for_dispatcher(self):
+        spec = ModelSpec(
+            key="mock",
+            label="Legacy mock",
+            backend="mock",
+            model_id="mock-character-provider",
+            mode="mock",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+        )
+        self.assertEqual(deserialize_model_spec(serialize_model_spec(spec)), spec)
+
+    def test_legacy_openrouter_chat_snapshot_upgrades_to_images_api(self):
+        legacy = ModelSpec(
+            key="openrouter-flash-image",
+            label="Gemini Flash Image via OpenRouter",
+            backend="litellm",
+            model_id="openrouter/google/gemini-3.1-flash-image-preview",
+            mode="chat",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+            supported_parameters={
+                "input_references": {"type": "range", "min": 0, "max": 1},
+                "n": {"type": "range", "min": 1, "max": 4},
+            },
+            input_modalities=("text", "image"),
+            output_modalities=("image", "text"),
+            requires_env=("OPENROUTER_API_KEY",),
+        )
+
+        restored = deserialize_model_spec(serialize_model_spec(legacy))
+
+        self.assertEqual(restored, MODEL_REGISTRY["openrouter-flash-image"])

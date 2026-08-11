@@ -14,8 +14,13 @@ from w_craft_back.services.image_generation.errors import (
 )
 from w_craft_back.services.image_generation.gemini_native import GeminiNativeProvider
 from w_craft_back.services.image_generation.litellm_provider import LiteLLMProvider
+from w_craft_back.services.image_generation.openrouter_images import (
+    OpenRouterImagesProvider,
+)
+from w_craft_back.services.image_generation.registry import ModelSpec
 from w_craft_back.services.image_generation.resolver import (
     _resolve_key,
+    provider_from_spec,
     resolve_current_for_user,
 )
 
@@ -62,6 +67,25 @@ class ResolveKeyTest(TestCase):
         self.assertEqual(current["key"], "gemini-flash-image")
         self.assertEqual(current["source"], "default")
 
+    def test_dynamic_user_model_catalog_outage_falls_back_to_static_default(self):
+        user = _user_with_pref("openrouter-images:openai/gpt-image-2")
+        unavailable = ImageProviderError(
+            code="IMAGE_PROVIDER_UNAVAILABLE",
+            message="catalog unavailable",
+            http_status=503,
+        )
+        with (
+            mock.patch.dict(os.environ, {"DEFAULT_IMAGE_MODEL": ""}, clear=False),
+            mock.patch(
+                "w_craft_back.services.image_generation.registry._dynamic_specs",
+                side_effect=unavailable,
+            ) as catalog,
+        ):
+            current = resolve_current_for_user(user)
+        self.assertEqual(current["key"], "gemini-flash-image")
+        self.assertEqual(current["source"], "default")
+        catalog.assert_called_once_with()
+
 
 class ResolveProviderTest(TestCase):
     def test_anonymous_with_gemini_key_returns_litellm(self):
@@ -87,7 +111,41 @@ class ResolveProviderTest(TestCase):
             provider = resolve_provider_for_user(None, override="gemini-native")
         self.assertIsInstance(provider, GeminiNativeProvider)
 
+    def test_openrouter_flash_alias_routes_to_images_provider(self):
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}):
+            provider = resolve_provider_for_user(
+                None,
+                override="openrouter-flash-image",
+            )
+
+        self.assertIsInstance(provider, OpenRouterImagesProvider)
+        self.assertEqual(
+            provider.model_id,
+            "google/gemini-3.1-flash-image-preview",
+        )
+
     def test_require_edit_filters_imagen(self):
         with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "x"}):
             with self.assertRaises(ImageProviderError):
                 resolve_provider_for_user(None, override="gemini-imagen-4", require_edit=True)
+
+    def test_provider_from_dynamic_spec_does_not_resolve_catalog(self):
+        spec = ModelSpec(
+            key="openrouter-images:openai/gpt-image-2",
+            label="GPT Image 2",
+            backend="openrouter-images",
+            model_id="openai/gpt-image-2",
+            mode="images",
+            supports_generate=True,
+            supports_edit=False,
+            requires_env=("OPENROUTER_API_KEY",),
+        )
+        with (
+            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            mock.patch(
+                "w_craft_back.services.image_generation.registry._dynamic_specs"
+            ) as catalog,
+        ):
+            provider = provider_from_spec(spec)
+        self.assertIsInstance(provider, OpenRouterImagesProvider)
+        catalog.assert_not_called()

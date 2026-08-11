@@ -20,7 +20,14 @@ from .base import ImageProvider
 from .errors import CODE_NOT_CONFIGURED, ImageProviderError
 from .gemini_native import GeminiNativeProvider
 from .litellm_provider import LiteLLMProvider
-from .registry import ModelSpec, get_default_key, is_configured, resolve_model
+from .openrouter_images import OpenRouterImagesProvider
+from .registry import (
+    MODEL_REGISTRY,
+    ModelSpec,
+    get_default_key,
+    is_configured,
+    resolve_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +45,9 @@ def _user_pref(user: Any) -> str | None:
 
 
 def _check_required_env(spec: ModelSpec) -> None:
-    missing = [var for var in spec.requires_env if not os.getenv(var)]
+    missing = [
+        var for var in spec.requires_env if not (os.getenv(var) or "").strip()
+    ]
     if missing:
         raise ImageProviderError(
             code=CODE_NOT_CONFIGURED,
@@ -79,10 +88,24 @@ def resolve_provider_for_user(
     logger.info("Image provider resolved: key=%s source=%s require_edit=%s",
                 key, source, require_edit)
     spec = resolve_model(key, require_edit=require_edit)
+    return provider_from_spec(spec)
+
+
+def provider_from_spec(spec: ModelSpec) -> ImageProvider:
+    """Construct a provider from a persisted spec without catalog discovery."""
+
     _check_required_env(spec)
     if spec.backend == "gemini-native":
         return GeminiNativeProvider(spec)
-    return LiteLLMProvider(spec)
+    if spec.backend == "litellm":
+        return LiteLLMProvider(spec)
+    if spec.backend == "openrouter-images":
+        return OpenRouterImagesProvider(spec)
+    raise ImageProviderError(
+        code="IMAGE_PROVIDER_INVALID_BACKEND",
+        message="Сохранённая модель использует неподдерживаемый backend.",
+        http_status=500,
+    )
 
 
 def resolve_current_for_user(user: Any) -> dict:
@@ -97,7 +120,15 @@ def resolve_current_for_user(user: Any) -> dict:
     except ImageProviderError:
         # Stored key no longer in registry — fall back to the env/default key
         # without raising; FE can show a notice.
-        fallback_key, fallback_source = _resolve_key(None, None)
+        env_default = (os.getenv("DEFAULT_IMAGE_MODEL") or "").strip()
+        if env_default in MODEL_REGISTRY:
+            fallback_key, fallback_source = env_default, "env"
+        else:
+            fallback_key = next(
+                (item.key for item in MODEL_REGISTRY.values() if item.default),
+                "gemini-flash-image",
+            )
+            fallback_source = "default"
         spec = resolve_model(fallback_key)
         key, source = fallback_key, fallback_source
     return {

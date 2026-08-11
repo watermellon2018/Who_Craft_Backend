@@ -39,3 +39,6 @@ class ImageProvider(Protocol):
 
     def supports_edit(self) -> bool:
         ...
+
+    def supports_reference(self) -> bool:
+        ...

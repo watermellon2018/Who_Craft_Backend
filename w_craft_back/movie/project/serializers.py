@@ -71,22 +71,28 @@ def _audience_field():
 
 class ProjectGenerationSettingsSerializer(serializers.Serializer):
     image_generation_model = serializers.CharField(
-        max_length=100,
+        max_length=255,
         allow_blank=True,
         required=False,
     )
 
     def validate_image_generation_model(self, value):
-        from w_craft_back.services.image_generation import MODEL_REGISTRY
+        from w_craft_back.services.image_generation import (
+            ImageProviderError,
+            resolve_model,
+        )
 
         normalized = (value or "").strip()
         legacy = {"mock", "gemini", "google", "imagen"}
-        if (
-            normalized
-            and normalized not in MODEL_REGISTRY
-            and normalized.lower() not in legacy
-        ):
-            raise serializers.ValidationError("Unknown image generation model.")
+        if normalized and normalized.lower() not in legacy:
+            try:
+                spec = resolve_model(normalized)
+            except ImageProviderError as exc:
+                raise serializers.ValidationError(exc.message) from exc
+            if not spec.supports_generate:
+                raise serializers.ValidationError(
+                    "Selected image model does not support image generation."
+                )
         return normalized
 
 

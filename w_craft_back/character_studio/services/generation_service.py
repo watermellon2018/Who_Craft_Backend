@@ -268,6 +268,7 @@ class CharacterGenerationService:
             "image_type": image_type,
             "region": region,
             "edit_type": "zone_edit",
+            "image_model": payload.get("image_model"),
             "instruction": instruction,
             "selection": selection,
             "preserve": preserve,
@@ -505,6 +506,7 @@ class CharacterGenerationService:
                     {
                         "reference_type": ui_type,
                         "preserve_identity": preserve_identity,
+                        "image_model": params.get("image_model"),
                         "_idempotency_key": self._scoped_idempotency_key(
                             base_idempotency_key,
                             ui_type,
@@ -552,6 +554,7 @@ class CharacterGenerationService:
                 "reference_type": ui_type,
                 "correction_prompt": correction_prompt,
                 "preserve_identity": params.get("preserve_identity", True),
+                "image_model": params.get("image_model"),
                 "_idempotency_key": (params or {}).get("_idempotency_key"),
             },
         )
@@ -688,6 +691,22 @@ class CharacterGenerationService:
         mime_type = identity_asset.mime_type or "image/png"
         preserve_identity = bool(edit_request.get("preserve_identity", True))
         text_refinement = edit_request.get("text_refinement", "") or ""
+        edit_controls = dict(edit_request.get("controls") or {})
+        changed_fields = (
+            edit_request.get("changed_fields")
+            or edit_controls.get("changed_fields")
+            or []
+        )
+        previous_values = (
+            edit_request.get("previous_values")
+            or edit_controls.get("previous_values")
+            or {}
+        )
+        new_values = (
+            edit_request.get("new_values")
+            or edit_controls.get("new_values")
+            or {}
+        )
 
         compiled = self.compiler.compile_identity_anchored(
             character=character,
@@ -697,7 +716,11 @@ class CharacterGenerationService:
             params={
                 "preserve_identity": preserve_identity,
                 "text_refinement": text_refinement,
-                "visual_style": (edit_request.get("controls") or {}).get("visual_style"),
+                "visual_style": edit_controls.get("visual_style"),
+                "controls": edit_controls,
+                "changed_fields": changed_fields,
+                "previous_values": previous_values,
+                "new_values": new_values,
             },
         )
 
@@ -781,6 +804,7 @@ class CharacterGenerationService:
         request_payload = {
             "variant_count": variant_count,
             "image_type": CharacterImageType.PORTRAIT,
+            "image_model": params.get("image_model"),
             "preserve_identity": preserve_identity,
             "visual_style": params.get("visual_style"),
             "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
@@ -928,7 +952,10 @@ class CharacterGenerationService:
         try:
             if job.provider_operation == "reference" and reference_bytes is None:
                 reference_bytes, mime_type = self._load_reference_input(job)
-            provider = get_image_provider(job.provider)
+            provider = get_image_provider(
+                job.provider,
+                provider_snapshot=job.provider_snapshot,
+            )
             if not mark_provider_started(lease):
                 return CharacterGenerationJob.objects.get(job_id=job_id)
             job.provider_deadline = time.monotonic() + lease.timeout_seconds

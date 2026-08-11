@@ -50,6 +50,7 @@ local_settings.py
 *.backup
 *.dump
 *.sql
+!scripts/feature_36_image_model_flexibility.sql
 *db*.json
 
 # PyCharm

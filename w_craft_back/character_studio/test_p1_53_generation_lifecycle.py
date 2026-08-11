@@ -1,5 +1,6 @@
 from datetime import timedelta
 from io import StringIO
+import os
 import shutil
 import tempfile
 import uuid
@@ -21,6 +22,7 @@ from w_craft_back.character_studio.models import (
     StudioCharacter,
 )
 from w_craft_back.character_studio.services.errors import (
+    CharacterStudioError,
     GenerationBudgetExceededError,
     GenerationConcurrencyLimitError,
     ValidationError,
@@ -292,6 +294,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
         CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=10,
     )
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
     def test_user_daily_budget_blocks_new_paid_provider_call(self):
         character = self.create_character()
         self.project.generation_settings = {
@@ -329,6 +332,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
         CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=10,
     )
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
     def test_active_paid_job_reserves_remaining_user_budget(self):
         character = self.create_character()
         self.project.generation_settings = {
@@ -367,6 +371,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         CHARACTER_STUDIO_DAILY_BUDGET_PER_USER=1,
         CHARACTER_STUDIO_DAILY_BUDGET_PER_PROJECT=1,
     )
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
     def test_model3d_job_does_not_consume_image_generation_limits(self):
         character = self.create_character()
         self.project.generation_settings = {
@@ -513,7 +518,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         self.project.save(update_fields=["generation_settings"])
         resolved_names = []
 
-        def provider_factory(name):
+        def provider_factory(name, provider_snapshot=None):
             resolved_names.append(name)
             return MockProvider()
 
@@ -533,6 +538,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         self.assertEqual(job.user, self.user_key)
         self.assertEqual(job.variants.get().asset.user, editor_key)
 
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
     def test_actor_preference_is_fallback_without_project_setting(self):
         character = self.create_character()
         editor = User.objects.create_user(username="preference-editor")
@@ -549,7 +555,7 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         self.project.save(update_fields=["generation_settings"])
         resolved_names = []
 
-        def provider_factory(name):
+        def provider_factory(name, provider_snapshot=None):
             resolved_names.append(name)
             return MockProvider()
 
@@ -670,23 +676,25 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
 
         self.assertEqual(provider.calls, 1)
 
-    def test_unknown_provider_fails_job_instead_of_using_mock(self):
+    def test_unknown_provider_is_rejected_before_job_creation(self):
         character = self.create_character()
         self.project.generation_settings = {
             "image_generation_model": "stale-provider-key",
         }
         self.project.save(update_fields=["generation_settings"])
 
-        job = CharacterGenerationService().create_initial_variants(
-            self.user_key,
-            self.project.id,
-            character.character_id,
-            {"variant_count": 1},
-        )
+        with self.assertRaises(CharacterStudioError) as context:
+            CharacterGenerationService().create_initial_variants(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                {"variant_count": 1},
+            )
 
-        self.assertEqual(job.status, GenerationJobStatus.FAILED)
-        self.assertEqual(job.error_code, "PROVIDER_CONFIGURATION_ERROR")
-        self.assertEqual(job.variants.count(), 0)
+        self.assertEqual(context.exception.error_code, "IMAGE_MODEL_UNKNOWN")
+        self.assertFalse(
+            CharacterGenerationJob.objects.filter(character=character).exists()
+        )
 
     def test_recovery_command_executes_queued_crash_gap_job(self):
         character = self.create_character()
