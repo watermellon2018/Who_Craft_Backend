@@ -12,6 +12,7 @@ import re
 import uuid
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -26,6 +27,7 @@ from w_craft_back.character_studio.models import (
     StudioCharacter,
 )
 from w_craft_back.character_studio.services.errors import (
+    CharacterStudioError,
     ConflictError,
     GenerationBudgetExceededError,
     GenerationConcurrencyLimitError,
@@ -66,6 +68,15 @@ class JobLease:
     job_id: uuid.UUID
     token: uuid.UUID
     timeout_seconds: int
+
+
+@dataclass(frozen=True)
+class CharacterProviderSelection:
+    key: str
+    source: str
+    snapshot: dict[str, object]
+    model_name: str
+    model_version: str
 
 
 def configured_timeout_seconds() -> int:
@@ -141,6 +152,7 @@ def _clean_payload(payload: dict | None) -> dict:
         "token_user",
         "user_key",
         "key",
+        "provider",
     ):
         cleaned.pop(key, None)
     return cleaned
@@ -156,6 +168,7 @@ def _request_hash(
     compiled,
     provider_operation,
     provider,
+    provider_snapshot,
 ) -> str:
     value = {
         "character_id": str(character.character_id),
@@ -171,6 +184,7 @@ def _request_hash(
         },
         "provider_operation": provider_operation,
         "provider": provider,
+        "provider_snapshot": provider_snapshot,
         "policy_version": 1,
     }
     encoded = json.dumps(
@@ -183,17 +197,26 @@ def _request_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _provider_name(project, actor) -> str:
+def _provider_preference(project, actor, request_payload) -> tuple[str | None, str]:
+    request_preference = str(
+        (request_payload or {}).get("image_model") or ""
+    ).strip()
+    if request_preference:
+        return request_preference, "request"
+
     project_settings = (
         project.generation_settings
         if isinstance(project.generation_settings, dict)
         else {}
     )
-    project_preference = (
+    project_preference = str(
         project_settings.get("image_generation_model")
         or project_settings.get("provider")
         or ""
-    )
+    ).strip()
+    if project_preference:
+        return project_preference, "project"
+
     actor_preference = ""
     try:
         django_user = getattr(actor, "user", None)
@@ -201,14 +224,142 @@ def _provider_name(project, actor) -> str:
         actor_preference = (
             getattr(profile, "image_generation_model", "") or ""
         ).strip()
-    except Exception:  # noqa: BLE001 - preference lookup is best-effort
+    except ObjectDoesNotExist:
         actor_preference = ""
-    return (
-        str(project_preference).strip()
-        or actor_preference
-        or os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER")
-        or "mock"
-    )[:100]
+    if actor_preference:
+        return actor_preference, "user"
+
+    environment_preference = (
+        os.getenv("CHARACTER_STUDIO_IMAGE_PROVIDER") or ""
+    ).strip()
+    if environment_preference:
+        return environment_preference, "env"
+
+    default_preference = (os.getenv("DEFAULT_IMAGE_MODEL") or "").strip()
+    return default_preference or None, "default"
+
+
+def _legacy_model_spec(key: str):
+    from w_craft_back.services.image_generation import ModelSpec
+
+    if key == "mock":
+        return ModelSpec(
+            key="mock",
+            label="Character Studio mock",
+            backend="mock",
+            model_id="mock-character-provider",
+            mode="mock",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+            supported_parameters={
+                "n": {"type": "integer", "min": 1, "max": 4},
+            },
+        )
+    return ModelSpec(
+        key="gemini",
+        label="Legacy Gemini Imagen",
+        backend="gemini-legacy",
+        model_id=os.getenv(
+            "GEMINI_IMAGE_MODEL",
+            "imagen-4.0-generate-001",
+        ),
+        mode="image",
+        supports_generate=True,
+        supports_edit=False,
+        supports_reference=False,
+        supported_parameters={
+            "aspect_ratio": {"type": "string"},
+            "n": {"type": "integer", "min": 1, "max": 4},
+        },
+    )
+
+
+def resolve_character_provider(
+    *,
+    project,
+    actor,
+    request_payload,
+    provider_operation,
+) -> CharacterProviderSelection:
+    """Resolve and validate the immutable provider choice before enqueue."""
+    from w_craft_back.services.image_generation import (
+        ImageProviderError,
+        is_configured,
+        resolve_model,
+        serialize_model_spec,
+    )
+    from w_craft_back.services.image_generation.errors import (
+        CODE_IMAGE_INPUT_NOT_SUPPORTED,
+        CODE_NOT_CONFIGURED,
+    )
+
+    requested_key, source = _provider_preference(
+        project,
+        actor,
+        request_payload,
+    )
+    if requested_key and len(requested_key) > 255:
+        raise ValidationError("image_model max length is 255.")
+
+    try:
+        normalized = (requested_key or "").lower()
+        if normalized in {"mock", "gemini", "google", "imagen"}:
+            canonical_key = "mock" if normalized == "mock" else "gemini"
+            spec = _legacy_model_spec(canonical_key)
+            if canonical_key == "gemini" and not (
+                os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            ):
+                raise ImageProviderError(
+                    code=CODE_NOT_CONFIGURED,
+                    message=(
+                        "Legacy Gemini requires GEMINI_API_KEY or "
+                        "GOOGLE_API_KEY."
+                    ),
+                    http_status=503,
+                )
+        else:
+            spec = resolve_model(requested_key)
+            canonical_key = spec.key
+            if not is_configured(spec):
+                raise ImageProviderError(
+                    code=CODE_NOT_CONFIGURED,
+                    message=f"Image model '{spec.label}' is not configured.",
+                    http_status=503,
+                )
+        if not spec.supports_generate:
+            raise ImageProviderError(
+                code="IMAGE_PROVIDER_GENERATE_NOT_SUPPORTED",
+                message=f"Image model '{spec.label}' cannot generate images.",
+                http_status=400,
+            )
+        if provider_operation == "reference" and not spec.supports_reference:
+            raise ImageProviderError(
+                code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+                message=(
+                    f"Image model '{spec.label}' does not support reference "
+                    "images."
+                ),
+                http_status=400,
+            )
+    except ImageProviderError as exc:
+        raise CharacterStudioError(
+            message=exc.message,
+            error_code=exc.code,
+            status_code=exc.http_status,
+        ) from exc
+
+    serialized_spec = serialize_model_spec(spec)
+    return CharacterProviderSelection(
+        key=canonical_key,
+        source=source,
+        snapshot={
+            "source": source,
+            "spec": serialized_spec,
+        },
+        model_name=spec.backend,
+        model_version=spec.model_id,
+    )
 
 
 def validate_idempotency_key(value) -> str:
@@ -295,6 +446,7 @@ def build_generation_preview(
     actor: UserKey,
     character: StudioCharacter,
     image_types: list[str],
+    image_model: str | None = None,
 ) -> dict[str, object]:
     normalized_types: list[str] = []
     for raw_image_type in image_types:
@@ -306,7 +458,13 @@ def build_generation_preview(
     if not normalized_types:
         raise ValidationError("At least one image_type is required.")
 
-    provider = _provider_name(character.project, actor)
+    selection = resolve_character_provider(
+        project=character.project,
+        actor=actor,
+        request_payload={"image_model": image_model},
+        provider_operation="generate",
+    )
+    provider = selection.key
     now = timezone.now()
     usage = _usage_snapshot(actor, character.project, now)
     active_jobs = CharacterGenerationJob.objects.filter(
@@ -320,6 +478,8 @@ def build_generation_preview(
     )
     return {
         "provider": provider,
+        "provider_source": selection.source,
+        "provider_snapshot": selection.snapshot,
         "mode": "offline" if provider.strip().lower() == "mock" else "paid",
         "image_types": normalized_types,
         "provider_call_count": call_count,
@@ -399,7 +559,6 @@ def _enforce_generation_limits(
         )
 
 
-@transaction.atomic
 def enqueue_job(
     *,
     actor,
@@ -411,6 +570,89 @@ def enqueue_job(
     compiled,
     provider_operation,
 ) -> CharacterGenerationJob:
+    """Resolve a provider, then create/reuse a queued job atomically."""
+    idempotency_key = validate_idempotency_key(
+        (request_payload or {}).get("_idempotency_key")
+    )
+    if idempotency_key:
+        existing = CharacterGenerationJob.objects.filter(
+            project=character.project,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing is not None:
+            return _validate_idempotent_replay(
+                existing=existing,
+                character=character,
+                job_type=job_type,
+                region=region,
+                variant_count=variant_count,
+                request_payload=_clean_payload(request_payload),
+                compiled=compiled,
+                provider_operation=provider_operation,
+            )
+    selection = resolve_character_provider(
+        project=character.project,
+        actor=actor,
+        request_payload=request_payload,
+        provider_operation=provider_operation,
+    )
+    return _enqueue_job_atomic(
+        actor=actor,
+        character=character,
+        job_type=job_type,
+        region=region,
+        variant_count=variant_count,
+        request_payload=request_payload,
+        compiled=compiled,
+        provider_operation=provider_operation,
+        provider_selection=selection,
+    )
+
+
+def _validate_idempotent_replay(
+    *,
+    existing,
+    character,
+    job_type,
+    region,
+    variant_count,
+    request_payload,
+    compiled,
+    provider_operation,
+) -> CharacterGenerationJob:
+    """Compare a replay against the immutable provider choice already stored."""
+    candidate_hash = _request_hash(
+        character=character,
+        job_type=job_type,
+        region=region,
+        variant_count=variant_count,
+        request_payload=request_payload,
+        compiled=compiled,
+        provider_operation=provider_operation,
+        provider=existing.provider,
+        provider_snapshot=existing.provider_snapshot or {},
+    )
+    if existing.request_hash != candidate_hash:
+        raise ConflictError(
+            "Idempotency-Key was already used for a different request."
+        )
+    return existing
+
+
+@transaction.atomic
+def _enqueue_job_atomic(
+    *,
+    actor,
+    character,
+    job_type,
+    region,
+    variant_count,
+    request_payload,
+    compiled,
+    provider_operation,
+    provider_selection: CharacterProviderSelection,
+) -> CharacterGenerationJob:
     """Create or reuse a queued job while holding only a short character lock."""
     locked_character = (
         StudioCharacter.objects.select_for_update(of=("self",))
@@ -421,7 +663,8 @@ def enqueue_job(
     idempotency_key = validate_idempotency_key(
         (request_payload or {}).get("_idempotency_key")
     )
-    provider = _provider_name(locked_character.project, actor)
+    provider = provider_selection.key
+    provider_snapshot = dict(provider_selection.snapshot)
     request_hash = _request_hash(
         character=locked_character,
         job_type=job_type,
@@ -431,6 +674,7 @@ def enqueue_job(
         compiled=compiled,
         provider_operation=provider_operation,
         provider=provider,
+        provider_snapshot=provider_snapshot,
     )
     if idempotency_key:
         existing = CharacterGenerationJob.objects.filter(
@@ -439,11 +683,16 @@ def enqueue_job(
             idempotency_key=idempotency_key,
         ).first()
         if existing is not None:
-            if existing.request_hash != request_hash:
-                raise ConflictError(
-                    "Idempotency-Key was already used for a different request."
-                )
-            return existing
+            return _validate_idempotent_replay(
+                existing=existing,
+                character=locked_character,
+                job_type=job_type,
+                region=region,
+                variant_count=variant_count,
+                request_payload=payload,
+                compiled=compiled,
+                provider_operation=provider_operation,
+            )
 
     now = timezone.now()
     active_jobs = CharacterGenerationJob.objects.select_for_update().filter(
@@ -532,7 +781,10 @@ def enqueue_job(
         "compiled_metadata": compiled.get("metadata", {}),
         "preserve_options": compiled.get("metadata", {}).get("preserve", {}),
         "provider": provider,
+        "provider_snapshot": provider_snapshot,
         "provider_operation": provider_operation,
+        "model_name": provider_selection.model_name,
+        "model_version": provider_selection.model_version,
         "timeout_seconds": configured_timeout_seconds(),
     }
     if not idempotency_key:
@@ -546,11 +798,16 @@ def enqueue_job(
             actor=actor,
             idempotency_key=idempotency_key,
         )
-        if existing.request_hash != request_hash:
-            raise ConflictError(
-                "Idempotency-Key was already used for a different request."
-            )
-        return existing
+        return _validate_idempotent_replay(
+            existing=existing,
+            character=locked_character,
+            job_type=job_type,
+            region=region,
+            variant_count=variant_count,
+            request_payload=payload,
+            compiled=compiled,
+            provider_operation=provider_operation,
+        )
 
 
 @transaction.atomic
@@ -827,7 +1084,10 @@ def retry_character_job(*, actor, job_id):
         preserve_options=dict(original.preserve_options or {}),
         compiled_metadata=dict(original.compiled_metadata or {}),
         provider=original.provider,
+        provider_snapshot=dict(original.provider_snapshot or {}),
         provider_operation=original.provider_operation,
+        model_name=original.model_name,
+        model_version=original.model_version,
         timeout_seconds=original.timeout_seconds,
         max_attempts=original.max_attempts,
     )

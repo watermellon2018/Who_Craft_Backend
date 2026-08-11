@@ -1760,7 +1760,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
 
         original = providers_module.get_image_provider
 
-        def force_gemini(_name="mock"):
+        def force_gemini(_name="mock", provider_snapshot=None):
             return providers_module.GeminiProvider()
 
         providers_module.get_image_provider = force_gemini

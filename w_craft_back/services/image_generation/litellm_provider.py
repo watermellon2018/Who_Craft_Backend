@@ -254,6 +254,9 @@ class LiteLLMProvider:
     def supports_edit(self) -> bool:
         return self.spec.supports_edit
 
+    def supports_reference(self) -> bool:
+        return self.spec.supports_reference
+
     # ------------------------------------------------------------------ #
     # Generate
     # ------------------------------------------------------------------ #
@@ -365,7 +368,7 @@ class LiteLLMProvider:
         # Image input is currently available only on chat-mode multimodal models
         # (Gemini 2.5 Flash Image, OpenRouter chat-image variants). Image-API
         # models like Imagen 4 (mode="image") accept no input image.
-        if self.spec.mode != "chat" or not self.spec.supports_edit:
+        if self.spec.mode != "chat" or not self.spec.supports_reference:
             raise ImageProviderError(
                 code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
                 message=(

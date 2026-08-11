@@ -268,6 +268,7 @@ class CharacterGenerationService:
             "image_type": image_type,
             "region": region,
             "edit_type": "zone_edit",
+            "image_model": payload.get("image_model"),
             "instruction": instruction,
             "selection": selection,
             "preserve": preserve,
@@ -505,6 +506,7 @@ class CharacterGenerationService:
                     {
                         "reference_type": ui_type,
                         "preserve_identity": preserve_identity,
+                        "image_model": params.get("image_model"),
                         "_idempotency_key": self._scoped_idempotency_key(
                             base_idempotency_key,
                             ui_type,
@@ -552,6 +554,7 @@ class CharacterGenerationService:
                 "reference_type": ui_type,
                 "correction_prompt": correction_prompt,
                 "preserve_identity": params.get("preserve_identity", True),
+                "image_model": params.get("image_model"),
                 "_idempotency_key": (params or {}).get("_idempotency_key"),
             },
         )
@@ -781,6 +784,7 @@ class CharacterGenerationService:
         request_payload = {
             "variant_count": variant_count,
             "image_type": CharacterImageType.PORTRAIT,
+            "image_model": params.get("image_model"),
             "preserve_identity": preserve_identity,
             "visual_style": params.get("visual_style"),
             "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
@@ -928,7 +932,10 @@ class CharacterGenerationService:
         try:
             if job.provider_operation == "reference" and reference_bytes is None:
                 reference_bytes, mime_type = self._load_reference_input(job)
-            provider = get_image_provider(job.provider)
+            provider = get_image_provider(
+                job.provider,
+                provider_snapshot=job.provider_snapshot,
+            )
             if not mark_provider_started(lease):
                 return CharacterGenerationJob.objects.get(job_id=job_id)
             job.provider_deadline = time.monotonic() + lease.timeout_seconds

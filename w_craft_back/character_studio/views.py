@@ -34,6 +34,7 @@ from w_craft_back.character_studio.services.generation_lifecycle import (
     build_generation_preview,
     list_character_jobs,
     request_job_cancellation,
+    resolve_character_provider,
     retry_character_job,
     require_idempotency_key,
 )
@@ -245,6 +246,7 @@ def create_character_from_reference(request, project_id):
     )
     generation_params = {
         "_idempotency_key": idempotency_key,
+        "image_model": _form_value(request, "image_model") or None,
         "variant_count": _form_int(request, "variants_count")
         or _form_int(request, "variant_count") or 1,
         "preserve_identity": _form_bool(request, "use_image_as_identity", default=True)
@@ -254,6 +256,12 @@ def create_character_from_reference(request, project_id):
         "text_refinement": _form_value(request, "refinement")
         or _form_value(request, "text_refinement") or "",
     }
+    resolve_character_provider(
+        project=project,
+        actor=user,
+        request_payload=generation_params,
+        provider_operation="reference",
+    )
     request_hash = (
         _reference_creation_request_hash(
             uploaded,
@@ -376,7 +384,10 @@ def generation_preview(request, project_id, character_id):
     ]
     return ok(
         build_generation_preview(
-            actor=user, character=character, image_types=image_types
+            actor=user,
+            character=character,
+            image_types=image_types,
+            image_model=request.GET.get("image_model"),
         )
     )
 
