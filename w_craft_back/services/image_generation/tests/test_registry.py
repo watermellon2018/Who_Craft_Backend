@@ -63,6 +63,17 @@ class RegistryTest(TestCase):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "x"}):
             self.assertTrue(is_configured(spec))
 
+    def test_openrouter_flash_alias_uses_dedicated_images_api(self):
+        spec = MODEL_REGISTRY["openrouter-flash-image"]
+
+        self.assertEqual(spec.backend, "openrouter-images")
+        self.assertEqual(spec.mode, "images")
+        self.assertEqual(
+            spec.model_id,
+            "google/gemini-3.1-flash-image-preview",
+        )
+        self.assertEqual(spec.supported_parameters["n"]["max"], 1)
+
     def test_list_available_models_includes_all(self):
         with mock.patch(
             "w_craft_back.services.image_generation.registry._dynamic_specs",
@@ -133,3 +144,26 @@ class RegistryTest(TestCase):
             supports_reference=True,
         )
         self.assertEqual(deserialize_model_spec(serialize_model_spec(spec)), spec)
+
+    def test_legacy_openrouter_chat_snapshot_upgrades_to_images_api(self):
+        legacy = ModelSpec(
+            key="openrouter-flash-image",
+            label="Gemini Flash Image via OpenRouter",
+            backend="litellm",
+            model_id="openrouter/google/gemini-3.1-flash-image-preview",
+            mode="chat",
+            supports_generate=True,
+            supports_edit=True,
+            supports_reference=True,
+            supported_parameters={
+                "input_references": {"type": "range", "min": 0, "max": 1},
+                "n": {"type": "range", "min": 1, "max": 4},
+            },
+            input_modalities=("text", "image"),
+            output_modalities=("image", "text"),
+            requires_env=("OPENROUTER_API_KEY",),
+        )
+
+        restored = deserialize_model_spec(serialize_model_spec(legacy))
+
+        self.assertEqual(restored, MODEL_REGISTRY["openrouter-flash-image"])

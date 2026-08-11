@@ -76,19 +76,43 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     ),
     "openrouter-flash-image": ModelSpec(
         key="openrouter-flash-image",
-        label="Gemini Flash Image via OpenRouter",
-        backend="litellm",
-        model_id="openrouter/google/gemini-3.1-flash-image-preview",
-        mode="chat",
+        label="Gemini 3.1 Flash Image via OpenRouter",
+        backend="openrouter-images",
+        model_id="google/gemini-3.1-flash-image-preview",
+        mode="images",
         supports_generate=True,
         supports_edit=True,
         supports_reference=True,
+        description="Gemini image generation through the dedicated OpenRouter Images API.",
         supported_parameters={
-            "input_references": {"type": "range", "min": 0, "max": 1},
-            "n": {"type": "range", "min": 1, "max": 4},
+            "resolution": {
+                "type": "enum",
+                "values": ["512", "1K", "2K", "4K"],
+            },
+            "aspect_ratio": {
+                "type": "enum",
+                "values": [
+                    "1:1",
+                    "1:4",
+                    "1:8",
+                    "2:3",
+                    "3:2",
+                    "3:4",
+                    "4:1",
+                    "4:3",
+                    "4:5",
+                    "5:4",
+                    "8:1",
+                    "9:16",
+                    "16:9",
+                    "21:9",
+                ],
+            },
+            "input_references": {"type": "range", "min": 0, "max": 14},
+            "n": {"type": "range", "min": 1, "max": 1},
         },
         input_modalities=("text", "image"),
-        output_modalities=("image", "text"),
+        output_modalities=("image",),
         requires_env=("OPENROUTER_API_KEY",),
     ),
     "gemini-native": ModelSpec(
@@ -296,7 +320,7 @@ def deserialize_model_spec(snapshot: Mapping[str, Any] | str) -> ModelSpec:
     if not isinstance(description, str):
         raise ValueError("Model snapshot description must be a string")
 
-    return ModelSpec(
+    spec = ModelSpec(
         key=raw["key"],
         label=raw["label"],
         backend=raw["backend"],
@@ -316,6 +340,18 @@ def deserialize_model_spec(snapshot: Mapping[str, Any] | str) -> ModelSpec:
         requires_env=_string_tuple(raw.get("requires_env", []), "requires_env"),
         default=raw.get("default", False),
     )
+    if (
+        spec.key == "openrouter-flash-image"
+        and spec.backend == "litellm"
+        and spec.mode == "chat"
+        and spec.model_id
+        == "openrouter/google/gemini-3.1-flash-image-preview"
+    ):
+        # This legacy alias used OpenRouter chat-completions, which can return
+        # a text-only ModelResponse for image models. Route persisted jobs to
+        # the dedicated Images API without requiring live catalog discovery.
+        return MODEL_REGISTRY["openrouter-flash-image"]
+    return spec
 
 
 # Explicit aliases read naturally at job enqueue/consume call sites.

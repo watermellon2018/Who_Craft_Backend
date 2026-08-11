@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import math
 import os
 import re
@@ -16,6 +17,7 @@ from w_craft_back.storage_gateway import StorageGatewayError, normalize_image_by
 
 from .errors import (
     CODE_BAD_RESPONSE,
+    CODE_BLOCKED,
     CODE_EDIT_NOT_SUPPORTED,
     CODE_FORBIDDEN,
     CODE_IMAGE_INPUT_NOT_SUPPORTED,
@@ -25,6 +27,8 @@ from .errors import (
 )
 from .litellm_provider import _extract_image_api, _provider_output_count_limit
 from .registry import OPENROUTER_IMAGES_KEY_PREFIX, ModelSpec
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_CATALOG_TTL_SECONDS = 10 * 60
@@ -97,12 +101,52 @@ def _response_body(response: requests.Response) -> str | None:
     return body if isinstance(body, str) else None
 
 
+def _provider_error_tokens(
+    response: requests.Response,
+) -> tuple[str | None, str | None]:
+    """Extract bounded machine-readable diagnostics without logging raw bodies."""
+
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+    if not isinstance(payload, Mapping):
+        return None, None
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return None, None
+    metadata = error.get("metadata")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+
+    def safe_token(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", value):
+            return None
+        return value
+
+    return (
+        safe_token(metadata.get("error_type")),
+        safe_token(metadata.get("provider_code")),
+    )
+
+
 def _http_error(response: requests.Response) -> ImageProviderError:
     provider_status = int(getattr(response, "status_code", 0) or 0)
+    error_type, _ = _provider_error_tokens(response)
     common = {
         "provider_status": provider_status or None,
         "provider_body": _response_body(response),
     }
+    if error_type in {"content_policy_violation", "refusal"}:
+        return ImageProviderError(
+            code=CODE_BLOCKED,
+            message="OpenRouter заблокировал запрос правилами безопасности.",
+            http_status=400,
+            **common,
+        )
     if provider_status in {400, 422}:
         return ImageProviderError(
             code=CODE_BAD_RESPONSE,
@@ -691,7 +735,19 @@ class OpenRouterImagesProvider:
         except requests.RequestException as exc:
             raise _network_error() from exc
         if response.status_code != 200:
-            raise _http_error(response)
+            error = _http_error(response)
+            error_type, provider_code = _provider_error_tokens(response)
+            logger.warning(
+                "OpenRouter Images request rejected: model=%s status=%s "
+                "error_type=%s provider_code=%s body_length=%s body_hash=%s",
+                self.model_id,
+                error.provider_status,
+                error_type or "unknown",
+                provider_code or "unknown",
+                error.provider_body_length,
+                error.provider_body_hash,
+            )
+            raise error
         try:
             response_payload = response.json()
         except (TypeError, ValueError) as exc:
@@ -729,11 +785,11 @@ class OpenRouterImagesProvider:
             )
         n = _variant_count(self.spec, variant_count)
         payload: dict[str, Any] = {
-            "stream": False,
             "model": self.model_id,
             "prompt": prompt.strip(),
-            "n": n,
         }
+        if n > 1:
+            payload["n"] = n
         payload.update(self._options(aspect_ratio=aspect_ratio, kwargs=kwargs))
         return self._post(payload, timeout=kwargs.get("timeout"))
 
@@ -765,15 +821,16 @@ class OpenRouterImagesProvider:
             f"data:{normalized.mime_type};base64,"
             f"{base64.b64encode(normalized.data).decode('ascii')}"
         )
+        n = _variant_count(self.spec, variant_count)
         payload: dict[str, Any] = {
-            "stream": False,
             "model": self.model_id,
             "prompt": prompt.strip() if isinstance(prompt, str) else prompt,
-            "n": _variant_count(self.spec, variant_count),
             "input_references": [
                 {"type": "image_url", "image_url": {"url": data_url}}
             ],
         }
+        if n > 1:
+            payload["n"] = n
         if not isinstance(payload["prompt"], str) or not payload["prompt"]:
             raise ImageProviderError(
                 code=CODE_BAD_RESPONSE,

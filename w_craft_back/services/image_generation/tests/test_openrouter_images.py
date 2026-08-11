@@ -11,6 +11,7 @@ import requests
 
 from w_craft_back.services.image_generation.errors import (
     CODE_BAD_RESPONSE,
+    CODE_BLOCKED,
     CODE_FORBIDDEN,
     CODE_UNAVAILABLE,
     ImageProviderError,
@@ -244,8 +245,8 @@ class OpenRouterProviderTest(TestCase):
         payload = session.post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "openai/gpt-image-2")
         self.assertEqual(payload["prompt"], "a cat")
-        self.assertEqual(payload["n"], 1)
-        self.assertFalse(payload["stream"])
+        self.assertNotIn("n", payload)
+        self.assertNotIn("stream", payload)
         self.assertEqual(payload["aspect_ratio"], "1:1")
         self.assertNotIn("arbitrary_frontend_value", payload)
         self.assertNotIn("extra_body", payload)
@@ -255,6 +256,20 @@ class OpenRouterProviderTest(TestCase):
         )
         self.assertEqual(session.headers["HTTP-Referer"], "https://craft.example")
         self.assertEqual(session.headers["X-OpenRouter-Title"], "Craft")
+
+    def test_generate_sends_n_only_for_multiple_images(self):
+        session = _session(
+            post_response=_response(
+                200,
+                {"data": [{"b64_json": PNG_B64}, {"b64_json": PNG_B64}]},
+            )
+        )
+        provider = self._provider(session)
+
+        images = provider.generate("two cats", variant_count=2)
+
+        self.assertEqual(len(images), 2)
+        self.assertEqual(session.post.call_args.kwargs["json"]["n"], 2)
 
     def test_generate_accepts_data_url_in_b64_field(self):
         session = _session(
@@ -290,7 +305,10 @@ class OpenRouterProviderTest(TestCase):
         images = provider.generate_with_reference("restyle", PNG_BYTES)
 
         self.assertEqual(images, [NORMALIZED_PNG_BYTES])
-        reference = session.post.call_args.kwargs["json"]["input_references"][0]
+        payload = session.post.call_args.kwargs["json"]
+        self.assertNotIn("n", payload)
+        self.assertNotIn("stream", payload)
+        reference = payload["input_references"][0]
         self.assertEqual(reference["type"], "image_url")
         self.assertTrue(reference["image_url"]["url"].startswith(
             "data:image/png;base64,"
@@ -327,3 +345,36 @@ class OpenRouterProviderTest(TestCase):
                 )
                 self.assertIsNone(captured.exception.provider_body)
                 self.assertEqual(captured.exception.provider_body_length, 14)
+
+    def test_content_policy_error_is_classified_without_raw_body(self):
+        session = _session(
+            post_response=_response(
+                400,
+                {
+                    "error": {
+                        "message": "sensitive moderation detail",
+                        "metadata": {
+                            "error_type": "content_policy_violation",
+                            "provider_code": "safety_block",
+                        },
+                    }
+                },
+                text="sensitive moderation detail",
+            )
+        )
+        provider = self._provider(session)
+
+        with (
+            self.assertLogs(
+                "w_craft_back.services.image_generation.openrouter_images",
+                level="WARNING",
+            ) as logs,
+            self.assertRaises(ImageProviderError) as captured,
+        ):
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BLOCKED)
+        output = " ".join(logs.output)
+        self.assertIn("error_type=content_policy_violation", output)
+        self.assertIn("provider_code=safety_block", output)
+        self.assertNotIn("sensitive moderation detail", output)

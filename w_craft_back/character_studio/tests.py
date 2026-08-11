@@ -1217,6 +1217,30 @@ class CharacterListingTests(CharacterStudioTestCase):
         ids = [c["character_id"] for c in result]
         self.assertIn(str(character.character_id), ids)
 
+    def test_api_can_include_drafts_for_creation_recovery(self):
+        character = self.create_character()
+
+        default_response = APIClient().get(
+            f"/api/projects/{self.project.id}/characters",
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+        recovery_response = APIClient().get(
+            f"/api/projects/{self.project.id}/characters",
+            {"include_drafts": "true"},
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual(recovery_response.status_code, 200)
+        self.assertNotIn(
+            str(character.character_id),
+            [item["character_id"] for item in default_response.json()],
+        )
+        self.assertIn(
+            str(character.character_id),
+            [item["character_id"] for item in recovery_response.json()],
+        )
+
     def test_applying_a_variant_promotes_draft_to_active(self):
         # Generating + applying a portrait variant is the user's confirmation
         # that this is the character they want — the row should then show up

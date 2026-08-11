@@ -148,6 +148,12 @@ def characters_collection(request, project_id):
         filters = {
             "role": request.GET.get("role"),
             "search": request.GET.get("search"),
+            "status": (
+                "all"
+                if (request.GET.get("include_drafts") or "").lower()
+                in {"1", "true", "yes"}
+                else "visible"
+            ),
         }
         return ok(
             service.list_project_characters(user, project.id, filters), status=200,
