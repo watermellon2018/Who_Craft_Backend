@@ -236,6 +236,28 @@ class PromptCompilerTests(CharacterStudioTestCase):
         self.assertIn("Modify only outfit", result["edit_instruction"])
         self.assertIn("keep face", result["edit_instruction"])
 
+    def test_identity_anchored_age_change_does_not_preserve_old_age(self):
+        character = self.create_character()
+        character.age = 35
+        result = CharacterPromptCompiler().compile_identity_anchored(
+            character=character,
+            appearance=character.active_appearance,
+            outfit=None,
+            image_type="portrait",
+            params={
+                "controls": {"age": 35},
+                "changed_fields": ["age"],
+                "previous_values": {"age": 17},
+                "new_values": {"age": 35},
+            },
+        )
+
+        self.assertIn("Change age from 17 to 35", result["positive_prompt"])
+        self.assertIn("35-year-old", result["positive_prompt"])
+        self.assertNotIn(
+            "Preserve the same age presentation", result["positive_prompt"],
+        )
+
     def test_identity_lock_forces_preserve_identity(self):
         character = self.create_character()
         result = CharacterPromptCompiler().compile(
@@ -826,6 +848,54 @@ class PortraitSelectionTests(CharacterStudioTestCase):
             jobs_before,
             "apply_variant must not create new generation jobs",
         )
+
+    def test_secondary_variants_do_not_replace_canonical_portrait(self):
+        character = self.create_character()
+        portrait_job = CharacterGenerationService().create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1, "image_type": "portrait"},
+        )
+        portrait_asset = portrait_job.variants.first().asset
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            portrait_job.variants.first().variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        for image_type, region in (("full_body", "body"), ("scene", "style")):
+            secondary_job = CharacterGenerationService().generate_edit_variants(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                {
+                    "region": region,
+                    "image_type": image_type,
+                    "variant_count": 1,
+                    "preserve": {"identity": True},
+                    "controls": {},
+                },
+            )
+            secondary_variant = secondary_job.variants.first()
+            CharacterService().apply_variant(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                secondary_variant.variant_id,
+                {"image_type": image_type},
+            )
+            secondary_variant.asset.refresh_from_db()
+            self.assertFalse(secondary_variant.asset.is_primary)
+            self.assertFalse(secondary_variant.asset.is_canonical)
+
+        character.refresh_from_db()
+        portrait_asset.refresh_from_db()
+        self.assertEqual(character.canonical_reference_image_id, portrait_asset.asset_id)
+        self.assertTrue(portrait_asset.is_primary)
+        self.assertTrue(portrait_asset.is_canonical)
 
 
 # ---------------------------------------------------------------------------
@@ -2024,6 +2094,48 @@ class IdentityAnchoredEditTests(CharacterStudioTestCase):
         # Portrait edit must never carry a source_identity_asset_id — portrait
         # IS the identity source.
         self.assertIsNone(portrait.metadata.get("source_identity_asset_id"))
+
+    def test_portrait_edit_forwards_updated_age_to_identity_prompt(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            initial_job = self._edit("portrait", "face")
+            variant = initial_job.variants.first()
+            CharacterService().apply_variant(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                variant.variant_id,
+                {"apply_as": "current_reference", "image_type": "portrait"},
+            )
+            CharacterService().update_character(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                {"age": 35},
+            )
+            job = CharacterGenerationService().generate_edit_variants(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                {
+                    "region": "face",
+                    "image_type": "portrait",
+                    "variant_count": 1,
+                    "preserve": {"identity": True},
+                    "controls": {
+                        "age": 35,
+                        "changed_fields": ["age"],
+                        "previous_values": {"age": 17},
+                        "new_values": {"age": 35},
+                    },
+                    "changed_fields": ["age"],
+                    "previous_values": {"age": 17},
+                    "new_values": {"age": 35},
+                },
+            )
+
+        self.assertEqual(job.status, "completed")
+        self.assertIn("Change age from 17 to 35", job.compiled_prompt)
+        self.assertNotIn("Preserve the same age presentation", job.compiled_prompt)
 
 
 # ---------------------------------------------------------------------------
