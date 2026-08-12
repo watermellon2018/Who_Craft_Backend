@@ -1,0 +1,28 @@
+# Character Studio shape-only 3D reconstruction runtime.
+#
+# Install this file into the separate Conda environment selected by
+# MODEL3D_CONDA_ENV ("basic" by default), not into the Django backend
+# environment. These versions match the currently validated CUDA 12.1 setup.
+# Full upstream Hunyuan demos and texture generation have additional optional
+# dependencies in ../external/Hunyuan3D-2/requirements.txt.
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.2.1+cu121
+torchvision==0.17.1+cu121
+
+accelerate==1.12.0
+diffusers==0.32.2
+einops==0.8.1
+huggingface-hub==0.36.0
+mediapipe==0.10.14
+numpy==1.26.4
+opencv-contrib-python==4.9.0.80
+Pillow==12.2.0
+pymeshlab==2025.7.post1
+PyYAML==6.0.1
+safetensors==0.7.0
+scikit-image==0.25.2
+tqdm==4.66.1
+transformers==4.57.3
+trimesh==4.11.5
