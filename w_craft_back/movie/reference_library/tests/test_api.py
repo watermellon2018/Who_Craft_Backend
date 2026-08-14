@@ -41,7 +41,7 @@ def make_project(owner: User) -> Project:
     project = Project.objects.create(
         owner=owner,
         title="Reference film",
-        format="full-movie",
+        format="feature_film",
         annotation="",
         synopsis="",
     )

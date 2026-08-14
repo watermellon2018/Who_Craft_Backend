@@ -14,7 +14,7 @@ from w_craft_back.movie.project.dashboard_models import (
     SceneStatus,
     SceneType,
 )
-from w_craft_back.movie.project.models import ProjectStatus
+from w_craft_back.movie.project.models import ProjectFormat, ProjectStatus
 
 PROJECT_ANNOTATION_MAX_LENGTH = 800
 PROJECT_SYNOPSIS_MAX_LENGTH = 2000
@@ -25,18 +25,7 @@ PROJECT_SYNOPSIS_MAX_LENGTH = 2000
 
 # Format choices accepted on write paths. Stored as a plain string on
 # ``Project.format``, but validated here so the editor cannot push arbitrary values.
-PROJECT_FORMAT_CHOICES = (
-    ("short_film", "Короткометражный фильм"),
-    ("feature_film", "Полнометражный фильм"),
-    ("series", "Сериал"),
-    ("clip", "Клип"),
-    ("commercial", "Реклама"),
-    ("other", "Другое"),
-    # Legacy values still present in some rows / older frontend builds.
-    ("full-movie", "Полнометражный фильм (legacy)"),
-    ("short-movie", "Короткометражка (legacy)"),
-    ("marketing", "Реклама (legacy)"),
-)
+PROJECT_FORMAT_CHOICES = ProjectFormat.choices
 
 PROJECT_TARGET_AUDIENCE_CHOICES = (
     ("all", "Все"),

@@ -292,18 +292,6 @@
           "403": {"$ref": "#/components/responses/MusicError"},
           "404": {"$ref": "#/components/responses/MusicError"}
         }
-      },
-      "post": {
-        "operationId": "createLegacyMusicTrackMetadata",
-        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
-        "description": "Compatibility endpoint for creating a metadata-only track.",
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackRequest"}}}},
-        "responses": {
-          "201": {"description": "Track metadata created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackResponse"}}}},
-          "400": {"$ref": "#/components/responses/MusicError"},
-          "401": {"$ref": "#/components/responses/MusicError"},
-          "403": {"$ref": "#/components/responses/MusicError"}
-        }
       }
     },
     "/api/projects/{projectId}/music/capabilities/": {
@@ -911,7 +899,7 @@
         "type": "object",
         "properties": {
           "title": {"type": "string", "maxLength": 255},
-          "format": {"type": "string"},
+          "format": {"type": "string", "enum": ["short_film", "feature_film", "series", "clip", "commercial", "other"]},
           "genre": {"type": "array", "items": {"type": "string"}},
           "audience": {"type": "array", "items": {"type": "string"}},
           "annotation": {"type": "string", "maxLength": 800},
@@ -937,7 +925,7 @@
           "isFavorite": {"type": "boolean"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "stats": {"type": "object", "additionalProperties": true},
-          "format": {"type": "string"},
+          "format": {"type": "string", "enum": ["short_film", "feature_film", "series", "clip", "commercial", "other"]},
           "genre": {"type": "array", "items": {"type": "string"}},
           "audience": {"type": "array", "items": {"type": "string"}},
           "annotation": {"type": "string"},
@@ -1023,8 +1011,7 @@
           "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
           "createdAt": {"type": "string", "format": "date-time", "nullable": true},
           "createdById": {"type": "integer", "nullable": true},
-          "provenance": {"type": "object", "additionalProperties": true},
-          "legacy": {"type": "boolean"}
+          "provenance": {"type": "object", "additionalProperties": true}
         }
       },
       "MusicTrackSummary": {
@@ -1036,7 +1023,7 @@
           "author": {"type": "string"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "status": {"type": "string", "enum": ["active", "archived"]},
-          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "source": {"type": "string", "enum": ["manual", "generated"]},
           "version": {"type": "integer"},
           "activeVersion": {"$ref": "#/components/schemas/MusicTrackVersion", "nullable": true},
           "usageCount": {"type": "integer"},
@@ -1075,7 +1062,7 @@
           "activeVersionNumber": {"type": "integer", "nullable": true},
           "activeVersion": {"$ref": "#/components/schemas/DashboardMusicTrackVersion", "nullable": true},
           "version": {"type": "integer"},
-          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "source": {"type": "string", "enum": ["manual", "generated"]},
           "usageCount": {"type": "integer"},
           "usageLabel": {"type": "string"}
         }
@@ -1102,22 +1089,6 @@
             }
           }
         ]
-      },
-      "LegacyMusicTrackRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["title"],
-        "properties": {
-          "title": {"type": "string", "maxLength": 255},
-          "author": {"type": "string", "maxLength": 255},
-          "duration_seconds": {"type": "integer", "minimum": 0},
-          "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}}
-        }
-      },
-      "LegacyMusicTrackResponse": {
-        "type": "object",
-        "required": ["id", "title"],
-        "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}
       },
       "MusicCapabilities": {
         "type": "object",
@@ -1336,12 +1307,12 @@
       "MusicTrackPatchRequest": {
         "type": "object",
         "additionalProperties": false,
+        "required": ["expectedTrackVersion"],
         "properties": {
-          "version": {"type": "integer", "minimum": 1},
+          "expectedTrackVersion": {"type": "integer", "minimum": 1},
           "title": {"type": "string", "maxLength": 255},
           "author": {"type": "string", "maxLength": 255},
           "durationSeconds": {"type": "integer", "minimum": 0},
-          "duration_seconds": {"type": "integer", "minimum": 0, "deprecated": true},
           "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}},
           "activeVersionId": {"type": "string", "format": "uuid"}
         }
@@ -1457,7 +1428,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "number": {"type": "integer", "minimum": 1},
-          "origin": {"type": "string", "enum": ["upload", "generated", "edit", "legacy"]},
+          "origin": {"type": "string", "enum": ["upload", "generated", "edit"]},
           "imageUrl": {"type": "string", "nullable": true},
           "thumbnailUrl": {"type": "string", "nullable": true},
           "provider": {"type": "string", "nullable": true},

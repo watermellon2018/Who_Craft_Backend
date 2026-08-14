@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from django.conf import settings
 from rest_framework import serializers
 
@@ -295,19 +297,29 @@ class ReferenceUploadSerializer(serializers.Serializer):
 
 
 class TrackPatchSerializer(serializers.Serializer):
-    # ``version`` and ``duration_seconds`` were optional in the legacy detail
-    # endpoint. New clients can still opt into optimistic conflict detection.
-    version = serializers.IntegerField(min_value=1, required=False)
+    expectedTrackVersion = serializers.IntegerField(min_value=1)
     title = serializers.CharField(max_length=255, required=False)
     author = serializers.CharField(max_length=255, allow_blank=True, required=False)
     durationSeconds = serializers.IntegerField(min_value=0, required=False)
-    duration_seconds = serializers.IntegerField(min_value=0, required=False)
     tags = serializers.ListField(
         child=serializers.CharField(max_length=50),
         max_length=30,
         required=False,
     )
     activeVersionId = serializers.UUIDField(allow_null=False, required=False)
+
+    def to_internal_value(self, data: Mapping[str, object]) -> dict:
+        if not isinstance(data, Mapping):
+            return super().to_internal_value(data)
+        unknown_fields = sorted(set(data.keys()) - set(self.fields))
+        if unknown_fields:
+            raise serializers.ValidationError(
+                {
+                    field: ["Unknown field."]
+                    for field in unknown_fields
+                }
+            )
+        return super().to_internal_value(data)
 
     def validate_title(self, value: str) -> str:
         title = value.strip()
@@ -320,23 +332,6 @@ class TrackPatchSerializer(serializers.Serializer):
         if any(not value for value in normalized):
             raise serializers.ValidationError("Tags cannot be empty.")
         return _validate_unique(normalized, "Tag")
-
-    def validate(self, attrs: dict) -> dict:
-        camel_duration = attrs.get("durationSeconds")
-        legacy_duration = attrs.get("duration_seconds")
-        if (
-            camel_duration is not None
-            and legacy_duration is not None
-            and camel_duration != legacy_duration
-        ):
-            raise serializers.ValidationError(
-                {
-                    "duration_seconds": (
-                        "Must match durationSeconds when both fields are supplied."
-                    )
-                }
-            )
-        return attrs
 
 
 class ArchiveTrackSerializer(serializers.Serializer):
@@ -390,22 +385,3 @@ class ApplyVariantSerializer(serializers.Serializer):
                 {"expectedTrackVersion": "This field is required for an existing track."}
             )
         return attrs
-
-
-class LegacyMetadataTrackSerializer(serializers.Serializer):
-    """Temporary compatibility contract for the existing collection POST."""
-
-    title = serializers.CharField(max_length=255)
-    author = serializers.CharField(
-        max_length=255,
-        allow_blank=True,
-        required=False,
-        default="",
-    )
-    duration_seconds = serializers.IntegerField(required=False, min_value=0, default=0)
-    tags = serializers.ListField(
-        child=serializers.CharField(max_length=50),
-        required=False,
-        allow_empty=True,
-        default=list,
-    )

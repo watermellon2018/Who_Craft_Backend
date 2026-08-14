@@ -507,11 +507,7 @@ def _music_payload(project: Project, request, limit: int = 5) -> list[dict]:
             active_version_id = str(active_version.id)
             active_version_number = active_version.version_number
         else:
-            audio_url = _absolute_url(
-                request,
-                t.audio_file,
-                project=project,
-            )
+            audio_url = None
             duration_seconds = float(t.duration_seconds or 0)
             active_version_id = None
             active_version_number = None

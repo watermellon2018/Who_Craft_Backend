@@ -35,7 +35,7 @@ class ProjectMutationPreauthorizationTests(TestCase):
         self.project = Project.objects.create(
             owner=owner,
             title="Preauth",
-            format="full-movie",
+            format="feature_film",
             annotation="",
             synopsis="",
         )

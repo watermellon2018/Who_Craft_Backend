@@ -30,7 +30,7 @@ class CharacterActorAttributionTests(TestCase):
         self.project = Project.objects.create(
             owner=owner,
             title="Shared character",
-            format="full-movie",
+            format="feature_film",
             annotation="",
             synopsis="",
         )

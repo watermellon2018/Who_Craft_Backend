@@ -21,7 +21,7 @@ def _project(owner: User, title: str) -> Project:
     project = Project.objects.create(
         owner=owner,
         title=title,
-        format="full-movie",
+        format="feature_film",
         annotation="",
         synopsis="",
         status=ProjectStatus.IN_PROGRESS,

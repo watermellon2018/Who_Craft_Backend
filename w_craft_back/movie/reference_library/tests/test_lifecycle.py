@@ -35,7 +35,7 @@ class ReferenceLifecycleTests(TestCase):
         self.project = Project.objects.create(
             owner=self.user,
             title="Film",
-            format="full-movie",
+            format="feature_film",
             annotation="",
             synopsis="",
         )

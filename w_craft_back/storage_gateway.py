@@ -690,7 +690,7 @@ def probe_stored_audio(
     *,
     max_bytes: int | None = None,
 ) -> NormalizedAudio:
-    """Boundedly validate an existing managed object for legacy metadata backfill."""
+    """Boundedly validate a managed audio object for metadata completion."""
 
     key = safe_storage_key(storage_key)
     byte_limit = max_bytes or _positive_setting(

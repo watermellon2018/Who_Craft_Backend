@@ -1,4 +1,4 @@
-"""Poster generation models for the project poster page (`/create-project/gen-poster`).
+"""Poster generation models for the project poster workspace.
 
 Three entities, owned by ``w_craft_back`` so existing migrations stay coherent:
 

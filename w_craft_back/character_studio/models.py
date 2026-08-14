@@ -25,6 +25,13 @@ class CharacterRole(models.TextChoices):
     CAMEO = "cameo", "Камео"
 
 
+class HairLength(models.TextChoices):
+    BALD = "bald", "Bald"
+    SHORT = "short", "Short"
+    MEDIUM = "medium", "Medium"
+    LONG = "long", "Long"
+
+
 class CharacterStatus(models.TextChoices):
     # A character that has been started but not yet confirmed by the user.
     # We persist drafts because generation needs a character_id to attach
@@ -327,7 +334,12 @@ class CharacterAppearance(models.Model):
     nose_shape = models.CharField(max_length=100, blank=True, default="")
     lips_shape = models.CharField(max_length=100, blank=True, default="")
     jawline = models.CharField(max_length=100, blank=True, default="")
-    hair_length = models.CharField(max_length=100, blank=True, default="")
+    hair_length = models.CharField(
+        max_length=16,
+        choices=HairLength.choices,
+        blank=True,
+        default="",
+    )
     hair_style = models.CharField(max_length=100, blank=True, default="")
     hair_color = models.CharField(max_length=100, blank=True, default="")
     hair_details = models.JSONField(default=dict, blank=True)
@@ -352,6 +364,12 @@ class CharacterAppearance(models.Model):
     class Meta:
         db_table = "character_appearances"
         indexes = [models.Index(fields=["character"], name="character_a_charact_7741ba_idx")]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(hair_length__in=("", *HairLength.values)),
+                name="chk_character_hair_length_canonical",
+            ),
+        ]
 
 
 class CharacterOutfit(models.Model):

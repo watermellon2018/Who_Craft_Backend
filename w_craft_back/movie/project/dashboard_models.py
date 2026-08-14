@@ -165,9 +165,7 @@ class ProjectMember(models.Model):
     def __str__(self):
         return f"{self.user_id}@{self.project_id} ({self.role})"
 
-    # ``access_role`` is the task's canonical name for the permission role.
-    # Expose it as a property over the legacy ``role`` column so call sites can
-    # use the clearer name without a disruptive column rename.
+    # Explicit permission-oriented alias for the stored membership role.
     @property
     def access_role(self) -> str:
         return self.role
@@ -362,7 +360,6 @@ class SceneCharacter(models.Model):
 class MusicTrackSource(models.TextChoices):
     MANUAL = "manual", "Manual"
     GENERATED = "generated", "Generated"
-    LEGACY = "legacy", "Legacy"
 
 
 class MusicTrack(models.Model):
@@ -416,6 +413,20 @@ class MusicTrack(models.Model):
         indexes = [
             models.Index(fields=["project"]),
             models.Index(fields=["project", "updated_at"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(source__in=MusicTrackSource.values),
+                name="chk_music_track_source_canonical",
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(audio_file__isnull=True)
+                    | models.Q(audio_file="")
+                    | models.Q(active_version__isnull=False)
+                ),
+                name="chk_music_track_audio_versioned",
+            ),
         ]
 
     def clean(self) -> None:

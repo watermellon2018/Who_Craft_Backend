@@ -18,7 +18,7 @@ def make_project(owner: User, title: str = "Music project") -> Project:
         owner=owner,
         title=title,
         summary="",
-        format="full-movie",
+        format="feature_film",
         annotation="",
         synopsis="",
     )

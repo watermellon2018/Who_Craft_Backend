@@ -11,10 +11,19 @@ class ProjectStatus(models.TextChoices):
     ARCHIVED = "archived", "В архиве"
 
 
+class ProjectFormat(models.TextChoices):
+    SHORT_FILM = "short_film", "Короткометражный фильм"
+    FEATURE_FILM = "feature_film", "Полнометражный фильм"
+    SERIES = "series", "Сериал"
+    CLIP = "clip", "Клип"
+    COMMERCIAL = "commercial", "Реклама"
+    OTHER = "other", "Другое"
+
+
 class Project(models.Model):
     title = models.CharField(max_length=255)
     genres = models.ManyToManyField(Genre)
-    format = models.CharField(max_length=255)
+    format = models.CharField(max_length=32, choices=ProjectFormat.choices)
     audiences = models.ManyToManyField(Audience)
     annotation = models.TextField()
     synopsis = models.TextField()
@@ -48,6 +57,12 @@ class Project(models.Model):
             models.Index(fields=["owner", "updated_at"]),
             models.Index(fields=["status"]),
             models.Index(fields=["slug"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(format__in=ProjectFormat.values),
+                name="chk_project_format_canonical",
+            ),
         ]
 
     def __str__(self):

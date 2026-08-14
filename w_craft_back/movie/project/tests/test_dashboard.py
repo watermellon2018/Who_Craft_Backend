@@ -43,7 +43,7 @@ def _make_project(owner: User, *, title: str = "Demo") -> Project:
     project = Project.objects.create(
         owner=owner,
         title=title,
-        format="full-movie",
+        format="feature_film",
         annotation="",
         synopsis="legacy desc",
         summary="dashboard description",
@@ -232,7 +232,10 @@ class DashboardShapeTests(TestCase):
             reference=reference,
             version_number=1,
             asset=asset,
-            source_type=ReferenceSourceType.LEGACY,
+            source_type=ReferenceSourceType.UPLOAD,
+            rights_confirmed_by=self.owner,
+            rights_confirmed_at=timezone.now(),
+            rights_statement_version="reference-upload-v1",
             created_by=self.owner,
         )
         reference.active_version = version
@@ -279,10 +282,10 @@ class DashboardShapeTests(TestCase):
             project=self.project,
             file="tests/music/versioned.wav",
             asset_role="generated",
-            origin="legacy",
+            origin="upload",
             original_name="versioned.wav",
             duration_seconds=Decimal("12.500"),
-            verification_status="legacy_unverified",
+            verification_status="pending",
         )
         version = MusicTrackVersion.objects.create(
             track=track,
@@ -308,14 +311,12 @@ class DashboardShapeTests(TestCase):
         self.assertIsNotNone(music["audioUrlExpiresAt"])
         self.assertNotIn("tests/music/versioned.wav", music["audioUrl"])
 
-    def test_music_retains_signed_legacy_audio_fallback(self):
-        track = MusicTrack.objects.create(
+    def test_music_without_active_version_has_no_audio(self):
+        MusicTrack.objects.create(
             project=self.project,
-            title="Legacy score",
+            title="Unversioned score",
             duration_seconds=31,
         )
-        track.audio_file.name = "projects/music/legacy.mp3"
-        track.save(update_fields=["audio_file", "updated_at"])
 
         data = self._get()
 
@@ -324,8 +325,8 @@ class DashboardShapeTests(TestCase):
         self.assertIsNone(music["activeVersionNumber"])
         self.assertIsNone(music["activeVersion"])
         self.assertEqual(music["durationSeconds"], 31.0)
-        self.assertIsNotNone(music["audioUrl"])
-        self.assertNotIn("projects/music/legacy.mp3", music["audioUrl"])
+        self.assertIsNone(music["audioUrl"])
+        self.assertIsNone(music["audioUrlExpiresAt"])
 
     def test_music_hides_archived_tracks(self):
         MusicTrack.objects.create(
@@ -351,10 +352,10 @@ class DashboardShapeTests(TestCase):
                 project=self.project,
                 file=f"tests/music/{index}.wav",
                 asset_role="generated",
-                origin="legacy",
+                origin="upload",
                 original_name=f"{index}.wav",
                 duration_seconds=Decimal("10.000"),
-                verification_status="legacy_unverified",
+                verification_status="pending",
             )
             version = MusicTrackVersion.objects.create(
                 track=track,

@@ -25,7 +25,6 @@ from w_craft_back.movie.music.serializers import (
     ArchiveTrackSerializer,
     AssignmentReplaceSerializer,
     GenerationCreateSerializer,
-    LegacyMetadataTrackSerializer,
     ReferenceUploadSerializer,
     TrackPatchSerializer,
 )
@@ -72,7 +71,7 @@ def handle_music_errors(handler: Callable) -> Callable:
 
 
 class MusicAuthedView(APIView):
-    """Music endpoints deliberately never accept legacy body credentials."""
+    """Music endpoints accept credentials only through the standard header."""
 
     @staticmethod
     def actor(request):
@@ -97,20 +96,6 @@ class MusicCollectionView(MusicAuthedView):
             offset=request.query_params.get("offset", 0),
         )
         return Response(payload)
-
-    @handle_music_errors
-    def post(self, request, project_id: int):
-        """Preserve the existing metadata-only POST request and response."""
-
-        serializer = LegacyMetadataTrackSerializer(data=request.data)
-        if not serializer.is_valid():
-            raise validation_error(serializer.errors)
-        payload = services.create_legacy_metadata_track(
-            actor=self.actor(request),
-            project_id=project_id,
-            data=serializer.validated_data,
-        )
-        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class MusicCapabilitiesView(MusicAuthedView):

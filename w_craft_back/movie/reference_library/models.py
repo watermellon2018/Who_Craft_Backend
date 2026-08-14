@@ -26,7 +26,6 @@ class ReferenceSourceType(models.TextChoices):
     UPLOAD = "upload", "Upload"
     GENERATED = "generated", "Generated"
     EDIT = "edit", "Edit"
-    LEGACY = "legacy", "Legacy"
 
 
 class ReferenceOperation(models.TextChoices):
@@ -213,7 +212,11 @@ class ReferenceVersion(models.Model):
             models.UniqueConstraint(
                 fields=["reference", "version_number"],
                 name="uniq_reference_version_number",
-            )
+            ),
+            models.CheckConstraint(
+                check=models.Q(source_type__in=ReferenceSourceType.values),
+                name="chk_reference_version_source_canonical",
+            ),
         ]
 
     def clean(self) -> None:

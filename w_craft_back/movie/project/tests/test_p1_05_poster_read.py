@@ -16,7 +16,7 @@ class PosterReadBoundaryTests(TestCase):
         project = Project.objects.create(
             owner=owner,
             title="Read only",
-            format="full-movie",
+            format="feature_film",
             annotation="",
             synopsis="",
         )

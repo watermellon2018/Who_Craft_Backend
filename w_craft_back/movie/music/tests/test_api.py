@@ -53,7 +53,7 @@ def _project(owner: User, key: UserKey, title: str) -> Project:
     project = Project.objects.create(
         owner=owner,
         title=title,
-        format="full-movie",
+        format="feature_film",
         annotation="",
         synopsis="",
     )
@@ -280,7 +280,7 @@ class MusicApiTests(TestCase):
         return job, variant
 
     def test_every_music_view_requires_header_token(self) -> None:
-        legacy_body = self.client.post(
+        body_token = self.client.post(
             self.root,
             {
                 "token_user": str(self.owner_key.key),
@@ -293,53 +293,96 @@ class MusicApiTests(TestCase):
             {"token_user": str(self.owner_key.key)},
         )
 
-        self.assertEqual(legacy_body.status_code, 401)
+        self.assertEqual(body_token.status_code, 401)
         self.assertEqual(query_token.status_code, 401)
 
-    def test_legacy_metadata_post_keeps_payload_and_response(self) -> None:
+    def test_metadata_only_collection_post_is_not_supported(self) -> None:
         response = self.client.post(
             self.root,
             {
                 "title": "Metadata only",
                 "author": "Composer",
-                "duration_seconds": 0,
+                "durationSeconds": 0,
                 "tags": ["draft"],
             },
             format="json",
             **self._header(),
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(set(response.json()), {"id", "title"})
-        self.assertEqual(response.json()["title"], "Metadata only")
+        self.assertEqual(response.status_code, 405)
+        self.assertFalse(MusicTrack.objects.filter(title="Metadata only").exists())
 
-    def test_track_patch_accepts_legacy_shape_and_preserves_optional_lock(self) -> None:
+    def test_track_patch_requires_canonical_shape_and_version_lock(self) -> None:
         track, _version = self._track_with_version()
         url = f"{self.root}{track.id}/"
 
-        legacy = self.client.patch(url, {"title": "Legacy editor", "duration_seconds": 48}, format="json", **self._header())
-        self.assertEqual(legacy.status_code, 200, legacy.json())
-        self.assertEqual(legacy.json()["version"], 2)
-        self.assertEqual(legacy.json()["activeVersion"]["durationSeconds"], 12.0)
+        canonical = self.client.patch(
+            url,
+            {
+                "expectedTrackVersion": 1,
+                "title": "Canonical editor",
+                "durationSeconds": 48,
+            },
+            format="json",
+            **self._header(),
+        )
+        self.assertEqual(canonical.status_code, 200, canonical.json())
+        self.assertEqual(canonical.json()["version"], 2)
+        self.assertEqual(canonical.json()["activeVersion"]["durationSeconds"], 12.0)
         track.refresh_from_db()
         self.assertEqual(track.duration_seconds, 48)
 
-        stale = self.client.patch(url, {"version": 1, "durationSeconds": 49}, format="json", **self._header())
+        stale = self.client.patch(
+            url,
+            {"expectedTrackVersion": 1, "durationSeconds": 49},
+            format="json",
+            **self._header(),
+        )
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.json()["currentVersion"], 2)
 
-        current = self.client.patch(url, {"version": 2, "durationSeconds": 49}, format="json", **self._header())
+        current = self.client.patch(
+            url,
+            {"expectedTrackVersion": 2, "durationSeconds": 49},
+            format="json",
+            **self._header(),
+        )
         self.assertEqual(current.status_code, 200, current.json())
         self.assertEqual(current.json()["version"], 3)
         track.refresh_from_db()
         self.assertEqual(track.duration_seconds, 49)
 
-        no_op = self.client.patch(url, {"version": 3}, format="json", **self._header())
+        no_op = self.client.patch(
+            url,
+            {"expectedTrackVersion": 3},
+            format="json",
+            **self._header(),
+        )
         self.assertEqual(no_op.status_code, 200, no_op.json())
         self.assertEqual(no_op.json()["version"], 3)
 
-        conflicting_aliases = self.client.patch(url, {"durationSeconds": 50, "duration_seconds": 51}, format="json", **self._header())
-        self.assertEqual(conflicting_aliases.status_code, 400)
+        snake_case = self.client.patch(
+            url,
+            {"expectedTrackVersion": 3, "duration_seconds": 51},
+            format="json",
+            **self._header(),
+        )
+        self.assertEqual(snake_case.status_code, 400)
+        missing_lock = self.client.patch(
+            url,
+            {"durationSeconds": 50},
+            format="json",
+            **self._header(),
+        )
+        self.assertEqual(missing_lock.status_code, 400)
+
+        malformed = self.client.patch(
+            url,
+            [],
+            format="json",
+            **self._header(),
+        )
+        self.assertEqual(malformed.status_code, 400)
 
     def test_capabilities_and_enqueue_honor_bounded_seed(self) -> None:
         capabilities = self.client.get(f"{self.root}capabilities/", **self._header())

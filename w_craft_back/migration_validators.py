@@ -1,8 +1,10 @@
+"""Stable helpers referenced by historical Django migrations."""
+
 from django.core.exceptions import ValidationError
 
 
-def validate_birth_date(value: object) -> None:
-    """Validate the historical Character.birth_date migration field."""
+def validate_birth_date(value):
+    """Validate the birth-date format used by the initial schema."""
 
     try:
         day, month, year = map(int, str(value).split("."))

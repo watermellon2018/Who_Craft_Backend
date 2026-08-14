@@ -13,6 +13,7 @@ from w_craft_back.character_studio.models import (
     CharacterAssetStatus,
     CharacterAssetType,
     CharacterImageType,
+    HairLength,
     CharacterRole,
     CharacterStatus,
     CharacterType,
@@ -548,6 +549,11 @@ class CharacterService:
             value = payload[source]
             if value in (None, "") and source not in empty_ok:
                 continue
+            if source == "hair_length" and value not in HairLength.values:
+                raise ValidationError(
+                    "hair_length is invalid. Allowed values: "
+                    f"{', '.join(HairLength.values)}."
+                )
             if target == "height_cm":
                 # Coerce + clamp to a sane range; PositiveSmallIntegerField accepts 0–32767.
                 try:

@@ -76,7 +76,7 @@ class Command(BaseCommand):
                 ),
                 status=ProjectStatus.IN_PROGRESS,
                 is_favorite=True,
-                format="full-movie",
+                format="feature_film",
                 annotation="Demo project for dashboard.",
             )
             self.stdout.write(f"Created project #{project.id} '{project.title}'.")

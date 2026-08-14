@@ -46,7 +46,7 @@ from w_craft_back.movie.music.serializers import (
     music_max_lyrics_chars,
     music_min_duration_seconds,
 )
-from w_craft_back.movie.project import policy, project_mutations
+from w_craft_back.movie.project import policy
 from w_craft_back.movie.project.dashboard_models import (
     MusicTrack,
     Scene,
@@ -55,10 +55,7 @@ from w_craft_back.movie.project.dashboard_models import (
 )
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.services import record_activity
-from w_craft_back.storage_gateway import (
-    StorageGatewayError,
-    signed_url_for_file,
-)
+from w_craft_back.storage_gateway import StorageGatewayError
 
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
@@ -185,7 +182,7 @@ def _asset_url(asset, request) -> str | None:
 def _asset_payload(asset, request, *, include_name: bool = False) -> dict | None:
     verification_statuses = {
         "verified": "accepted",
-        "legacy_unverified": "pending",
+        "pending": "pending",
         "missing": "rejected",
     }
     if asset is None:
@@ -251,26 +248,11 @@ def _version_payload(version, request) -> dict | None:
     }
 
 
-def _legacy_active_version_payload(track: MusicTrack, request) -> dict | None:
-    if not track.audio_file:
-        return None
-    audio_url = signed_url_for_file(track.audio_file, request, project=track.project)
-    return {
-        "versionId": None,
-        "versionNumber": None,
-        "durationSeconds": track.duration_seconds or None,
-        "mimeType": None,
-        "audioUrl": audio_url,
-        "audioUrlExpiresAt": _signed_expiry(audio_url),
-        "legacy": True,
-    }
-
-
 def _track_summary_payload(track: MusicTrack, request) -> dict:
     active = (
         _version_payload(track.active_version, request)
         if track.active_version_id
-        else _legacy_active_version_payload(track, request)
+        else None
     )
     return {
         "id": track.id,
@@ -347,24 +329,6 @@ def list_tracks(
         "page": {"limit": page_limit, "offset": page_offset, "total": total},
         "permissions": _permission_payload(actor, project),
     }
-
-
-def create_legacy_metadata_track(
-    *, actor: User, project_id: int, data: Mapping[str, Any]
-) -> dict:
-    _project_for_action(actor, project_id, policy.Action.EDIT_CONTENT)
-    try:
-        track = project_mutations.create_music_track(
-            actor=actor,
-            action=policy.Action.EDIT_CONTENT,
-            project_id=project_id,
-            data=data,
-        )
-    except Project.DoesNotExist as exc:
-        raise ProjectNotFound("Project was not found.") from exc
-    except project_mutations.ProjectMutationForbidden as exc:
-        raise PermissionDenied("You do not have permission for this operation.") from exc
-    return {"id": track.id, "title": track.title}
 
 
 def get_capabilities(*, actor: User, project_id: int) -> dict:
@@ -707,8 +671,8 @@ def update_track(
     )
     if track is None:
         raise TrackNotFound("Track was not found.")
-    expected_version = data.get("version")
-    if expected_version is not None and track.version != expected_version:
+    expected_version = data["expectedTrackVersion"]
+    if track.version != expected_version:
         raise VersionConflict(track.version)
     changed_fields = []
     for public_name, field_name in (
@@ -719,10 +683,8 @@ def update_track(
         if public_name in data:
             setattr(track, field_name, data[public_name])
             changed_fields.append(field_name)
-    if "durationSeconds" in data or "duration_seconds" in data:
-        track.duration_seconds = data.get(
-            "durationSeconds", data.get("duration_seconds")
-        )
+    if "durationSeconds" in data:
+        track.duration_seconds = data["durationSeconds"]
         changed_fields.append("duration_seconds")
     if "activeVersionId" in data:
         _MusicAsset, _MusicGenerationJob, MusicTrackVersion, _MusicVariant = (
