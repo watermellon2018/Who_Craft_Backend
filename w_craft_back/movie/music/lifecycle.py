@@ -391,6 +391,8 @@ def enqueue_music_job(
                         "markup": "0",
                         "creditUsdRate": "1",
                     },
+                    project=project,
+                    operation="generate",
                 )
         except IntegrityError:
             existing = MusicGenerationJob.objects.select_for_update().get(

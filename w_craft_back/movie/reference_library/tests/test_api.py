@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import tempfile
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -12,6 +13,7 @@ from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import StudioCharacter
+from w_craft_back.credits.models import CreditAccount
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     ProjectMember,
@@ -288,6 +290,10 @@ class ReferenceApiTests(TestCase):
 
     @override_settings(REFERENCE_IMAGE_PROVIDER="registry")
     def test_registry_generation_persists_generated_image_version(self):
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1.00"),
+        )
         created = self.create_reference()
         jobs_url = f"{self.collection_url}{created['id']}/generation-jobs/"
         provider = RegistryReferenceStubProvider()

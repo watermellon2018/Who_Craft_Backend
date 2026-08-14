@@ -287,6 +287,7 @@ class ReferenceGenerationJob(models.Model):
     )
     variant_count = models.PositiveSmallIntegerField(default=1)
     requested_model = models.CharField(max_length=128, blank=True, default="")
+    provider_snapshot = models.JSONField(default=dict, blank=True)
     idempotency_key = models.CharField(max_length=128)
     request_fingerprint = models.CharField(max_length=64)
     status = models.CharField(

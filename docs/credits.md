@@ -1,8 +1,9 @@
-# Craft credits MVP
+# Craft credits and generation routing
 
 Craft credits are an internal, non-withdrawable product balance. The MVP gives
 each authenticated user an account, an append-only operation history, a local
-demo top-up, transfers to another Craft login, and 30-day movement statistics.
+demo top-up, transfers to another Craft login, generation spending statistics,
+and guarded model routing.
 It does not connect to a bank, payment processor, OpenRouter balance, or Gemini
 account.
 
@@ -17,16 +18,27 @@ All endpoints require the normal `X-User-Token` access header.
 | `POST /api/credits/demo-top-up/` | Add demo credits when the feature flag is enabled |
 | `POST /api/credits/transfers/` | Atomically transfer available credits to an exact Django login |
 | `POST /api/credits/generation-estimate/` | Estimate the provider-native cost and check the available balance before enqueue |
+| `GET /api/credits/spending-statistics/` | Captured generation costs by domain, project, and day for 7/30/90/365 days |
+| `POST /api/credits/admin/operations/` | Staff-only adjustment, refund, freeze, or unfreeze with a required reason |
+| `GET /api/credits/admin/audit/` | Staff-only immutable audit for one user's wallet |
 
 Both POST operations require an `Idempotency-Key` header. Replaying the same
 key and payload returns the original operation without changing balances. Using
 the key for different data returns `409 IDEMPOTENCY_KEY_REUSED`.
 
-Amounts are decimal strings with up to six fractional digits, so small
+Administrative operations also require an idempotency key. Amounts are decimal strings with up to six fractional digits, so small
 provider charges are not rounded away. A transfer can use any
 available credits, including credits received through the demo top-up or another
 transfer. Reserved credits cannot be transferred. Transfers are not
-withdrawable or reversible through this MVP.
+withdrawable. Per-transfer and rolling 24-hour amount/count limits are exposed
+by the summary endpoint and configured through `CREDITS_TRANSFER_MAX_AMOUNT`,
+`CREDITS_TRANSFER_DAILY_LIMIT`, and `CREDITS_TRANSFER_DAILY_COUNT_LIMIT`.
+
+A staff member can freeze a wallet while reviewing abuse or accounting issues.
+Frozen wallets cannot start generation, top up, send, or receive transfers.
+Existing reservations can still settle so money is not stranded. Every manual
+adjustment, refund, freeze, and unfreeze stores the actor, reason, amount, and
+idempotency key in append-only `CreditAdminAuditEvent` rows.
 
 ## Persistence and lifecycle
 
@@ -43,6 +55,17 @@ job creation. Insufficient balance aborts the enqueue. On success, Craft
 captures the provider-reported cost and releases any unused reservation. On
 failure or cancellation it releases the full reservation. Replayed lifecycle
 events do not charge twice.
+
+For image generation the request can use `manual`, `economy`, `fast`,
+`balanced`, or `quality` routing. Manual mode keeps the model chosen by the
+user. Automatic modes deterministically rank only configured, compatible model
+specifications and persist the decision with the durable job. They can retry
+one fallback only for provider configuration, authorization, availability, or
+upstream failures; validation and safety failures never switch provider. Craft
+reserves the sum of the primary and fallback estimates and never charges an
+automatic route above that confirmed bound. The job billing payload records
+the selected provider/model and sanitized attempt results without prompts or
+generated content.
 
 One Craft credit currently equals one US dollar of provider cost and the Craft
 markup is zero. There is no editable Craft price catalog: tariff snapshots live
@@ -65,6 +88,11 @@ billing metadata.
 Keep it disabled in production. The frontend reads the capability from the
 summary endpoint and hides the demo control when unavailable.
 
-There is no real payment webhook, bank refund, cash withdrawal, currency
-exchange, provider-invoice reconciliation, or automated AI-provider routing in
-this MVP.
+`CREDITS_LOW_BALANCE_THRESHOLD` controls the warning returned by the summary
+endpoint. It does not block generation; the normal reservation check remains
+authoritative.
+
+There is no real payment webhook, cash withdrawal, currency exchange, or
+provider-invoice reconciliation. Routing uses maintained static quality/speed
+priorities and configured provider availability; it does not benchmark live
+latency or let an LLM make billing decisions.

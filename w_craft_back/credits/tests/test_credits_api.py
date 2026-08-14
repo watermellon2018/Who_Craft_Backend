@@ -11,13 +11,16 @@ from rest_framework.test import APIClient
 from w_craft_back.auth.models import UserKey
 from w_craft_back.credits.models import (
     CreditAccount,
+    CreditAdminAuditEvent,
     CreditLedgerEntry,
     CreditOperationType,
     GenerationCharge,
     GenerationChargeStatus,
 )
+from w_craft_back.movie.project.models import Project
 from w_craft_back.credits.services import (
     InsufficientCredits,
+    capture_generation,
     capture_provider_generation,
     demo_top_up,
     release_generation,
@@ -59,6 +62,8 @@ class CreditsApiTest(TestCase):
                 "availableBalance": "0.00",
                 "reservedBalance": "0.00",
                 "totalBalance": "0.00",
+                "isFrozen": False,
+                "freezeReason": "",
             },
         )
         self.assertTrue(response.json()["capabilities"]["demoTopUpEnabled"])
@@ -368,6 +373,149 @@ class CreditsApiTest(TestCase):
         self.assertEqual(response.json()["pricingSource"], "google")
         self.assertTrue(response.json()["sufficientBalance"])
 
+    @override_settings(
+        CREDITS_DEMO_TOP_UP_ENABLED=True,
+        CREDITS_TRANSFER_MAX_AMOUNT="10.00",
+        CREDITS_TRANSFER_DAILY_LIMIT="15.00",
+        CREDITS_TRANSFER_DAILY_COUNT_LIMIT=2,
+    )
+    def test_transfer_limits_and_frozen_wallet_are_enforced(self):
+        self._top_up(amount="100.00")
+        too_large = self.client.post(
+            reverse("credit-transfer"),
+            {"username": "test", "amount": "11.00"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="transfer-limit-large",
+            **self.auth,
+        )
+        self.assertEqual(too_large.status_code, 429)
+
+        account = CreditAccount.objects.get(user=self.user)
+        account.is_frozen = True
+        account.freeze_reason = "Security review"
+        account.save(update_fields=["is_frozen", "freeze_reason", "updated_at"])
+        frozen = self.client.post(
+            reverse("credit-transfer"),
+            {"username": "test", "amount": "1.00"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="transfer-frozen-wallet",
+            **self.auth,
+        )
+        summary = self.client.get(reverse("credit-summary"), **self.auth)
+        self.assertEqual(frozen.status_code, 423)
+        self.assertTrue(summary.json()["account"]["isFrozen"])
+        self.assertFalse(summary.json()["capabilities"]["transfersEnabled"])
+
+    def test_staff_manual_operations_are_audited_and_idempotent(self):
+        staff = User.objects.create_user(
+            username="wallet-admin",
+            password="password",
+            is_staff=True,
+        )
+        staff_auth = {
+            "HTTP_X_USER_TOKEN": UserKey.objects.create(user=staff).key,
+        }
+        payload = {
+            "username": self.user.username,
+            "action": "adjustment",
+            "amount": "25.50",
+            "reason": "Demo support credit",
+        }
+        created = self.client.post(
+            reverse("credit-admin-operation"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-adjustment-001",
+            **staff_auth,
+        )
+        replay = self.client.post(
+            reverse("credit-admin-operation"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-adjustment-001",
+            **staff_auth,
+        )
+        forbidden = self.client.post(
+            reverse("credit-admin-operation"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-adjustment-002",
+            **self.auth,
+        )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(
+            CreditAccount.objects.get(user=self.user).available_balance,
+            Decimal("25.50"),
+        )
+        self.assertEqual(CreditAdminAuditEvent.objects.count(), 1)
+
+        frozen = self.client.post(
+            reverse("credit-admin-operation"),
+            {
+                "username": self.user.username,
+                "action": "freeze",
+                "reason": "Charge review",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-freeze-wallet-001",
+            **staff_auth,
+        )
+        audit = self.client.get(
+            reverse("credit-admin-audit"),
+            {"username": self.user.username},
+            **staff_auth,
+        )
+        self.assertEqual(frozen.status_code, 201)
+        self.assertEqual(audit.status_code, 200)
+        self.assertEqual(len(audit.json()["items"]), 2)
+
+    def test_generation_spending_statistics_group_project_domain_and_period(self):
+        project = Project.objects.create(
+            owner=self.user,
+            title="Film",
+            format="other",
+            annotation="",
+            synopsis="",
+        )
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.00"),
+        )
+        reserve_generation(
+            user=self.user,
+            domain="poster",
+            job_id="stats-poster-1",
+            provider="test",
+            model_name="test-model",
+            estimated_cost=Decimal("0.25"),
+            reservation_amount=Decimal("0.25"),
+            project=project,
+            operation="generate",
+        )
+
+        class Provider:
+            def usage_snapshot(self):
+                return {"costUsd": "0.20", "costSource": "provider"}
+
+        capture_provider_generation(
+            domain="poster",
+            job_id="stats-poster-1",
+            provider=Provider(),
+        )
+        response = self.client.get(
+            reverse("credit-spending-statistics"),
+            {"periodDays": 30},
+            **self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["totalCharged"], "0.20")
+        self.assertEqual(response.json()["byDomain"][0]["domain"], "poster")
+        self.assertEqual(response.json()["byProject"][0]["projectTitle"], "Film")
+
 
 class GenerationCreditSettlementTest(TestCase):
     def setUp(self):
@@ -463,6 +611,31 @@ class GenerationCreditSettlementTest(TestCase):
         self.assertFalse(GenerationCharge.objects.exists())
         self.account.refresh_from_db()
         self.assertEqual(self.account.available_balance, Decimal("1.000000"))
+
+    def test_automatic_route_never_charges_above_confirmed_reservation(self):
+        reserve_generation(
+            user=self.user,
+            domain="character",
+            job_id="bounded-route",
+            provider="gemini-native",
+            model_name="gemini-2.5-flash-image",
+            estimated_cost=Decimal("0.030000"),
+            reservation_amount=Decimal("0.050000"),
+            routing_mode="economy",
+        )
+
+        settled = capture_generation(
+            domain="character",
+            job_id="bounded-route",
+            actual_cost=Decimal("0.080000"),
+        )
+
+        self.assertEqual(settled.charge.actual_cost, Decimal("0.080000"))
+        self.assertEqual(settled.charge.charged_amount, Decimal("0.050000"))
+        self.assertEqual(settled.charge.uncovered_cost, Decimal("0.030000"))
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.available_balance, Decimal("0.950000"))
+        self.assertEqual(self.account.reserved_balance, Decimal("0.000000"))
 
 
 class CreditTransferConcurrencyTest(TransactionTestCase):

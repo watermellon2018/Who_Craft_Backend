@@ -145,6 +145,9 @@ def retry_poster_job(
         idempotency_key=f"retry:{locked.pk}:{retry_number}",
         request_hash=locked.request_hash,
         requested_model=locked.requested_model,
+        routing_mode=str(
+            (locked.provider_snapshot or {}).get("routingMode") or "manual"
+        ),
         reference_storage_key=locked.reference_storage_key,
         reference_mime_type=locked.reference_mime_type,
         reference_image_url=locked.reference_image_url,

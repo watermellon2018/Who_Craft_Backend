@@ -83,6 +83,11 @@ class GenerationCreateSerializer(ExpectedReferenceVersionSerializer):
     sourceVersionId = serializers.UUIDField(required=False, allow_null=True)
     variantCount = serializers.IntegerField()
     imageModel = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    routingMode = serializers.ChoiceField(
+        choices=("manual", "economy", "fast", "balanced", "quality"),
+        required=False,
+        default="manual",
+    )
     brief = serializers.JSONField(required=False)
     editInstruction = serializers.CharField(
         required=False,

@@ -315,6 +315,37 @@ def resolve_character_provider(
     if requested_key and len(requested_key) > 255:
         raise ValidationError("image_model max length is 255.")
 
+    routing_mode = str(
+        (request_payload or {}).get("routing_mode")
+        or (request_payload or {}).get("routingMode")
+        or "manual"
+    ).strip().lower()
+    if routing_mode != "manual":
+        from w_craft_back.services.image_generation.routing import (
+            build_routing_decision,
+        )
+
+        try:
+            decision = build_routing_decision(
+                mode=routing_mode,
+                requested_model=requested_key,
+                operation=provider_operation,
+            )
+        except ImageProviderError as exc:
+            raise CharacterStudioError(
+                message=exc.message,
+                error_code=exc.code,
+                status_code=exc.http_status,
+            ) from exc
+        spec = decision.primary.spec
+        return CharacterProviderSelection(
+            key=spec.key,
+            source="routing",
+            snapshot=decision.snapshot(),
+            model_name=spec.backend,
+            model_version=spec.model_id,
+        )
+
     try:
         normalized = (requested_key or "").lower()
         if normalized in {"mock", "gemini", "google", "imagen"}:
@@ -864,15 +895,40 @@ def _reserve_character_generation(job: CharacterGenerationJob) -> None:
         if part
     )
     try:
-        estimate = estimate_for_pinned_provider(
-            provider=job.provider,
-            provider_snapshot=job.provider_snapshot,
-            model_name=job.model_version,
-            operation="edit" if job.provider_operation == "edit" else "generate",
-            variant_count=job.variant_count,
-            prompt=prompt,
-            resolution=str((job.request_payload or {}).get("resolution") or "1K"),
+        operation = (
+            "reference"
+            if job.provider_operation == "reference"
+            else "edit" if job.provider_operation == "edit" else "generate"
         )
+        route_snapshot = dict(job.provider_snapshot or {})
+        if route_snapshot.get("candidates"):
+            from w_craft_back.services.image_generation.routing import (
+                estimate_route_snapshot,
+            )
+
+            estimate, reservation_amount, pricing_snapshot = estimate_route_snapshot(
+                route_snapshot,
+                operation=operation,
+                variant_count=job.variant_count,
+                prompt=prompt,
+                resolution=str(
+                    (job.request_payload or {}).get("resolution") or "1K"
+                ),
+            )
+        else:
+            estimate = estimate_for_pinned_provider(
+                provider=job.provider,
+                provider_snapshot=job.provider_snapshot,
+                model_name=job.model_version,
+                operation="edit" if job.provider_operation == "edit" else "generate",
+                variant_count=job.variant_count,
+                prompt=prompt,
+                resolution=str(
+                    (job.request_payload or {}).get("resolution") or "1K"
+                ),
+            )
+            reservation_amount = estimate.reservation_amount
+            pricing_snapshot = estimate.snapshot
         reserve_generation(
             user=job.actor.user,
             domain="character",
@@ -880,8 +936,11 @@ def _reserve_character_generation(job: CharacterGenerationJob) -> None:
             provider=estimate.provider,
             model_name=estimate.model_name,
             estimated_cost=estimate.estimated_cost,
-            reservation_amount=estimate.reservation_amount,
-            pricing_snapshot=estimate.snapshot,
+            reservation_amount=reservation_amount,
+            pricing_snapshot=pricing_snapshot,
+            project=job.project,
+            operation=job.provider_operation,
+            routing_mode=str(route_snapshot.get("routingMode") or "manual"),
         )
     except CreditServiceError as exc:
         raise CharacterStudioError(

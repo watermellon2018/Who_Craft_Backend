@@ -60,6 +60,20 @@
         }
       }
     },
+    "/api/credits/spending-statistics/": {
+      "get": {
+        "operationId": "getCreditSpendingStatistics",
+        "parameters": [
+          {"name": "periodDays", "in": "query", "schema": {"type": "integer", "enum": [7, 30, 90, 365], "default": 30}},
+          {"name": "projectId", "in": "query", "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Generation spending grouped by day, project and domain", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditSpendingStatistics"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/api/credits/demo-top-up/": {
       "post": {
         "operationId": "createCreditDemoTopUp",
@@ -97,6 +111,36 @@
           "401": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"},
           "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/admin/operations/": {
+      "post": {
+        "operationId": "createCreditAdminOperation",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
+          "201": {"description": "Manual wallet operation recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/admin/audit/": {
+      "get": {
+        "operationId": "getCreditAdminAudit",
+        "parameters": [
+          {"name": "username", "in": "query", "required": true, "schema": {"type": "string", "maxLength": 150}}
+        ],
+        "responses": {
+          "200": {"description": "Append-only manual wallet audit", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminAudit"}}}},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -916,11 +960,13 @@
       },
       "CreditAccount": {
         "type": "object",
-        "required": ["availableBalance", "reservedBalance", "totalBalance"],
+        "required": ["availableBalance", "reservedBalance", "totalBalance", "isFrozen", "freezeReason"],
         "properties": {
           "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
           "reservedBalance": {"$ref": "#/components/schemas/CreditAmount"},
-          "totalBalance": {"$ref": "#/components/schemas/CreditAmount"}
+          "totalBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "isFrozen": {"type": "boolean"},
+          "freezeReason": {"type": "string"}
         }
       },
       "CreditStatistics": {
@@ -936,19 +982,39 @@
       },
       "CreditCapabilities": {
         "type": "object",
-        "required": ["demoTopUpEnabled", "transfersEnabled"],
+        "required": ["demoTopUpEnabled", "transfersEnabled", "adminWalletManagement"],
         "properties": {
           "demoTopUpEnabled": {"type": "boolean"},
-          "transfersEnabled": {"type": "boolean"}
+          "transfersEnabled": {"type": "boolean"},
+          "adminWalletManagement": {"type": "boolean"}
+        }
+      },
+      "CreditAlerts": {
+        "type": "object",
+        "required": ["lowBalance", "lowBalanceThreshold"],
+        "properties": {
+          "lowBalance": {"type": "boolean"},
+          "lowBalanceThreshold": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "CreditTransferLimits": {
+        "type": "object",
+        "required": ["perTransfer", "rollingDay", "rollingDayCount"],
+        "properties": {
+          "perTransfer": {"$ref": "#/components/schemas/CreditAmount"},
+          "rollingDay": {"$ref": "#/components/schemas/CreditAmount"},
+          "rollingDayCount": {"type": "integer", "minimum": 0}
         }
       },
       "CreditSummary": {
         "type": "object",
-        "required": ["account", "stats", "capabilities"],
+        "required": ["account", "stats", "capabilities", "alerts", "transferLimits"],
         "properties": {
           "account": {"$ref": "#/components/schemas/CreditAccount"},
           "stats": {"$ref": "#/components/schemas/CreditStatistics"},
-          "capabilities": {"$ref": "#/components/schemas/CreditCapabilities"}
+          "capabilities": {"$ref": "#/components/schemas/CreditCapabilities"},
+          "alerts": {"$ref": "#/components/schemas/CreditAlerts"},
+          "transferLimits": {"$ref": "#/components/schemas/CreditTransferLimits"}
         }
       },
       "CreditOperationType": {
@@ -1037,6 +1103,85 @@
           "replayed": {"type": "boolean"}
         }
       },
+      "CreditSpendingGroup": {
+        "type": "object",
+        "required": ["charged", "jobCount"],
+        "properties": {
+          "domain": {"type": "string"},
+          "projectId": {"type": "integer", "nullable": true},
+          "projectTitle": {"type": "string"},
+          "date": {"type": "string", "format": "date"},
+          "charged": {"$ref": "#/components/schemas/CreditAmount"},
+          "jobCount": {"type": "integer", "minimum": 0}
+        }
+      },
+      "CreditSpendingStatistics": {
+        "type": "object",
+        "required": ["periodDays", "totalCharged", "jobCount", "byDomain", "byProject", "timeline"],
+        "properties": {
+          "periodDays": {"type": "integer"},
+          "totalCharged": {"$ref": "#/components/schemas/CreditAmount"},
+          "jobCount": {"type": "integer", "minimum": 0},
+          "byDomain": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}},
+          "byProject": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}},
+          "timeline": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}}
+        }
+      },
+      "CreditAdminOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["username", "action", "reason"],
+        "properties": {
+          "username": {"type": "string", "maxLength": 150},
+          "action": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze"]},
+          "amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "reason": {"type": "string", "maxLength": 255}
+        }
+      },
+      "CreditAdminAuditEvent": {
+        "type": "object",
+        "required": ["id", "eventType", "amount", "reason", "actor", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "eventType": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze"]},
+          "amount": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "reason": {"type": "string"},
+          "actor": {"type": "string", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditAdminOperationResponse": {
+        "type": "object",
+        "required": ["account", "auditEvent", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "auditEvent": {"$ref": "#/components/schemas/CreditAdminAuditEvent"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "CreditAdminAudit": {
+        "type": "object",
+        "required": ["username", "account", "items"],
+        "properties": {
+          "username": {"type": "string"},
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CreditAdminAuditEvent"}}
+        }
+      },
+      "GenerationRoutingMode": {
+        "type": "string",
+        "enum": ["manual", "economy", "fast", "balanced", "quality"]
+      },
+      "GenerationRouteCandidate": {
+        "type": "object",
+        "required": ["modelKey", "modelName", "provider", "estimatedCost"],
+        "properties": {
+          "modelKey": {"type": "string"},
+          "modelName": {"type": "string"},
+          "provider": {"type": "string"},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
       "GenerationCostEstimateRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -1047,12 +1192,13 @@
           "modelKey": {"type": "string", "maxLength": 300},
           "variantCount": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1},
           "promptLength": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
-          "resolution": {"type": "string", "enum": ["512", "1K", "2K", "4K"], "default": "1K"}
+          "resolution": {"type": "string", "enum": ["512", "1K", "2K", "4K"], "default": "1K"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
         }
       },
       "GenerationCostEstimate": {
         "type": "object",
-        "required": ["domain", "operation", "provider", "modelKey", "modelName", "currency", "estimatedCost", "reservationAmount", "pricingSource", "costIsEstimate", "availableBalance", "sufficientBalance"],
+        "required": ["domain", "operation", "provider", "modelKey", "modelName", "currency", "estimatedCost", "reservationAmount", "pricingSource", "costIsEstimate", "availableBalance", "sufficientBalance", "accountFrozen", "routingMode", "routingReason", "routeCandidates"],
         "properties": {
           "domain": {"type": "string"},
           "operation": {"type": "string"},
@@ -1065,12 +1211,16 @@
           "pricingSource": {"type": "string"},
           "costIsEstimate": {"type": "boolean"},
           "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
-          "sufficientBalance": {"type": "boolean"}
+          "sufficientBalance": {"type": "boolean"},
+          "accountFrozen": {"type": "boolean"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
+          "routingReason": {"type": "string"},
+          "routeCandidates": {"type": "array", "items": {"$ref": "#/components/schemas/GenerationRouteCandidate"}}
         }
       },
       "GenerationBilling": {
         "type": "object",
-        "required": ["status", "currency", "estimatedCost", "reservedAmount", "actualCost", "chargedAmount", "uncoveredCost", "costIsEstimate", "provider", "model"],
+        "required": ["status", "currency", "estimatedCost", "reservedAmount", "actualCost", "chargedAmount", "uncoveredCost", "costIsEstimate", "provider", "model", "operation", "routingMode", "routingAttempts"],
         "properties": {
           "status": {"type": "string", "enum": ["reserved", "captured", "released"]},
           "currency": {"type": "string", "enum": ["USD"]},
@@ -1081,7 +1231,10 @@
           "uncoveredCost": {"$ref": "#/components/schemas/CreditAmount"},
           "costIsEstimate": {"type": "boolean"},
           "provider": {"type": "string"},
-          "model": {"type": "string"}
+          "model": {"type": "string"},
+          "operation": {"type": "string"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
+          "routingAttempts": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
         }
       },
       "CharacterTreeNode": {
@@ -1128,7 +1281,8 @@
           "format": {"type": "string", "enum": ["vertical", "square", "horizontal"]},
           "reference_image_url": {"type": "string"},
           "reference_image_asset_id": {"type": "integer"},
-          "image_model": {"type": "string", "maxLength": 128}
+          "image_model": {"type": "string", "maxLength": 128},
+          "routing_mode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
         }
       },
       "PosterGenerateMultipartRequest": {
@@ -1156,7 +1310,8 @@
         "properties": {
           "jobId": {"type": "integer"},
           "status": {"type": "string", "enum": ["queued", "processing", "completed", "failed", "cancelled"]},
-          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/PosterVariant"}}
+          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/PosterVariant"}},
+          "billing": {"allOf": [{"$ref": "#/components/schemas/GenerationBilling"}], "nullable": true}
         }
       },
       "ProjectMutationRequest": {
@@ -1849,6 +2004,7 @@
           "sourceVersionId": {"type": "string", "format": "uuid", "nullable": true},
           "variantCount": {"type": "integer", "enum": [1, 2, 4]},
           "imageModel": {"type": "string", "maxLength": 128},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
           "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
           "editInstruction": {"type": "string", "maxLength": 2000}
         },
@@ -1886,6 +2042,7 @@
           "attempts": {"type": "integer", "minimum": 0},
           "canCancel": {"type": "boolean"},
           "canRetry": {"type": "boolean"},
+          "billing": {"allOf": [{"$ref": "#/components/schemas/GenerationBilling"}], "nullable": true},
           "error": {"oneOf": [{"$ref": "#/components/schemas/ReferenceGenerationError"}, {"type": "object", "nullable": true, "enum": [null]}]},
           "createdAt": {"type": "string", "format": "date-time"},
           "completedAt": {"type": "string", "format": "date-time", "nullable": true}

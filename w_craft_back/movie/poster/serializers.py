@@ -39,6 +39,11 @@ class PosterGenerateSerializer(serializers.Serializer):
         allow_blank=False,
         max_length=128,
     )
+    routing_mode = serializers.ChoiceField(
+        choices=("manual", "economy", "fast", "balanced", "quality"),
+        required=False,
+        default="manual",
+    )
 
     def validate_prompt(self, value: str) -> str:
         cleaned = (value or "").strip()
@@ -65,6 +70,11 @@ class PosterEditSerializer(serializers.Serializer):
         required=False,
         allow_blank=False,
         max_length=128,
+    )
+    routing_mode = serializers.ChoiceField(
+        choices=("manual", "economy", "fast", "balanced", "quality"),
+        required=False,
+        default="manual",
     )
 
 

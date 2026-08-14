@@ -328,6 +328,7 @@ def generate_poster(
     reference_image_url: str = "",
     reference_image_asset_id: Optional[int] = None,
     image_model: str | None = None,
+    routing_mode: str = "manual",
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -384,6 +385,7 @@ def generate_poster(
             "reference_asset_id": reference_image_asset_id,
             "reference_mime_type": reference_mime_type,
             "image_model": image_model,
+            "routing_mode": routing_mode,
         },
         reference_image_bytes,
     )
@@ -398,6 +400,7 @@ def generate_poster(
             idempotency_key=key,
             request_hash=fingerprint,
             requested_model=image_model or "",
+            routing_mode=routing_mode,
             reference_storage_key=reference_storage_key,
             reference_mime_type=reference_mime_type if reference_storage_key else "",
             reference_asset=reference_asset,
@@ -514,6 +517,7 @@ def edit_poster(
     instruction: str,
     idempotency_key: str = "",
     image_model: str | None = None,
+    routing_mode: str = "manual",
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -545,6 +549,7 @@ def edit_poster(
             "source_variant_id": source.id,
             "instruction": instruction,
             "image_model": image_model,
+            "routing_mode": routing_mode,
         }
     )
     try:
@@ -561,6 +566,7 @@ def edit_poster(
             reference_mime_type=source_mime_type,
             source_variant=source,
             requested_model=image_model or "",
+            routing_mode=routing_mode,
             use_mock=run_mock,
         )
     except Exception:

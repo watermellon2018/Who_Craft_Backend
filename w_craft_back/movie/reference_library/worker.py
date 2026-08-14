@@ -129,11 +129,18 @@ def _finalize_outputs(
 def _provider_for_job(job: ReferenceGenerationJob):
     if job.provider == "mock":
         return DeterministicReferenceMockProvider()
-    provider = resolve_pinned_reference_provider(
-        actor=job.actor,
-        requested_model=job.requested_model,
-        require_edit=job.operation == ReferenceOperation.EDIT,
-    )
+    if job.provider_snapshot:
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        provider = provider_from_route_snapshot(job.provider_snapshot)
+    else:
+        provider = resolve_pinned_reference_provider(
+            actor=job.actor,
+            requested_model=job.requested_model,
+            require_edit=job.operation == ReferenceOperation.EDIT,
+        )
     if provider.name != job.provider or provider.model_id != job.model_name:
         raise ReferenceError(
             "The pinned image provider configuration changed.",

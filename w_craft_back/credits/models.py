@@ -50,6 +50,16 @@ class CreditAccount(models.Model):
         decimal_places=6,
         default=0,
     )
+    is_frozen = models.BooleanField(default=False, db_index=True)
+    freeze_reason = models.CharField(max_length=255, blank=True, default="")
+    frozen_at = models.DateTimeField(null=True, blank=True)
+    frozen_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="frozen_credit_accounts",
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -169,7 +179,16 @@ class GenerationCharge(models.Model):
         on_delete=models.CASCADE,
         related_name="generation_charges",
     )
+    project = models.ForeignKey(
+        "w_craft_back.Project",
+        on_delete=models.SET_NULL,
+        related_name="generation_charges",
+        null=True,
+        blank=True,
+    )
     domain = models.CharField(max_length=32)
+    operation = models.CharField(max_length=32, default="generate")
+    routing_mode = models.CharField(max_length=16, default="manual")
     job_id = models.CharField(max_length=64)
     provider = models.CharField(max_length=128, blank=True, default="")
     model_name = models.CharField(max_length=300, blank=True, default="")
@@ -225,4 +244,85 @@ class GenerationCharge(models.Model):
                 fields=["account", "created_at"],
                 name="generation_charge_acct_created",
             ),
+            models.Index(
+                fields=["account", "settled_at"],
+                name="generation_charge_acct_settled",
+            ),
+            models.Index(
+                fields=["project", "settled_at"],
+                name="generation_charge_proj_settled",
+            ),
         ]
+
+
+class CreditAdminEventType(models.TextChoices):
+    ADJUSTMENT = "adjustment", "Balance adjustment"
+    REFUND = "refund", "Manual refund"
+    FREEZE = "freeze", "Wallet frozen"
+    UNFREEZE = "unfreeze", "Wallet unfrozen"
+
+
+class ImmutableCreditAdminAuditQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("Credit administration audit events are immutable.")
+
+    def delete(self):
+        raise ValidationError("Credit administration audit is append-only.")
+
+
+class CreditAdminAuditEvent(models.Model):
+    """Append-only audit record for every manual wallet operation."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(
+        CreditAccount,
+        on_delete=models.CASCADE,
+        related_name="admin_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="credit_admin_audit_events",
+        null=True,
+        blank=True,
+    )
+    event_type = models.CharField(
+        max_length=16,
+        choices=CreditAdminEventType.choices,
+    )
+    amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    reason = models.CharField(max_length=255)
+    idempotency_key = models.CharField(max_length=64)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = ImmutableCreditAdminAuditQuerySet.as_manager()
+
+    class Meta:
+        db_table = "credit_admin_audit_events"
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "idempotency_key"],
+                name="credit_admin_audit_account_idem_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["account", "created_at"],
+                name="credit_admin_acct_created",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Credit administration audit events are immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Credit administration audit is append-only.")

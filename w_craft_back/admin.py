@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from w_craft_back.credits.models import (
     CreditAccount,
+    CreditAdminAuditEvent,
     CreditLedgerEntry,
     GenerationCharge,
 )
@@ -27,6 +28,7 @@ class CreditAccountAdmin(admin.ModelAdmin):
         "user",
         "available_balance",
         "reserved_balance",
+        "is_frozen",
         "updated_at",
     )
     search_fields = ("user__username",)
@@ -102,11 +104,38 @@ class GenerationChargeAdmin(admin.ModelAdmin):
         "charged_amount",
         "created_at",
     )
-    list_filter = ("domain", "provider", "status", "cost_is_estimate")
+    list_filter = ("domain", "provider", "status", "cost_is_estimate", "routing_mode")
     search_fields = ("account__user__username", "job_id", "model_name")
     raw_id_fields = ("account",)
     readonly_fields = tuple(
         field.name for field in GenerationCharge._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CreditAdminAuditEvent)
+class CreditAdminAuditEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "event_type",
+        "amount",
+        "actor",
+        "created_at",
+    )
+    list_filter = ("event_type",)
+    search_fields = ("account__user__username", "actor__username", "reason")
+    raw_id_fields = ("account", "actor")
+    readonly_fields = tuple(
+        field.name for field in CreditAdminAuditEvent._meta.fields
     )
 
     def has_add_permission(self, request):

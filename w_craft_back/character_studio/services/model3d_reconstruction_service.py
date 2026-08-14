@@ -359,6 +359,8 @@ def ensure_reconstruction(
             "markup": "0",
             "creditUsdRate": "1",
         },
+        project=locked_character.project,
+        operation="reconstruct",
     )
     relative_path = (
         f"character-studio/model3d/{locked_character.character_id}/"

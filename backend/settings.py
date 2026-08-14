@@ -40,6 +40,22 @@ CREDITS_DEMO_TOP_UP_ENABLED = os.getenv(
     "CREDITS_DEMO_TOP_UP_ENABLED",
     "true" if DEBUG else "false",
 ).lower() in {"1", "true", "yes", "on"}
+CREDITS_LOW_BALANCE_THRESHOLD = os.getenv(
+    "CREDITS_LOW_BALANCE_THRESHOLD",
+    "1.00",
+)
+CREDITS_TRANSFER_MAX_AMOUNT = os.getenv(
+    "CREDITS_TRANSFER_MAX_AMOUNT",
+    "1000.00",
+)
+CREDITS_TRANSFER_DAILY_LIMIT = os.getenv(
+    "CREDITS_TRANSFER_DAILY_LIMIT",
+    "2000.00",
+)
+CREDITS_TRANSFER_DAILY_COUNT_LIMIT = int(os.getenv(
+    "CREDITS_TRANSFER_DAILY_COUNT_LIMIT",
+    "20",
+))
 
 ALLOWED_HOSTS = [
     h.strip()

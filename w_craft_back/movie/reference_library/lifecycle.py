@@ -411,6 +411,7 @@ def retry_reference_job(
             source_version=original.source_version,
             variant_count=original.variant_count,
             requested_model=original.requested_model,
+            provider_snapshot=original.provider_snapshot,
             idempotency_key=f"retry:{original.id}",
             request_fingerprint=original.request_fingerprint,
             max_attempts=original.max_attempts,
@@ -425,7 +426,7 @@ def retry_reference_job(
         if original_charge is not None:
             try:
                 reserve_generation(
-                    user=actor.user,
+                    user=actor,
                     domain="reference",
                     job_id=str(retry.id),
                     provider=original_charge.provider,
@@ -433,6 +434,12 @@ def retry_reference_job(
                     estimated_cost=original_charge.estimated_cost,
                     reservation_amount=original_charge.reserved_amount,
                     pricing_snapshot=original_charge.pricing_snapshot,
+                    project=original.project,
+                    operation=original.operation,
+                    routing_mode=str(
+                        (original.provider_snapshot or {}).get("routingMode")
+                        or "manual"
+                    ),
                 )
             except CreditServiceError as error:
                 raise ReferenceConflict(

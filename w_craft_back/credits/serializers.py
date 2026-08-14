@@ -49,3 +49,21 @@ class GenerationEstimateSerializer(serializers.Serializer):
         choices=("512", "1K", "2K", "4K"),
         default="1K",
     )
+    routingMode = serializers.ChoiceField(
+        choices=("manual", "economy", "fast", "balanced", "quality"),
+        default="manual",
+    )
+
+
+class CreditAdminOperationSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150, trim_whitespace=True)
+    action = serializers.ChoiceField(
+        choices=("adjustment", "refund", "freeze", "unfreeze")
+    )
+    amount = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+    )
+    reason = serializers.CharField(max_length=255, trim_whitespace=True)

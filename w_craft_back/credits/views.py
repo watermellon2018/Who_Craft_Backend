@@ -3,28 +3,37 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
-from .pricing import GenerationEstimate, estimate_for_model_key
+from .pricing import GenerationEstimate
 from .serializers import (
     CreditTransferSerializer,
+    CreditAdminOperationSerializer,
     DemoTopUpSerializer,
     GenerationEstimateSerializer,
 )
 from .services import (
     CreditServiceError,
+    administer_credit_account,
     account_statistics,
     demo_top_up,
     get_or_create_account,
+    generation_spending_statistics,
+    list_admin_audit_events,
     list_entries,
     transfer_credits,
     validate_idempotency_key,
 )
 from w_craft_back.services.image_generation.errors import ImageProviderError
 from w_craft_back.services.image_generation.registry import get_default_key
+from w_craft_back.services.image_generation.routing import (
+    build_routing_decision,
+    routing_candidate_payloads,
+)
 
 
 DEFAULT_LIMIT = 20
@@ -44,6 +53,19 @@ def _account_payload(account: CreditAccount) -> dict:
         "availableBalance": _credit(account.available_balance),
         "reservedBalance": _credit(account.reserved_balance),
         "totalBalance": _credit(account.total_balance),
+        "isFrozen": account.is_frozen,
+        "freezeReason": account.freeze_reason if account.is_frozen else "",
+    }
+
+
+def _admin_event_payload(event) -> dict:
+    return {
+        "id": str(event.id),
+        "eventType": event.event_type,
+        "amount": _credit(event.amount) if event.amount is not None else None,
+        "reason": event.reason,
+        "actor": event.actor.username if event.actor else None,
+        "createdAt": event.created_at.isoformat(),
     }
 
 
@@ -122,6 +144,7 @@ class CreditSummaryView(APIView):
     def get(self, request):
         account = get_or_create_account(request.user)
         stats = account_statistics(account)
+        low_balance_threshold = Decimal(str(settings.CREDITS_LOW_BALANCE_THRESHOLD))
         return Response(
             {
                 "account": _account_payload(account),
@@ -134,7 +157,24 @@ class CreditSummaryView(APIView):
                 },
                 "capabilities": {
                     "demoTopUpEnabled": settings.CREDITS_DEMO_TOP_UP_ENABLED,
-                    "transfersEnabled": True,
+                    "transfersEnabled": not account.is_frozen,
+                    "adminWalletManagement": bool(request.user.is_staff),
+                },
+                "alerts": {
+                    "lowBalance": (
+                        not account.is_frozen
+                        and account.available_balance <= low_balance_threshold
+                    ),
+                    "lowBalanceThreshold": _credit(low_balance_threshold),
+                },
+                "transferLimits": {
+                    "perTransfer": _credit(
+                        Decimal(str(settings.CREDITS_TRANSFER_MAX_AMOUNT))
+                    ),
+                    "rollingDay": _credit(
+                        Decimal(str(settings.CREDITS_TRANSFER_DAILY_LIMIT))
+                    ),
+                    "rollingDayCount": settings.CREDITS_TRANSFER_DAILY_COUNT_LIMIT,
                 },
             }
         )
@@ -164,18 +204,26 @@ class GenerationEstimateView(APIView):
                         "creditUsdRate": "1",
                     },
                 )
+                routing_mode = "manual"
+                routing_reason = "local-operation"
+                route_candidates = []
             else:
                 model_key = data["modelKey"] or (
                     getattr(getattr(request.user, "profile", None), "image_generation_model", "")
                     or get_default_key()
                 )
-                estimate = estimate_for_model_key(
-                    model_key,
+                decision = build_routing_decision(
+                    mode=data["routingMode"],
+                    requested_model=model_key,
                     operation=data["operation"],
                     variant_count=data["variantCount"],
                     prompt_length=data["promptLength"],
                     resolution=data["resolution"],
                 )
+                estimate = decision.primary.estimate
+                routing_mode = decision.mode
+                routing_reason = decision.reason
+                route_candidates = routing_candidate_payloads(decision)
         except CreditServiceError as error:
             return _error_response(error)
         except ImageProviderError as error:
@@ -193,13 +241,26 @@ class GenerationEstimateView(APIView):
                 "modelName": estimate.model_name,
                 "currency": estimate.currency,
                 "estimatedCost": _credit(estimate.estimated_cost),
-                "reservationAmount": _credit(estimate.reservation_amount),
+                "reservationAmount": _credit(
+                    decision.reservation_amount
+                    if data["domain"] not in {"music", "model3d"}
+                    else estimate.reservation_amount
+                ),
                 "pricingSource": estimate.pricing_source,
                 "costIsEstimate": True,
                 "availableBalance": _credit(account.available_balance),
                 "sufficientBalance": (
-                    account.available_balance >= estimate.reservation_amount
+                    not account.is_frozen
+                    and account.available_balance >= (
+                        decision.reservation_amount
+                        if data["domain"] not in {"music", "model3d"}
+                        else estimate.reservation_amount
+                    )
                 ),
+                "accountFrozen": account.is_frozen,
+                "routingMode": routing_mode,
+                "routingReason": routing_reason,
+                "routeCandidates": route_candidates,
             }
         )
 
@@ -243,6 +304,126 @@ class CreditHistoryView(APIView):
         )
 
 
+class CreditSpendingStatisticsView(APIView):
+    def get(self, request):
+        try:
+            period_days = int(request.query_params.get("periodDays", 30))
+            project_id_raw = request.query_params.get("projectId")
+            project_id = int(project_id_raw) if project_id_raw else None
+        except (TypeError, ValueError):
+            return Response(
+                {
+                    "code": "INVALID_CREDIT_STATS_FILTER",
+                    "detail": "periodDays and projectId must be integers.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if period_days not in {7, 30, 90, 365} or (
+            project_id is not None and project_id <= 0
+        ):
+            return Response(
+                {
+                    "code": "INVALID_CREDIT_STATS_FILTER",
+                    "detail": "Choose a supported period and project.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        account = get_or_create_account(request.user)
+        stats = generation_spending_statistics(
+            account,
+            period_days=period_days,
+            project_id=project_id,
+        )
+        return Response({
+            "periodDays": stats["period_days"],
+            "totalCharged": _credit(stats["total_charged"]),
+            "jobCount": stats["job_count"],
+            "byDomain": [
+                {
+                    "domain": row["domain"],
+                    "charged": _credit(row["charged"]),
+                    "jobCount": row["jobs"],
+                }
+                for row in stats["by_domain"]
+            ],
+            "byProject": [
+                {
+                    "projectId": row["project_id"],
+                    "projectTitle": row["project__title"] or "Без проекта",
+                    "charged": _credit(row["charged"]),
+                    "jobCount": row["jobs"],
+                }
+                for row in stats["by_project"]
+            ],
+            "timeline": [
+                {
+                    "date": row["day"].isoformat(),
+                    "charged": _credit(row["charged"]),
+                    "jobCount": row["jobs"],
+                }
+                for row in stats["timeline"]
+            ],
+        })
+
+
+class CreditAdminOperationView(APIView):
+    def post(self, request):
+        serializer = CreditAdminOperationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer)
+        try:
+            key = validate_idempotency_key(request.headers.get("Idempotency-Key"))
+            result = administer_credit_account(
+                actor=request.user,
+                username=serializer.validated_data["username"],
+                action=serializer.validated_data["action"],
+                amount=serializer.validated_data.get("amount"),
+                reason=serializer.validated_data["reason"],
+                idempotency_key=key,
+            )
+        except CreditServiceError as error:
+            return _error_response(error)
+        return Response(
+            {
+                "account": _account_payload(result.account),
+                "auditEvent": _admin_event_payload(result.event),
+                "replayed": result.replayed,
+            },
+            status=(status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED),
+        )
+
+
+class CreditAdminAuditView(APIView):
+    def get(self, request):
+        if not request.user.is_staff:
+            return Response(
+                {
+                    "code": "CREDIT_ADMIN_FORBIDDEN",
+                    "detail": "Операция доступна только администратору.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        username = str(request.query_params.get("username") or "").strip()
+        target = User.objects.filter(username=username).first()
+        if target is None:
+            return Response(
+                {
+                    "code": "CREDIT_RECIPIENT_NOT_FOUND",
+                    "detail": "Пользователь с таким логином не найден.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        account = get_or_create_account(target)
+        return Response({
+            "username": target.username,
+            "account": _account_payload(account),
+            "items": [
+                _admin_event_payload(event)
+                for event in list_admin_audit_events(account)
+            ],
+        })
+
+
 class CreditDemoTopUpView(APIView):
     def post(self, request):
         if not settings.CREDITS_DEMO_TOP_UP_ENABLED:
@@ -271,14 +452,7 @@ class CreditDemoTopUpView(APIView):
         )
         return Response(
             {
-                "account": {
-                    "availableBalance": _credit(result.entry.available_balance_after),
-                    "reservedBalance": _credit(result.entry.reserved_balance_after),
-                    "totalBalance": _credit(
-                        result.entry.available_balance_after
-                        + result.entry.reserved_balance_after
-                    ),
-                },
+                "account": _account_payload(get_or_create_account(request.user)),
                 "transaction": _entry_payload(result.entry),
                 "replayed": result.replayed,
             },
@@ -308,18 +482,7 @@ class CreditTransferView(APIView):
         )
         return Response(
             {
-                "account": {
-                    "availableBalance": _credit(
-                        result.sender_entry.available_balance_after
-                    ),
-                    "reservedBalance": _credit(
-                        result.sender_entry.reserved_balance_after
-                    ),
-                    "totalBalance": _credit(
-                        result.sender_entry.available_balance_after
-                        + result.sender_entry.reserved_balance_after
-                    ),
-                },
+                "account": _account_payload(get_or_create_account(request.user)),
                 "transfer": {
                     "id": str(result.sender_entry.correlation_id),
                     "amount": _credit(-result.sender_entry.available_delta),

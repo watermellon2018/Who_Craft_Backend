@@ -39,7 +39,7 @@ def _make_project(owner: User, title: str = 'My movie') -> Project:
         owner=owner,
         title=title,
         summary='',
-        format='',
+        format='other',
         annotation='',
         synopsis='',
     )

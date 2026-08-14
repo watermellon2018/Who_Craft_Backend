@@ -114,7 +114,9 @@ The credits wallet and generation settlement flow are described in
 provider-native estimate, captures the final provider cost on success, and
 releases the reservation on failure or cancellation. Set
 `CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal
-credits without a payment provider.
+credits without a payment provider. The same reference documents automatic
+model routing, low-balance warnings, transfer limits, staff freeze/audit
+operations, and their `CREDITS_*` settings.
 
 The optional CUDA/Hunyuan stack must be installed separately:
 

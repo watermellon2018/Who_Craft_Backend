@@ -35,6 +35,9 @@ from w_craft_back.services.image_generation import (
     ImageProviderError,
     resolve_provider_for_user,
 )
+from w_craft_back.services.image_generation.errors import (
+    CODE_IMAGE_INPUT_NOT_SUPPORTED,
+)
 from w_craft_back.movie.poster.generation_guard import (
     daily_quota,
     daily_quota_per_user,
@@ -282,6 +285,7 @@ def enqueue_generation_job(
     idempotency_key: str = "",
     request_hash: str = "",
     requested_model: str = "",
+    routing_mode: str = "manual",
     reference_storage_key: str = "",
     reference_mime_type: str = "",
     reference_image_url: str = "",
@@ -377,6 +381,13 @@ def enqueue_generation_job(
             status=PosterJobStatus.QUEUED,
         )
         try:
+            route_operation = (
+                "edit"
+                if operation == PosterJobOperation.EDIT
+                else "reference"
+                if reference_storage_key or reference_image_url or reference_asset
+                else "generate"
+            )
             should_use_mock = (
                 getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
                 if use_mock is None
@@ -387,28 +398,61 @@ def enqueue_generation_job(
                     provider="mock",
                     provider_snapshot=None,
                     model_name="mock-poster-provider",
-                    operation=(
-                        "edit" if operation == PosterJobOperation.EDIT else "generate"
-                    ),
+                    operation=("edit" if route_operation == "edit" else "generate"),
                     variant_count=1,
                     prompt=prompt,
                 )
+                reservation_amount = estimate.reservation_amount
+                provider_snapshot = {}
+                effective_routing_mode = "manual"
             else:
-                selected_provider = resolve_provider_for_user(
-                    user,
-                    override=requested_model or None,
-                    require_edit=operation == PosterJobOperation.EDIT,
-                )
-                estimate = estimate_for_pinned_provider(
-                    provider=selected_provider.name,
-                    provider_snapshot={"spec": selected_provider.spec.__dict__},
-                    model_name=selected_provider.model_id,
-                    operation=(
-                        "edit" if operation == PosterJobOperation.EDIT else "generate"
-                    ),
-                    variant_count=1,
-                    prompt=prompt,
-                )
+                effective_routing_mode = str(routing_mode or "manual").lower()
+                if effective_routing_mode != "manual":
+                    from w_craft_back.services.image_generation.routing import (
+                        build_routing_decision,
+                    )
+
+                    decision = build_routing_decision(
+                        mode=effective_routing_mode,
+                        requested_model=requested_model or None,
+                        operation=route_operation,
+                        variant_count=1,
+                        prompt=prompt,
+                    )
+                    estimate = decision.primary.estimate
+                    reservation_amount = decision.reservation_amount
+                    provider_snapshot = decision.snapshot()
+                    job.requested_model = decision.primary.spec.key
+                else:
+                    selected_provider = resolve_provider_for_user(
+                        user,
+                        override=requested_model or None,
+                        require_edit=operation == PosterJobOperation.EDIT,
+                    )
+                    if (
+                        route_operation == "reference"
+                        and not selected_provider.supports_reference()
+                    ):
+                        raise ImageProviderError(
+                            code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+                            message=(
+                                "Выбранная модель не поддерживает изображение-референс."
+                            ),
+                            http_status=400,
+                        )
+                    estimate = estimate_for_pinned_provider(
+                        provider=selected_provider.name,
+                        provider_snapshot={"spec": selected_provider.spec.__dict__},
+                        model_name=selected_provider.model_id,
+                        operation=("edit" if route_operation == "edit" else "generate"),
+                        variant_count=1,
+                        prompt=prompt,
+                    )
+                    reservation_amount = estimate.reservation_amount
+                    provider_snapshot = {"spec": selected_provider.spec.__dict__}
+                    job.requested_model = selected_provider.spec.key
+                job.provider_snapshot = provider_snapshot
+                job.save(update_fields=["requested_model", "provider_snapshot"])
             reserve_generation(
                 user=user,
                 domain="poster",
@@ -416,8 +460,15 @@ def enqueue_generation_job(
                 provider=estimate.provider,
                 model_name=estimate.model_name,
                 estimated_cost=estimate.estimated_cost,
-                reservation_amount=estimate.reservation_amount,
-                pricing_snapshot=estimate.snapshot,
+                reservation_amount=reservation_amount,
+                pricing_snapshot=(
+                    provider_snapshot
+                    if provider_snapshot.get("candidates")
+                    else estimate.snapshot
+                ),
+                project=project,
+                operation=operation,
+                routing_mode=effective_routing_mode,
             )
         except (CreditServiceError, ImageProviderError) as error:
             raise PosterError(
