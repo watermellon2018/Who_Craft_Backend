@@ -18,14 +18,12 @@ def _user_with_token(username: str) -> tuple[User, str]:
 
 
 def _project(owner: User, title: str) -> Project:
-    credential = UserKey.objects.get(user=owner)
     project = Project.objects.create(
-        user=credential,
         owner=owner,
         title=title,
         format="full-movie",
-        annot="",
-        desc="",
+        annotation="",
+        synopsis="",
         status=ProjectStatus.IN_PROGRESS,
     )
     ProjectMember.objects.create(

@@ -248,16 +248,6 @@ LOGGING = {
 
 USER_KEY_ACCESS_TTL = datetime.timedelta(hours=1)
 USER_KEY_REFRESH_TTL = datetime.timedelta(days=30)
-# Temporary compatibility window for legacy JSON/form clients. The frontend
-# uses X-User-Token; remove the body fallback after this UTC deadline.
-USER_KEY_BODY_FALLBACK_DISABLE_AT = datetime.datetime(
-    2026,
-    10,
-    1,
-    tzinfo=datetime.timezone.utc,
-)
-# Includes multipart framing around the existing 10 MiB image limit.
-USER_KEY_LEGACY_MULTIPART_MAX_BYTES = 12 * 1024 * 1024
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -274,8 +264,6 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '600/min',
         'auth': '10/min',
-        'legacy_body_auth': '120/min',
-        'legacy_multipart_auth': '10/min',
     },
 }
 

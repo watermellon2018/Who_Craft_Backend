@@ -20,7 +20,11 @@ from w_craft_back.character_studio.repositories.repositories import (
 )
 from w_craft_back.character_studio.services.asset_service import CharacterAssetService
 from w_craft_back.character_studio.services.character_service import CharacterService
-from w_craft_back.character_studio.services.errors import NotFoundError, ValidationError
+from w_craft_back.character_studio.services.errors import (
+    IdentityAssetRequiredError,
+    NotFoundError,
+    ValidationError,
+)
 from w_craft_back.character_studio.services.generation_lifecycle import (
     JobLease,
     claim_job,
@@ -514,6 +518,14 @@ class CharacterGenerationService:
                     },
                 )
                 created_jobs.append({"reference_type": ui_type, "job_id": str(job.job_id)})
+            except IdentityAssetRequiredError:
+                # A portrait (or uploaded reference) must finish before
+                # identity-anchored angles can be queued. Keep the batch
+                # request successful and let the client retry after the
+                # identity job completes.
+                skipped.append(
+                    {"reference_type": ui_type, "reason": "identity_pending"}
+                )
             except ValidationError as exc:
                 # generate_reference raises ValidationError on the same conflict
                 # — treat as a soft skip rather than failing the whole batch.

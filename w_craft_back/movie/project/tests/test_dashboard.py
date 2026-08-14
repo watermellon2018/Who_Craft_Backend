@@ -40,15 +40,13 @@ def _make_user(username: str) -> tuple[User, str]:
 
 
 def _make_project(owner: User, *, title: str = "Demo") -> Project:
-    legacy_key, _ = UserKey.objects.get_or_create(user=owner)
     project = Project.objects.create(
-        user=legacy_key,
         owner=owner,
         title=title,
         format="full-movie",
-        annot="",
-        desc="legacy desc",
-        description="dashboard description",
+        annotation="",
+        synopsis="legacy desc",
+        summary="dashboard description",
         status=ProjectStatus.IN_PROGRESS,
         is_favorite=True,
     )
@@ -392,10 +390,27 @@ class ProjectCrudTests(TestCase):
             ).exists()
         )
         self.assertTrue(ProjectProgress.objects.filter(project_id=project_id).exists())
+        project = Project.objects.get(pk=project_id)
+        self.assertEqual(project.summary, "x")
+        self.assertEqual(project.synopsis, "")
         self.assertEqual(
             list(ProjectTag.objects.filter(project_id=project_id).values_list("name", flat=True)),
             ["Драма"],
         )
+
+    def test_create_project_keeps_synopsis_separate_from_summary(self):
+        response = self.client.post(
+            "/api/projects/",
+            data={"title": "Synopsis only", "synopsis": "Full plot"},
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        project = Project.objects.get(pk=response.json()["id"])
+        self.assertEqual(project.summary, "")
+        self.assertEqual(project.synopsis, "Full plot")
+        self.assertEqual(response.json()["description"], "Full plot")
 
     def test_create_character_records_activity(self):
         project = _make_project(self.owner, title="X")

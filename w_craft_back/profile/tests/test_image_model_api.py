@@ -44,14 +44,12 @@ class ImageModelApiTest(TestCase):
 
     def _project(self, *, owner=None, generation_settings=None):
         owner = owner or self.user
-        owner_key = UserKey.objects.get(user=owner)
         return Project.objects.create(
-            user=owner_key,
             owner=owner,
             title='Film',
             format='series',
-            annot='Short',
-            desc='Long',
+            annotation='Short',
+            synopsis='Long',
             generation_settings=generation_settings or {},
         )
 

@@ -31,14 +31,13 @@ from w_craft_back.movie.reference_library.models import (
 class ReferenceLifecycleTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="reference-lifecycle")
-        key = UserKey.objects.create(user=self.user)
+        UserKey.objects.create(user=self.user)
         self.project = Project.objects.create(
             owner=self.user,
-            user=key,
             title="Film",
             format="full-movie",
-            annot="",
-            desc="",
+            annotation="",
+            synopsis="",
         )
         ProjectMember.objects.create(
             project=self.project,

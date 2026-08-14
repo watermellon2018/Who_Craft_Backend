@@ -28,17 +28,16 @@ class ProjectMutationPreauthorizationTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         owner = User.objects.create_user(username="preauth-owner")
-        owner_key = UserKey.objects.create(user=owner)
+        UserKey.objects.create(user=owner)
         self.viewer = User.objects.create_user(username="preauth-viewer")
         viewer_key = UserKey.objects.create(user=self.viewer)
         self.viewer_token = viewer_key.key
         self.project = Project.objects.create(
             owner=owner,
-            user=owner_key,
             title="Preauth",
             format="full-movie",
-            annot="",
-            desc="",
+            annotation="",
+            synopsis="",
         )
         ProjectMember.objects.create(
             project=self.project,

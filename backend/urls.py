@@ -29,9 +29,11 @@ urlpatterns = [
     path('health/ready', readiness, name='health-ready'),
     path('admin/', admin.site.urls),
     path('api/schema/openapi.json', openapi_schema_view, name='openapi-schema'),
-    path('api/character/', include('w_craft_back.characters.display_tree.urls')),
     path('api/auth/', include('w_craft_back.auth.urls')),
-    path('api/projects/properties/genre/', include('w_craft_back.movie.properties.urls')),
+    path(
+        'api/projects/properties/genre/',
+        include('w_craft_back.movie.properties.urls'),
+    ),
     path('api/projects/', include('w_craft_back.movie.project.urls')),
     path('api/invitations/', include('w_craft_back.movie.project.team_urls')),
     path('api/', include('w_craft_back.character_studio.urls')),

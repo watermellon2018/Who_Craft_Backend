@@ -1,8 +1,23 @@
 from django.urls import path
 
-from w_craft_back.character_studio import views
+from w_craft_back.character_studio import tree_views, views
 
 urlpatterns = [
+    path(
+        "projects/<int:project_id>/character-tree/",
+        tree_views.character_tree,
+        name="character-tree",
+    ),
+    path(
+        "projects/<int:project_id>/character-tree/nodes/",
+        tree_views.character_tree_nodes,
+        name="character-tree-nodes",
+    ),
+    path(
+        "projects/<int:project_id>/character-tree/nodes/<uuid:node_id>/",
+        tree_views.character_tree_node_detail,
+        name="character-tree-node-detail",
+    ),
     path("projects/<int:project_id>/characters", views.characters_collection),
     path("projects/<int:project_id>/characters/", views.characters_collection),
     path(

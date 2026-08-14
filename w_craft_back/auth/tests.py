@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -15,9 +15,6 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.test import APIClient
 from rest_framework.throttling import UserRateThrottle
 
-from w_craft_back.auth.authentication import (
-    LegacyBodyAuthRateThrottle,
-)
 from w_craft_back.auth.models import UserKey, digest_token
 from w_craft_back.auth.utils import extract_user_token, resolve_user_key
 
@@ -52,28 +49,12 @@ class ExtractUserTokenTests(TestCase):
         )
         self.assertEqual(extract_user_token(request), "header-token")
 
-    def test_body_fallback_emits_telemetry(self):
+    def test_body_token_is_ignored(self):
         request = self._request(
             method="POST",
             body={"token_user": "body-token"},
         )
-        with self.assertLogs("w_craft_back.auth.utils", level="WARNING") as logs:
-            self.assertEqual(extract_user_token(request), "body-token")
-        self.assertIn("legacy_auth_body_fallback_used", logs.output[0])
-        self.assertNotIn("body-token", logs.output[0])
-
-    def test_body_fallback_stops_at_deadline(self):
-        request = self._request(
-            method="POST",
-            body={"token_user": "body-token"},
-        )
-        with override_settings(
-            USER_KEY_BODY_FALLBACK_DISABLE_AT=timezone.now() - timedelta(seconds=1)
-        ), patch(
-            "w_craft_back.auth.utils._extract_legacy_body_token"
-        ) as extractor:
-            self.assertIsNone(extract_user_token(request))
-        extractor.assert_not_called()
+        self.assertIsNone(extract_user_token(request))
 
     def test_multipart_body_fallback_is_not_parsed(self):
         request = self.factory.post(
@@ -83,48 +64,9 @@ class ExtractUserTokenTests(TestCase):
         request.data = {"token_user": "body-token"}
         self.assertIsNone(extract_user_token(request))
 
-    def test_bounded_multipart_body_fallback_can_be_opted_in(self):
-        request = self.factory.post(
-            "/api/anything/",
-            data={"token_user": "body-token", "file": "payload"},
-        )
-        request.data = {"token_user": "body-token"}
-        with self.assertLogs("w_craft_back.auth.utils", level="WARNING"):
-            token = extract_user_token(
-                request,
-                allow_multipart_fallback=True,
-            )
-        self.assertEqual(token, "body-token")
-
-    def test_oversized_multipart_body_fallback_is_rejected(self):
-        request = self.factory.post(
-            "/api/anything/",
-            data={"token_user": "body-token", "file": "payload"},
-        )
-        request.data = {"token_user": "body-token"}
-        with override_settings(USER_KEY_LEGACY_MULTIPART_MAX_BYTES=1):
-            self.assertIsNone(
-                extract_user_token(
-                    request,
-                    allow_multipart_fallback=True,
-                )
-            )
-
-    def test_body_fallback_without_content_length_is_rejected(self):
-        request = self.factory.post(
-            "/api/anything/",
-            data={"token_user": "body-token"},
-        )
-        request.META.pop("CONTENT_LENGTH", None)
-        request.data = {"token_user": "body-token"}
-        self.assertIsNone(
-            extract_user_token(request, allow_multipart_fallback=True)
-        )
-
     def test_query_string_is_ignored(self):
         request = self._request(qs="token_user=leaked-token")
-        with self.assertLogs("w_craft_back.auth.utils", level="WARNING"):
-            self.assertIsNone(extract_user_token(request))
+        self.assertIsNone(extract_user_token(request))
 
     def test_missing_everywhere_returns_none(self):
         self.assertIsNone(extract_user_token(self._request()))
@@ -260,70 +202,29 @@ class AuthLifecycleViewTests(TestCase):
         response = self.client.get(reverse("profile-me"))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-
-class LegacyBodyAuthRateThrottleTests(TestCase):
-    def setUp(self):
-        cache.clear()
-        self.client = APIClient()
-        self.user_key = UserKey.objects.create(
-            user=User.objects.create_user(username="legacy-body-throttle")
+    def test_body_and_query_tokens_do_not_authenticate(self):
+        body_response = self.client.patch(
+            reverse("profile-me"),
+            {"token_user": self.old_access, "bio": "body"},
+            format="json",
         )
-        self.access = self.user_key.key
+        query_response = self.client.get(
+            reverse("profile-me"),
+            {"token_user": self.old_access},
+        )
 
-    def tearDown(self):
-        cache.clear()
-        super().tearDown()
+        self.assertEqual(body_response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(query_response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_body_fallback_is_limited_without_affecting_header_auth(self):
-        with patch.object(
-            LegacyBodyAuthRateThrottle,
-            "rate",
-            "1/min",
-            create=True,
-        ):
-            first = self.client.patch(
-                reverse("profile-me"),
-                {"token_user": self.access, "bio": "first"},
-                format="json",
-            )
-            blocked = self.client.patch(
-                reverse("profile-me"),
-                {"token_user": self.access, "bio": "second"},
-                format="json",
-            )
-            header = self.client.patch(
-                reverse("profile-me"),
-                {"bio": "header"},
-                format="json",
-                HTTP_X_USER_TOKEN=self.access,
-            )
+    def test_header_token_authenticates_when_body_contains_another_token(self):
+        response = self.client.patch(
+            reverse("profile-me"),
+            {"token_user": "ignored-body-token", "bio": "header"},
+            format="json",
+            HTTP_X_USER_TOKEN=self.old_access,
+        )
 
-        self.assertEqual(first.status_code, status.HTTP_200_OK)
-        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
-        self.assertEqual(header.status_code, status.HTTP_200_OK)
-
-    def test_changing_forwarded_for_does_not_bypass_limit(self):
-        with patch.object(
-            LegacyBodyAuthRateThrottle,
-            "rate",
-            "1/min",
-            create=True,
-        ):
-            first = self.client.patch(
-                reverse("profile-me"),
-                {"token_user": self.access, "bio": "first"},
-                format="json",
-                HTTP_X_FORWARDED_FOR="203.0.113.1",
-            )
-            blocked = self.client.patch(
-                reverse("profile-me"),
-                {"token_user": self.access, "bio": "second"},
-                format="json",
-                HTTP_X_FORWARDED_FOR="203.0.113.2",
-            )
-
-        self.assertEqual(first.status_code, status.HTTP_200_OK)
-        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
 class RegistrationViewTests(TestCase):

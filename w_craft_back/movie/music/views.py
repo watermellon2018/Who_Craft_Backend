@@ -74,8 +74,6 @@ def handle_music_errors(handler: Callable) -> Callable:
 class MusicAuthedView(APIView):
     """Music endpoints deliberately never accept legacy body credentials."""
 
-    allow_legacy_body_auth = False
-
     @staticmethod
     def actor(request):
         user = getattr(request, "user", None)

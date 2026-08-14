@@ -148,7 +148,7 @@ def _project_for_action(
     if lock:
         queryset = Project.objects.select_for_update()
     else:
-        queryset = Project.objects.select_related("owner", "user")
+        queryset = Project.objects.select_related("owner")
     project = queryset.filter(pk=project_id).first()
     if project is None or not policy.can(actor, project, policy.Action.VIEW):
         raise ProjectNotFound("Project was not found.")

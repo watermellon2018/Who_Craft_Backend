@@ -7,9 +7,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, authentication_classes
 
-from w_craft_back.auth.authentication import (
-    LegacyMultipartUserKeyAuthentication,
-)
+from w_craft_back.auth.authentication import UserKeyAuthentication
 from w_craft_back.character_studio.models import (
     CharacterAsset,
     CharacterAssetType,
@@ -216,7 +214,7 @@ def _reference_creation_request_hash(uploaded, character, generation):
 
 
 @api_view(["POST"])
-@authentication_classes([LegacyMultipartUserKeyAuthentication])
+@authentication_classes([UserKeyAuthentication])
 @handle_errors
 def create_character_from_reference(request, project_id):
     user = get_user_from_request(request)
@@ -316,36 +314,15 @@ def create_character_from_reference(request, project_id):
             status_code=503,
         )
 
-    # If the generation kickoff failed (provider unavailable, model can't accept
-    # image input, etc.), we don't want to leave a half-created character with no
-    # variants cluttering the user's character list. Roll back: delete the
-    # character (cascades to assets + job rows) and unlink the uploaded file from
-    # disk, then return a 400 with the upstream error code/message.
+    # Accepted jobs are durable. A replay may return a job that a worker has
+    # already failed; never delete the previously accepted character/asset here.
+    # The client can inspect or retry that terminal job through the job API.
     if job.status == "failed":
         error_code = job.error_code or "REFERENCE_GENERATION_FAILED"
         error_message = (
             job.error_message
             or "Не удалось сгенерировать варианты по референсу."
             " Попробуйте ещё раз позже."
-        )
-        ref_path = reference_asset.storage_path
-        try:
-            # Cascades to CharacterAsset (incl. reference), job, variants.
-            character.delete()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to roll back character after generation failure"
-                " (character_id=%s)",
-                character.character_id,
-            )
-        if ref_path:
-            try:
-                delete_storage_key(ref_path)
-            except (OSError, StorageGatewayError):
-                logger.warning("Could not delete reference file %s", ref_path)
-        logger.info(
-            "create_character_from_reference rolled back: project_id=%s error_code=%s",
-            project_id, error_code,
         )
         raise CharacterStudioError(
             message=error_message, error_code=error_code, status_code=400,
@@ -881,7 +858,7 @@ def references_correct(request, project_id, character_id, reference_id):
 
 
 @api_view(["POST"])
-@authentication_classes([LegacyMultipartUserKeyAuthentication])
+@authentication_classes([UserKeyAuthentication])
 @handle_errors
 def references_upload(request, project_id, character_id):
     user = get_user_from_request(request)

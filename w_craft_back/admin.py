@@ -19,8 +19,8 @@ from w_craft_back.movie.project.dashboard_models import (
 class ProjectAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "status", "owner", "is_favorite", "updated_at")
     list_filter = ("status", "is_favorite")
-    search_fields = ("title", "description", "slug")
-    raw_id_fields = ("owner", "user")
+    search_fields = ("title", "summary", "synopsis", "slug")
+    raw_id_fields = ("owner",)
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-updated_at",)
 

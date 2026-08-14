@@ -19,9 +19,6 @@ from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project import policy, team_service
 from w_craft_back.movie.project import team_errors as errors
 from w_craft_back.movie.project.dashboard_models import (
-    Location,
-    MusicTrack,
-    ProjectActivity,
     ProjectMember,
     ProjectMemberRole,
     Scene,
@@ -32,7 +29,6 @@ from w_craft_back.movie.project.team_models import (
     InvitationType,
     ProjectInvitation,
 )
-from w_craft_back.profile.models import UserProfile
 
 
 def _make_user(username: str) -> tuple[User, str]:
@@ -42,15 +38,13 @@ def _make_user(username: str) -> tuple[User, str]:
 
 
 def _make_project(owner: User, *, title: str = "Demo") -> Project:
-    legacy_key, _ = UserKey.objects.get_or_create(user=owner)
     project = Project.objects.create(
-        user=legacy_key,
         owner=owner,
         title=title,
         format="full-movie",
-        annot="",
-        desc="legacy",
-        description="desc",
+        annotation="",
+        synopsis="legacy",
+        summary="desc",
         status=ProjectStatus.IN_PROGRESS,
     )
     ProjectMember.objects.create(
@@ -99,11 +93,10 @@ class MembershipInvariantTests(TestCase):
                     role=ProjectMemberRole.OWNER,
                 )
 
-    def test_deleting_legacy_userkey_preserves_project(self):
+    def test_deleting_userkey_preserves_project(self):
         UserKey.objects.get(user=self.owner).delete()
 
         self.project.refresh_from_db()
-        self.assertIsNone(self.project.user_id)
         self.assertEqual(self.project.owner_id, self.owner.id)
 
     def test_deleting_current_owner_account_is_protected(self):
@@ -164,75 +157,6 @@ class PolicyMatrixTests(TestCase):
         p = self.policy
         self.assertFalse(p.can_view(self.outsider, self.project))
         self.assertIsNone(p.get_role(self.outsider, self.project))
-
-    def test_legacy_creator_attribution_grants_no_access(self):
-        self.project.user = UserKey.objects.get(user=self.outsider)
-        self.project.save(update_fields=["user"])
-
-        self.assertIsNone(self.policy.get_role(self.outsider, self.project))
-        self.assertNotIn(
-            self.project.id,
-            self.policy.accessible_project_ids(self.outsider),
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Data migration backfill
-# --------------------------------------------------------------------------- #
-
-class MigrationBackfillTests(TestCase):
-    """Re-run the backfill logic directly against a project missing its owner
-    member row (simulating pre-migration data)."""
-
-    def test_backfill_creates_owner_member(self):
-        import importlib
-
-        owner, _ = _make_user("legacyowner")
-        legacy_key, _ = UserKey.objects.get_or_create(user=owner)
-        project = Project.objects.create(
-            user=legacy_key, owner=owner, title="Legacy",
-            format="full-movie", annot="", desc="", description="",
-        )
-        # Remove the owner member the create-path side-effects may have made.
-        ProjectMember.objects.filter(project=project).delete()
-        self.assertFalse(ProjectMember.objects.filter(project=project).exists())
-
-        # Invoke the migration's data function directly (module name starts with
-        # a digit, so import it via importlib rather than a normal import).
-        from django.apps import apps
-
-        migration = importlib.import_module(
-            "w_craft_back.migrations.0034_backfill_owner_members"
-        )
-        migration.backfill_owner_members(apps, None)
-
-        member = ProjectMember.objects.get(project=project, user=owner)
-        self.assertEqual(member.role, ProjectMemberRole.OWNER)
-        self.assertIsNotNone(member.joined_at)
-
-    def test_backfill_no_duplicate_when_owner_member_exists(self):
-        import importlib
-
-        owner, _ = _make_user("owner2")
-        project = _make_project(owner, title="HasOwner")
-        before = ProjectMember.objects.filter(project=project).count()
-
-        from django.apps import apps
-
-        migration = importlib.import_module(
-            "w_craft_back.migrations.0034_backfill_owner_members"
-        )
-        migration.backfill_owner_members(apps, None)
-
-        after = ProjectMember.objects.filter(project=project).count()
-        self.assertEqual(before, after)
-        self.assertEqual(
-            ProjectMember.objects.filter(
-                project=project, role=ProjectMemberRole.OWNER
-            ).count(),
-            1,
-        )
-
 
 # --------------------------------------------------------------------------- #
 # Username invitations
@@ -596,9 +520,6 @@ class MemberManagementTests(TestCase):
         # Project.owner FK repointed.
         self.project.refresh_from_db()
         self.assertEqual(self.project.owner_id, self.admin.id)
-        # Legacy creator attribution still points at the former owner, but no
-        # longer grants ownership.
-        self.assertEqual(self.project.user.user_id, self.owner.id)
         self.assertEqual(
             policy.get_role(self.owner, self.project), ProjectMemberRole.ADMIN,
         )
@@ -629,7 +550,6 @@ class MemberManagementTests(TestCase):
 
         self.project.refresh_from_db()
         self.assertEqual(self.project.owner_id, self.admin.id)
-        self.assertIsNone(self.project.user_id)
         self.assertEqual(
             ProjectMember.objects.get(project=self.project, user=self.admin).role,
             ProjectMemberRole.OWNER,

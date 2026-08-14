@@ -4,14 +4,11 @@ from django.db.models import Max, Q
 from w_craft_back.character_studio.models import (
     CharacterAppearance,
     CharacterAsset,
-    CharacterExpression,
     CharacterGenerationJob,
     CharacterImage,
     CharacterOutfit,
-    CharacterRelationship,
     CharacterRevision,
     CharacterVariant,
-    CharacterVersion,
     StudioCharacter,
     VISIBLE_CHARACTER_STATUSES,
 )
@@ -69,10 +66,6 @@ class OutfitRepository(BaseRepository):
         return outfit
 
 
-class VersionRepository(BaseRepository):
-    model = CharacterVersion
-
-
 class AssetRepository(BaseRepository):
     model = CharacterAsset
 
@@ -122,11 +115,3 @@ class RevisionRepository(BaseRepository):
     def next_revision_number(self, character):
         value = self.model.objects.filter(character=character).aggregate(Max("revision_number"))
         return (value["revision_number__max"] or 0) + 1
-
-
-class ExpressionRepository(BaseRepository):
-    model = CharacterExpression
-
-
-class RelationshipRepository(BaseRepository):
-    model = CharacterRelationship

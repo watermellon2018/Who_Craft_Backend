@@ -30,16 +30,11 @@
         }
       }
     },
-    "/api/character/select/": {
+    "/api/projects/{projectId}/character-tree/": {
       "get": {
         "operationId": "listCharacterTree",
         "parameters": [
-          {
-            "name": "projectId",
-            "in": "query",
-            "required": true,
-            "schema": {"type": "integer"}
-          }
+          {"$ref": "#/components/parameters/ProjectId"}
         ],
         "responses": {
           "200": {
@@ -59,9 +54,12 @@
         }
       }
     },
-    "/api/character/create/": {
+    "/api/projects/{projectId}/character-tree/nodes/": {
       "post": {
         "operationId": "createCharacterTreeNode",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -71,7 +69,14 @@
           }
         },
         "responses": {
-          "200": {"description": "Tree node created"},
+          "201": {
+            "description": "Tree node created or placeholder completed",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CharacterTreeNode"}
+              }
+            }
+          },
           "400": {"$ref": "#/components/responses/ApiError"},
           "401": {"$ref": "#/components/responses/ApiError"},
           "403": {"$ref": "#/components/responses/ApiError"},
@@ -79,14 +84,23 @@
         }
       }
     },
-    "/api/character/rename/": {
-      "post": {
+    "/api/projects/{projectId}/character-tree/nodes/{nodeId}/": {
+      "parameters": [
+        {"$ref": "#/components/parameters/ProjectId"},
+        {
+          "name": "nodeId",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string", "format": "uuid"}
+        }
+      ],
+      "patch": {
         "operationId": "renameCharacterTreeNode",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {"$ref": "#/components/schemas/CharacterTreeRenameRequest"}
+              "schema": {"$ref": "#/components/schemas/CharacterTreeUpdateRequest"}
             }
           }
         },
@@ -95,7 +109,7 @@
             "description": "Tree node renamed",
             "content": {
               "application/json": {
-                "schema": {"$ref": "#/components/schemas/CharacterTreeRenameResponse"}
+                "schema": {"$ref": "#/components/schemas/CharacterTreeNode"}
               }
             }
           },
@@ -104,28 +118,11 @@
           "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"}
         }
-      }
-    },
-    "/api/character/delete/": {
-      "post": {
+      },
+      "delete": {
         "operationId": "deleteCharacterTreeNode",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {"$ref": "#/components/schemas/CharacterTreeDeleteRequest"}
-            }
-          }
-        },
         "responses": {
-          "200": {
-            "description": "Tree node deleted",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/DeleteResponse"}
-              }
-            }
-          },
+          "204": {"description": "Tree placement or subtree deleted"},
           "401": {"$ref": "#/components/responses/ApiError"},
           "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"}
@@ -837,14 +834,13 @@
       },
       "CharacterTreeNode": {
         "type": "object",
-        "required": ["id", "key", "name", "is_folder"],
+        "required": ["id", "key", "name", "is_folder", "character_id"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "key": {"type": "string"},
           "name": {"type": "string"},
           "is_folder": {"type": "boolean"},
           "character_id": {"type": "string", "format": "uuid", "nullable": true},
-          "legacy_hero_id": {"type": "integer", "nullable": true},
           "children": {
             "type": "array",
             "items": {"$ref": "#/components/schemas/CharacterTreeNode"}
@@ -854,45 +850,22 @@
       "CharacterTreeCreateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "type", "projectId"],
+        "required": ["id", "name", "type"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 255},
-          "type": {"type": "string", "enum": ["leaf", "node"]},
-          "projectId": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
-          "parent": {"type": "string", "format": "uuid", "nullable": true},
-          "heroID": {"type": "integer", "nullable": true},
-          "studioCharacterId": {"type": "string", "format": "uuid", "nullable": true}
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "type": {"type": "string", "enum": ["folder", "character"]},
+          "parent_id": {"type": "string", "format": "uuid", "nullable": true},
+          "studio_character_id": {"type": "string", "format": "uuid", "nullable": true}
         }
       },
-      "CharacterTreeRenameRequest": {
+      "CharacterTreeUpdateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name"],
+        "required": ["name"],
         "properties": {
-          "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 255}
+          "name": {"type": "string", "minLength": 1, "maxLength": 100}
         }
-      },
-      "CharacterTreeRenameResponse": {
-        "type": "object",
-        "required": ["id", "name"],
-        "properties": {
-          "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string"},
-          "character_id": {"type": "string", "format": "uuid", "nullable": true}
-        }
-      },
-      "CharacterTreeDeleteRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id"],
-        "properties": {"id": {"type": "string"}}
-      },
-      "DeleteResponse": {
-        "type": "object",
-        "required": ["message"],
-        "properties": {"message": {"type": "string"}}
       },
       "PosterGenerateRequest": {
         "type": "object",

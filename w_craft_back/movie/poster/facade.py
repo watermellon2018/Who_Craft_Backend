@@ -80,7 +80,7 @@ MAX_VARIANT_LIMIT = 50
 
 def _load_project(project_id: int) -> Project:
     try:
-        return Project.objects.select_related("owner", "user").get(pk=project_id)
+        return Project.objects.select_related("owner").get(pk=project_id)
     except Project.DoesNotExist as exc:
         raise ProjectNotFound("project not found") from exc
 

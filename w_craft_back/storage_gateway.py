@@ -703,16 +703,6 @@ def probe_stored_audio(
     return normalize_audio_bytes(payload, max_bytes=byte_limit)
 
 
-def safe_audio_display_name(raw_name: str | None) -> str:
-    """Return a display-only basename without paths or control characters."""
-
-    name = PurePosixPath(str(raw_name or "").replace("\\", "/")).name
-    cleaned = "".join(
-        char for char in name if char.isprintable() and char not in "\r\n"
-    )
-    return cleaned[:255]
-
-
 def _allowed_mimes_for_asset_type(asset_type: str) -> set[str]:
     if asset_type in {"image", "reference", "storyboard"}:
         return {mime for mime, _extension in _IMAGE_FORMATS.values()}

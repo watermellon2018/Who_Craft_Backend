@@ -52,11 +52,10 @@ def _user(username: str) -> tuple[User, UserKey]:
 def _project(owner: User, key: UserKey, title: str) -> Project:
     project = Project.objects.create(
         owner=owner,
-        user=key,
         title=title,
         format="full-movie",
-        annot="",
-        desc="",
+        annotation="",
+        synopsis="",
     )
     ProjectMember.objects.create(
         project=project,

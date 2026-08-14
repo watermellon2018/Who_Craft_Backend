@@ -38,6 +38,8 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectMemberRole,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project import policy
+from w_craft_back.movie.project.project_mutations import update_project_settings
 from w_craft_back.profile.models import UserAsset, UserProfile
 from w_craft_back.profile.services import delete_image
 from w_craft_back.storage_gateway import (
@@ -235,11 +237,10 @@ class StorageBoundaryIntegrationTests(TestCase):
         self.outsider_token = str(self.outsider_key.key)
         self.project = Project.objects.create(
             owner=self.owner,
-            user=self.owner_key,
             title="Media boundary",
             format="series",
-            annot="",
-            desc="",
+            annotation="",
+            synopsis="",
         )
         ProjectMember.objects.create(
             project=self.project,
@@ -368,6 +369,43 @@ class StorageBoundaryIntegrationTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             image.delete()
         self.assertFalse(default_storage.exists(key))
+
+    def test_project_cover_replacement_keeps_new_and_shared_files_safe(self):
+        shared_key = default_storage.save(
+            "projects/shared/cover.png",
+            ContentFile(_png_bytes()),
+        )
+        self.project.cover_image.name = shared_key
+        self.project.save(update_fields=["cover_image"])
+        other_project = Project.objects.create(
+            owner=self.owner,
+            title="Other cover reference",
+            format="series",
+            annotation="",
+            synopsis="",
+            cover_image=shared_key,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            update_project_settings(
+                actor=self.owner,
+                action=policy.Action.EDIT_SETTINGS,
+                project_id=self.project.id,
+                data={},
+                poster_file=ContentFile(_png_bytes(), name="replacement.png"),
+                poster_supplied=True,
+            )
+
+        self.project.refresh_from_db()
+        replacement_key = self.project.cover_image.name
+        self.addCleanup(default_storage.delete, replacement_key)
+        self.assertNotEqual(replacement_key, shared_key)
+        self.assertTrue(default_storage.exists(replacement_key))
+        self.assertTrue(default_storage.exists(shared_key))
+
+        with self.captureOnCommitCallbacks(execute=True):
+            other_project.delete()
+        self.assertFalse(default_storage.exists(shared_key))
 
     def test_signed_delivery_supports_single_byte_ranges(self):
         key = default_storage.save(

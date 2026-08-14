@@ -8,7 +8,6 @@ Roles (ProjectMemberRole): owner > admin > editor > viewer.
 
 ``Project.owner`` is the canonical ownership authority. The matching
 ``ProjectMember(role="owner")`` row mirrors that authority for team APIs.
-``Project.user`` is legacy creator attribution only and never grants access.
 
 The module exposes both boolean predicates (``can_edit`` etc.) and an ``Action``
 enum + ``can(role, action)`` matrix so views can ask the policy directly.
@@ -27,15 +26,6 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectMemberRole,
 )
 from w_craft_back.movie.project.models import Project
-
-
-# Role ordering for "at least this role" comparisons.
-_ROLE_RANK = {
-    ProjectMemberRole.VIEWER: 0,
-    ProjectMemberRole.EDITOR: 1,
-    ProjectMemberRole.ADMIN: 2,
-    ProjectMemberRole.OWNER: 3,
-}
 
 
 class Action(str, enum.Enum):
@@ -110,12 +100,6 @@ def get_role(user: Optional[User], project: Project) -> Optional[str]:
 
 def is_member(user: Optional[User], project: Project) -> bool:
     return get_role(user, project) is not None
-
-
-def has_at_least(role: Optional[str], minimum: str) -> bool:
-    if role is None:
-        return False
-    return _ROLE_RANK.get(role, -1) >= _ROLE_RANK.get(minimum, 99)
 
 
 # --------------------------------------------------------------------------- #

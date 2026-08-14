@@ -40,11 +40,10 @@ def make_user(username: str) -> tuple[User, str]:
 def make_project(owner: User) -> Project:
     project = Project.objects.create(
         owner=owner,
-        user=UserKey.objects.get(user=owner),
         title="Reference film",
         format="full-movie",
-        annot="",
-        desc="",
+        annotation="",
+        synopsis="",
     )
     ProjectMember.objects.create(
         project=project,
@@ -136,7 +135,7 @@ class ReferenceApiTests(TestCase):
     def test_link_options_and_reference_settings_are_project_scoped(self):
         anna = StudioCharacter.objects.create(
             project=self.project,
-            user=self.project.user,
+            user=UserKey.objects.get(user=self.owner),
             name="Anna",
         )
         apartment = Location.objects.create(
@@ -146,7 +145,7 @@ class ReferenceApiTests(TestCase):
         other_project = make_project(self.outsider)
         StudioCharacter.objects.create(
             project=other_project,
-            user=other_project.user,
+            user=UserKey.objects.get(user=self.outsider),
             name="Outsider",
         )
         Location.objects.create(project=other_project, name="Foreign location")

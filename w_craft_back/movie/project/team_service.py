@@ -120,10 +120,6 @@ def _get_member_for_update(project: Project, member_id: int) -> ProjectMember:
     return member
 
 
-def active_member_count(project: Project) -> int:
-    return ProjectMember.objects.filter(project=project).count()
-
-
 # --------------------------------------------------------------------------- #
 # Invitations
 # --------------------------------------------------------------------------- #

@@ -392,10 +392,6 @@ class ApplyVariantSerializer(serializers.Serializer):
         return attrs
 
 
-class RetryJobSerializer(serializers.Serializer):
-    """Retry currently has no mutable request fields."""
-
-
 class LegacyMetadataTrackSerializer(serializers.Serializer):
     """Temporary compatibility contract for the existing collection POST."""
 

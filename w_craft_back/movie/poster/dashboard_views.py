@@ -122,8 +122,6 @@ def _read_reference(uploaded_file) -> bytes | None:
 class _AuthedView(APIView):
     """Resolve the custom token once and reject anonymous requests."""
 
-    allow_legacy_body_auth = False
-
     def _user(self, request):
         user = getattr(request, "user", None)
         if user is None or not user.is_authenticated:
