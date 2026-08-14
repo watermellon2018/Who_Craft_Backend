@@ -60,6 +60,7 @@ operations are unchanged.
 - `/api/auth/` — register/login/refresh/logout.
 - `/api/projects/` — project aggregate, team, poster, music, references.
 - `/api/projects/{id}/characters...` — Character Studio.
+- `/api/credits/` — internal balance, ledger, demo top-up, and transfers.
 - `/api/media/{signed-token}` — authorized private media delivery.
 
 Root URL composition is in `backend/urls.py` (the inner Django project directory
@@ -107,6 +108,10 @@ upload or generation flows.
 application refuses to start without `DJANGO_SECRET_KEY` and PostgreSQL user/
 password. Mock providers are suitable for local Character/Reference generation;
 review provider-specific defaults before making external calls.
+
+The credits MVP is described in [`docs/credits.md`](docs/credits.md). Set
+`CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal
+credits without a payment provider.
 
 The optional CUDA/Hunyuan stack must be installed separately:
 

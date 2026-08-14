@@ -36,6 +36,10 @@ if not SECRET_KEY:
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes", "on"}
+CREDITS_DEMO_TOP_UP_ENABLED = os.getenv(
+    "CREDITS_DEMO_TOP_UP_ENABLED",
+    "true" if DEBUG else "false",
+).lower() in {"1", "true", "yes", "on"}
 
 ALLOWED_HOSTS = [
     h.strip()

@@ -3,7 +3,7 @@
   "info": {
     "title": "W Craft API",
     "version": "1.0.0",
-    "description": "Canonical contract for frontend-facing project, character tree, poster and Music Studio operations."
+    "description": "Canonical contract for frontend-facing credits, project, character tree, poster and Music Studio operations."
   },
   "servers": [
     {"url": "/"}
@@ -27,6 +27,76 @@
             "description": "OpenAPI document",
             "content": {"application/json": {"schema": {"type": "object"}}}
           }
+        }
+      }
+    },
+    "/api/credits/summary/": {
+      "get": {
+        "operationId": "getCreditSummary",
+        "responses": {
+          "200": {
+            "description": "Current Craft credit balance and 30-day statistics",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditSummary"}}}
+          },
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/history/": {
+      "get": {
+        "operationId": "listCreditHistory",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}},
+          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+          {"name": "operationType", "in": "query", "schema": {"$ref": "#/components/schemas/CreditOperationType"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated append-only credit ledger",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditHistoryPage"}}}
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/demo-top-up/": {
+      "post": {
+        "operationId": "createCreditDemoTopUp",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditDemoTopUpRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditMutationResponse"}}}},
+          "201": {"description": "Demo credits added", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/transfers/": {
+      "post": {
+        "operationId": "createCreditTransfer",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
+          "201": {"description": "Credits transferred", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -818,6 +888,135 @@
           "code": {"type": "string", "deprecated": true},
           "detail": {"type": "string", "deprecated": true},
           "errors": {"type": "object", "additionalProperties": true, "deprecated": true}
+        }
+      },
+      "CreditAmount": {
+        "type": "string",
+        "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+        "example": "1250.00",
+        "description": "Exact decimal amount represented as a JSON string."
+      },
+      "CreditAccount": {
+        "type": "object",
+        "required": ["availableBalance", "reservedBalance", "totalBalance"],
+        "properties": {
+          "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "totalBalance": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "CreditStatistics": {
+        "type": "object",
+        "required": ["periodDays", "received", "sent", "spent", "refunded"],
+        "properties": {
+          "periodDays": {"type": "integer", "minimum": 1},
+          "received": {"$ref": "#/components/schemas/CreditAmount"},
+          "sent": {"$ref": "#/components/schemas/CreditAmount"},
+          "spent": {"$ref": "#/components/schemas/CreditAmount"},
+          "refunded": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "CreditCapabilities": {
+        "type": "object",
+        "required": ["demoTopUpEnabled", "transfersEnabled"],
+        "properties": {
+          "demoTopUpEnabled": {"type": "boolean"},
+          "transfersEnabled": {"type": "boolean"}
+        }
+      },
+      "CreditSummary": {
+        "type": "object",
+        "required": ["account", "stats", "capabilities"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "stats": {"$ref": "#/components/schemas/CreditStatistics"},
+          "capabilities": {"$ref": "#/components/schemas/CreditCapabilities"}
+        }
+      },
+      "CreditOperationType": {
+        "type": "string",
+        "enum": ["demo_top_up", "transfer_out", "transfer_in", "reserve", "capture", "release", "refund", "adjustment"]
+      },
+      "CreditCounterparty": {
+        "type": "object",
+        "required": ["username", "displayName"],
+        "properties": {
+          "username": {"type": "string"},
+          "displayName": {"type": "string"}
+        }
+      },
+      "CreditLedgerEntry": {
+        "type": "object",
+        "required": ["id", "operationType", "availableDelta", "reservedDelta", "availableBalanceAfter", "reservedBalanceAfter", "correlationId", "counterparty", "description", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "operationType": {"$ref": "#/components/schemas/CreditOperationType"},
+          "availableDelta": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedDelta": {"$ref": "#/components/schemas/CreditAmount"},
+          "availableBalanceAfter": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedBalanceAfter": {"$ref": "#/components/schemas/CreditAmount"},
+          "correlationId": {"type": "string", "format": "uuid"},
+          "counterparty": {"allOf": [{"$ref": "#/components/schemas/CreditCounterparty"}], "nullable": true},
+          "description": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditHistoryPage": {
+        "type": "object",
+        "required": ["items", "total", "limit", "offset", "nextOffset"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CreditLedgerEntry"}},
+          "total": {"type": "integer", "minimum": 0},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+          "offset": {"type": "integer", "minimum": 0},
+          "nextOffset": {"type": "integer", "minimum": 0, "nullable": true}
+        }
+      },
+      "CreditDemoTopUpRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["amount"],
+        "properties": {
+          "amount": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "example": "500.00"}
+        }
+      },
+      "CreditMutationResponse": {
+        "type": "object",
+        "required": ["account", "transaction", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "transaction": {"$ref": "#/components/schemas/CreditLedgerEntry"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "CreditTransferRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["username", "amount"],
+        "properties": {
+          "username": {"type": "string", "minLength": 1, "maxLength": 150},
+          "amount": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "example": "25.00"},
+          "note": {"type": "string", "maxLength": 140}
+        }
+      },
+      "CreditTransfer": {
+        "type": "object",
+        "required": ["id", "amount", "recipient", "note", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "recipient": {"$ref": "#/components/schemas/CreditCounterparty"},
+          "note": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditTransferResponse": {
+        "type": "object",
+        "required": ["account", "transfer", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "transfer": {"$ref": "#/components/schemas/CreditTransfer"},
+          "replayed": {"type": "boolean"}
         }
       },
       "CharacterTreeNode": {

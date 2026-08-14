@@ -1,5 +1,6 @@
 from django.contrib import admin
 
+from w_craft_back.credits.models import CreditAccount, CreditLedgerEntry
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.dashboard_models import (
     ProjectTag,
@@ -13,6 +14,75 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectProgress,
     ProjectActivity,
 )
+
+
+@admin.register(CreditAccount)
+class CreditAccountAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "available_balance",
+        "reserved_balance",
+        "updated_at",
+    )
+    search_fields = ("user__username",)
+    raw_id_fields = ("user",)
+    readonly_fields = (
+        "user",
+        "available_balance",
+        "reserved_balance",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CreditLedgerEntry)
+class CreditLedgerEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "operation_type",
+        "available_delta",
+        "reserved_delta",
+        "counterparty",
+        "created_at",
+    )
+    list_filter = ("operation_type",)
+    search_fields = ("account__user__username", "counterparty__username")
+    raw_id_fields = ("account", "counterparty")
+    readonly_fields = (
+        "id",
+        "account",
+        "operation_type",
+        "available_delta",
+        "reserved_delta",
+        "available_balance_after",
+        "reserved_balance_after",
+        "correlation_id",
+        "counterparty",
+        "idempotency_key",
+        "description",
+        "metadata",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Project)

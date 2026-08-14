@@ -3,6 +3,7 @@ from w_craft_back.movie.project.models import *
 from w_craft_back.auth.models import *
 from w_craft_back.character_studio.models import *
 from w_craft_back.character_studio.tree_models import *
+from w_craft_back.credits.models import *
 from w_craft_back.profile.models import *
 from w_craft_back.subscriptions.models import *
 # Dashboard models depend on StudioCharacter — import last.

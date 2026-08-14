@@ -38,6 +38,7 @@ urlpatterns = [
     path('api/invitations/', include('w_craft_back.movie.project.team_urls')),
     path('api/', include('w_craft_back.character_studio.urls')),
     path('api/profile/', include('w_craft_back.profile.urls')),
+    path('api/credits/', include('w_craft_back.credits.urls')),
     path('api/', include('w_craft_back.subscriptions.urls')),
     path('api/media/<path:token>', serve_signed_media, name='signed-media'),
 
