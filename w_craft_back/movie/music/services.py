@@ -911,6 +911,8 @@ def _job_payload(
     include_variants: bool = True,
     permissions: dict | None = None,
 ) -> dict:
+    from w_craft_back.credits.services import generation_charge_payload
+
     effective_permissions = permissions or _permission_payload(actor, job.project)
     can_run_generation = bool(effective_permissions["canRunGeneration"])
     payload = {
@@ -933,6 +935,7 @@ def _job_payload(
         "createdAt": _iso_datetime(job.created_at),
         "completedAt": _iso_datetime(job.completed_at),
         "permissions": effective_permissions,
+        "billing": generation_charge_payload("music", str(job.id)),
     }
     if include_variants:
         payload["variants"] = [
@@ -943,6 +946,8 @@ def _job_payload(
 
 
 def _enqueue_payload(job, *, idempotent_replay: bool) -> dict:
+    from w_craft_back.credits.services import generation_charge_payload
+
     return {
         "jobId": str(job.id),
         "status": job.status,
@@ -950,6 +955,7 @@ def _enqueue_payload(job, *, idempotent_replay: bool) -> dict:
         "idempotentReplay": idempotent_replay,
         "pollAfterMs": 3000,
         "createdAt": _iso_datetime(job.created_at),
+        "billing": generation_charge_payload("music", str(job.id)),
     }
 
 

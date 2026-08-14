@@ -109,7 +109,10 @@ application refuses to start without `DJANGO_SECRET_KEY` and PostgreSQL user/
 password. Mock providers are suitable for local Character/Reference generation;
 review provider-specific defaults before making external calls.
 
-The credits MVP is described in [`docs/credits.md`](docs/credits.md). Set
+The credits wallet and generation settlement flow are described in
+[`docs/credits.md`](docs/credits.md). Paid generation first reserves the
+provider-native estimate, captures the final provider cost on success, and
+releases the reservation on failure or cancellation. Set
 `CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal
 credits without a payment provider.
 

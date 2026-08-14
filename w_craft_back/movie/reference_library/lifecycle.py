@@ -17,6 +17,12 @@ from w_craft_back.movie.reference_library.models import (
     ReferenceJobStage,
     ReferenceJobStatus,
 )
+from w_craft_back.credits.models import GenerationCharge
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    release_generation,
+    reserve_generation,
+)
 
 
 TERMINAL_STATUSES = (
@@ -83,6 +89,11 @@ def claim_reference_job(
             job.error_retryable = False
             job.completed_at = now
             job.save()
+            release_generation(
+                domain="reference",
+                job_id=str(job.id),
+                reason=job.error_code,
+            )
             return None
         job.status = ReferenceJobStatus.PROCESSING
         job.stage = ReferenceJobStage.COMPILING
@@ -196,6 +207,12 @@ def cancel_reference_job(job_id: uuid.UUID | str) -> ReferenceGenerationJob:
     else:
         job.status = ReferenceJobStatus.CANCELLATION_REQUESTED
     job.save()
+    if job.status == ReferenceJobStatus.CANCELLED:
+        release_generation(
+            domain="reference",
+            job_id=str(job.id),
+            reason="cancelled",
+        )
     return job
 
 
@@ -217,6 +234,11 @@ def confirm_reference_cancellation(
     locked.lease_token = None
     locked.lease_expires_at = None
     locked.save()
+    release_generation(
+        domain="reference",
+        job_id=str(locked.id),
+        reason="cancelled",
+    )
     return locked
 
 
@@ -250,6 +272,11 @@ def fail_reference_job(
         locked.lease_token = None
         locked.lease_expires_at = None
         locked.save()
+        release_generation(
+            domain="reference",
+            job_id=str(locked.id),
+            reason="cancelled",
+        )
         return False
     locked.status = ReferenceJobStatus.FAILED
     locked.stage = ReferenceJobStage.FAILED
@@ -262,6 +289,11 @@ def fail_reference_job(
     locked.lease_token = None
     locked.lease_expires_at = None
     locked.save()
+    release_generation(
+        domain="reference",
+        job_id=str(locked.id),
+        reason=locked.error_code,
+    )
     return True
 
 
@@ -320,6 +352,12 @@ def recover_stale_reference_jobs(*, limit: int = 100) -> dict[str, list[uuid.UUI
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        if job.status in TERMINAL_STATUSES:
+            release_generation(
+                domain="reference",
+                job_id=str(job.id),
+                reason=job.error_code or job.status,
+            )
     return {"recovered": recovered, "failed": failed}
 
 
@@ -380,4 +418,25 @@ def retry_reference_job(
             provider=original.provider,
             model_name=original.model_name,
         )
+        original_charge = GenerationCharge.objects.filter(
+            domain="reference",
+            job_id=str(original.id),
+        ).first()
+        if original_charge is not None:
+            try:
+                reserve_generation(
+                    user=actor.user,
+                    domain="reference",
+                    job_id=str(retry.id),
+                    provider=original_charge.provider,
+                    model_name=original_charge.model_name,
+                    estimated_cost=original_charge.estimated_cost,
+                    reservation_amount=original_charge.reserved_amount,
+                    pricing_snapshot=original_charge.pricing_snapshot,
+                )
+            except CreditServiceError as error:
+                raise ReferenceConflict(
+                    error.message,
+                    code=error.code,
+                ) from error
         return retry

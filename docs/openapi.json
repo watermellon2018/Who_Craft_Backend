@@ -100,6 +100,24 @@
         }
       }
     },
+    "/api/credits/generation-estimate/": {
+      "post": {
+        "operationId": "estimateGenerationCost",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GenerationCostEstimateRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Provider-price estimate and current wallet sufficiency",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GenerationCostEstimate"}}}
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "503": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/api/projects/{projectId}/character-tree/": {
       "get": {
         "operationId": "listCharacterTree",
@@ -892,9 +910,9 @@
       },
       "CreditAmount": {
         "type": "string",
-        "pattern": "^-?[0-9]+\\.[0-9]{2}$",
-        "example": "1250.00",
-        "description": "Exact decimal amount represented as a JSON string."
+        "pattern": "^-?[0-9]+\\.[0-9]{2,6}$",
+        "example": "0.039",
+        "description": "Exact credit/USD amount with two to six decimal places."
       },
       "CreditAccount": {
         "type": "object",
@@ -1017,6 +1035,53 @@
           "account": {"$ref": "#/components/schemas/CreditAccount"},
           "transfer": {"$ref": "#/components/schemas/CreditTransfer"},
           "replayed": {"type": "boolean"}
+        }
+      },
+      "GenerationCostEstimateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["domain"],
+        "properties": {
+          "domain": {"type": "string", "enum": ["character", "poster", "reference", "music", "model3d"]},
+          "operation": {"type": "string", "enum": ["generate", "edit", "reference"], "default": "generate"},
+          "modelKey": {"type": "string", "maxLength": 300},
+          "variantCount": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1},
+          "promptLength": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+          "resolution": {"type": "string", "enum": ["512", "1K", "2K", "4K"], "default": "1K"}
+        }
+      },
+      "GenerationCostEstimate": {
+        "type": "object",
+        "required": ["domain", "operation", "provider", "modelKey", "modelName", "currency", "estimatedCost", "reservationAmount", "pricingSource", "costIsEstimate", "availableBalance", "sufficientBalance"],
+        "properties": {
+          "domain": {"type": "string"},
+          "operation": {"type": "string"},
+          "provider": {"type": "string"},
+          "modelKey": {"type": "string"},
+          "modelName": {"type": "string"},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservationAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "pricingSource": {"type": "string"},
+          "costIsEstimate": {"type": "boolean"},
+          "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "sufficientBalance": {"type": "boolean"}
+        }
+      },
+      "GenerationBilling": {
+        "type": "object",
+        "required": ["status", "currency", "estimatedCost", "reservedAmount", "actualCost", "chargedAmount", "uncoveredCost", "costIsEstimate", "provider", "model"],
+        "properties": {
+          "status": {"type": "string", "enum": ["reserved", "captured", "released"]},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "actualCost": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "chargedAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "uncoveredCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "costIsEstimate": {"type": "boolean"},
+          "provider": {"type": "string"},
+          "model": {"type": "string"}
         }
       },
       "CharacterTreeNode": {

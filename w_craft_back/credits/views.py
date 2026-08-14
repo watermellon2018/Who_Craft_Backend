@@ -8,7 +8,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
-from .serializers import CreditTransferSerializer, DemoTopUpSerializer
+from .pricing import GenerationEstimate, estimate_for_model_key
+from .serializers import (
+    CreditTransferSerializer,
+    DemoTopUpSerializer,
+    GenerationEstimateSerializer,
+)
 from .services import (
     CreditServiceError,
     account_statistics,
@@ -18,6 +23,8 @@ from .services import (
     transfer_credits,
     validate_idempotency_key,
 )
+from w_craft_back.services.image_generation.errors import ImageProviderError
+from w_craft_back.services.image_generation.registry import get_default_key
 
 
 DEFAULT_LIMIT = 20
@@ -25,7 +32,11 @@ MAX_LIMIT = 50
 
 
 def _credit(value: Decimal) -> str:
-    return f"{value:.2f}"
+    rendered = format(value, ".6f").rstrip("0").rstrip(".")
+    whole, separator, fraction = rendered.partition(".")
+    if not separator:
+        return f"{whole}.00"
+    return f"{whole}.{fraction.ljust(2, '0')}"
 
 
 def _account_payload(account: CreditAccount) -> dict:
@@ -125,6 +136,70 @@ class CreditSummaryView(APIView):
                     "demoTopUpEnabled": settings.CREDITS_DEMO_TOP_UP_ENABLED,
                     "transfersEnabled": True,
                 },
+            }
+        )
+
+
+class GenerationEstimateView(APIView):
+    def post(self, request):
+        serializer = GenerationEstimateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer)
+        data = serializer.validated_data
+        try:
+            if data["domain"] in {"music", "model3d"}:
+                estimate = GenerationEstimate(
+                    provider="local",
+                    model_key="local",
+                    model_name="local",
+                    currency="USD",
+                    estimated_cost=Decimal("0"),
+                    reservation_amount=Decimal("0"),
+                    pricing_source="local",
+                    prompt_tokens_estimate=0,
+                    snapshot={
+                        "currency": "USD",
+                        "source": "local",
+                        "markup": "0",
+                        "creditUsdRate": "1",
+                    },
+                )
+            else:
+                model_key = data["modelKey"] or (
+                    getattr(getattr(request.user, "profile", None), "image_generation_model", "")
+                    or get_default_key()
+                )
+                estimate = estimate_for_model_key(
+                    model_key,
+                    operation=data["operation"],
+                    variant_count=data["variantCount"],
+                    prompt_length=data["promptLength"],
+                    resolution=data["resolution"],
+                )
+        except CreditServiceError as error:
+            return _error_response(error)
+        except ImageProviderError as error:
+            return Response(
+                {"code": error.code, "detail": error.message},
+                status=error.http_status,
+            )
+        account = get_or_create_account(request.user)
+        return Response(
+            {
+                "domain": data["domain"],
+                "operation": data["operation"],
+                "provider": estimate.provider,
+                "modelKey": estimate.model_key,
+                "modelName": estimate.model_name,
+                "currency": estimate.currency,
+                "estimatedCost": _credit(estimate.estimated_cost),
+                "reservationAmount": _credit(estimate.reservation_amount),
+                "pricingSource": estimate.pricing_source,
+                "costIsEstimate": True,
+                "availableBalance": _credit(account.available_balance),
+                "sufficientBalance": (
+                    account.available_balance >= estimate.reservation_amount
+                ),
             }
         )
 

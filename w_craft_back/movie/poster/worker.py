@@ -198,6 +198,7 @@ def execute_poster_job(job_id: int) -> PosterGenerationJob:
                 claimed,
                 images,
                 prepared_images=prepared_images,
+                provider=provider,
             )
         except Exception:
             logger.exception(

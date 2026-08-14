@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from w_craft_back.movie.poster.errors import PosterError
 from w_craft_back.movie.poster.models import PosterGenerationJob, PosterJobStatus
+from w_craft_back.credits.services import release_generation
 
 
 @transaction.atomic
@@ -49,6 +50,12 @@ def recover_stale_poster_jobs(*, limit: int = 100) -> dict[str, list[int]]:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        if job.status == PosterJobStatus.FAILED:
+            release_generation(
+                domain="poster",
+                job_id=str(job.id),
+                reason=job.error_code,
+            )
     return {"requeued": requeued, "failed": failed}
 
 
@@ -83,6 +90,11 @@ def request_poster_cancellation(job_id: int) -> PosterGenerationJob:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        release_generation(
+            domain="poster",
+            job_id=str(job.id),
+            reason="cancelled",
+        )
     return job
 
 

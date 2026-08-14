@@ -1,6 +1,10 @@
 from django.contrib import admin
 
-from w_craft_back.credits.models import CreditAccount, CreditLedgerEntry
+from w_craft_back.credits.models import (
+    CreditAccount,
+    CreditLedgerEntry,
+    GenerationCharge,
+)
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.dashboard_models import (
     ProjectTag,
@@ -73,6 +77,36 @@ class CreditLedgerEntryAdmin(admin.ModelAdmin):
         "description",
         "metadata",
         "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(GenerationCharge)
+class GenerationChargeAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "domain",
+        "provider",
+        "model_name",
+        "status",
+        "estimated_cost",
+        "charged_amount",
+        "created_at",
+    )
+    list_filter = ("domain", "provider", "status", "cost_is_estimate")
+    search_fields = ("account__user__username", "job_id", "model_name")
+    raw_id_fields = ("account",)
+    readonly_fields = tuple(
+        field.name for field in GenerationCharge._meta.fields
     )
 
     def has_add_permission(self, request):

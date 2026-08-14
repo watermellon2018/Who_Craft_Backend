@@ -27,3 +27,25 @@ class CreditTransferSerializer(serializers.Serializer):
         trim_whitespace=True,
         default="",
     )
+
+
+class GenerationEstimateSerializer(serializers.Serializer):
+    domain = serializers.ChoiceField(
+        choices=("character", "poster", "reference", "music", "model3d")
+    )
+    operation = serializers.ChoiceField(
+        choices=("generate", "edit", "reference"),
+        default="generate",
+    )
+    modelKey = serializers.CharField(
+        max_length=300,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    variantCount = serializers.IntegerField(min_value=1, max_value=100, default=1)
+    promptLength = serializers.IntegerField(min_value=0, max_value=100000, default=0)
+    resolution = serializers.ChoiceField(
+        choices=("512", "1K", "2K", "4K"),
+        default="1K",
+    )

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from datetime import timedelta
+from decimal import Decimal
 import uuid
 import subprocess
 import sys
@@ -21,6 +22,11 @@ from typing import Callable
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from w_craft_back.credits.services import (
+    capture_generation,
+    release_generation,
+    reserve_generation,
+)
 
 from w_craft_back.character_studio.models import (
     CharacterAsset,
@@ -338,6 +344,21 @@ def ensure_reconstruction(
         model_version="3a761b539b29fe4ff64714813aa9560fd66f5de0",
         progress=0,
         timeout_seconds=7200,
+    )
+    reserve_generation(
+        user=operation_actor.user,
+        domain="model3d",
+        job_id=str(job.job_id),
+        provider=RECONSTRUCTION_PROVIDER,
+        model_name=job.model_name,
+        estimated_cost=Decimal("0"),
+        reservation_amount=Decimal("0"),
+        pricing_snapshot={
+            "currency": "USD",
+            "source": "local",
+            "markup": "0",
+            "creditUsdRate": "1",
+        },
     )
     relative_path = (
         f"character-studio/model3d/{locked_character.character_id}/"
@@ -725,6 +746,12 @@ def _fail_job(
         updated_at=now,
     )
     if updated:
+        release_generation(
+            domain="model3d",
+            job_id=str(job_id),
+            reason=code,
+        )
+    if updated:
         CharacterAsset.objects.filter(
             source_job_id=job_id,
             asset_type=CharacterAssetType.MODEL_3D,
@@ -916,6 +943,13 @@ def _run_reconstruction_job(
                     "heartbeat_at",
                     "updated_at",
                 )
+            )
+            capture_generation(
+                domain="model3d",
+                job_id=str(locked_job.job_id),
+                actual_cost=Decimal("0"),
+                provider_usage={"costSource": "local", "costUsd": "0"},
+                cost_is_estimate=False,
             )
         return locked_asset
     except Exception:  # Worker boundary: persist every pipeline failure.

@@ -36,6 +36,13 @@ from w_craft_back.character_studio.services.errors import (
     ValidationError,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.credits.pricing import estimate_for_pinned_provider
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    get_or_create_account,
+    release_generation,
+    reserve_generation,
+)
 
 
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -251,10 +258,11 @@ def _legacy_model_spec(key: str):
             mode="mock",
             supports_generate=True,
             supports_edit=True,
-            supports_reference=True,
+        supports_reference=True,
             supported_parameters={
                 "n": {"type": "integer", "min": 1, "max": 4},
             },
+            provider_pricing={"currency": "USD", "source": "local"},
         )
     return ModelSpec(
         key="gemini",
@@ -271,6 +279,11 @@ def _legacy_model_spec(key: str):
         supported_parameters={
             "aspect_ratio": {"type": "string"},
             "n": {"type": "integer", "min": 1, "max": 4},
+        },
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "output_image": "0.040000",
         },
     )
 
@@ -401,6 +414,11 @@ def _recover_locked(job, now) -> bool:
         job.failed_at = now
         _clear_lease(job)
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return True
     if job.attempts >= job.max_attempts:
         job.status = GenerationJobStatus.FAILED
@@ -409,6 +427,11 @@ def _recover_locked(job, now) -> bool:
         job.failed_at = now
         _clear_lease(job)
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return True
     job.status = GenerationJobStatus.QUEUED
     job.progress = 0
@@ -472,10 +495,21 @@ def build_generation_preview(
         status=GenerationJobStatus.PROCESSING,
     )
     call_count = len(normalized_types)
-    unit_cost = estimated_cost_per_call(provider)
-    estimated_cost = (
-        None if unit_cost is None else format(unit_cost * call_count, "f")
-    )
+    try:
+        estimate = estimate_for_pinned_provider(
+            provider=provider,
+            provider_snapshot=selection.snapshot,
+            model_name=selection.model_version,
+            operation="generate",
+            variant_count=call_count,
+        )
+    except CreditServiceError as exc:
+        raise CharacterStudioError(
+            message=exc.message,
+            error_code=exc.code,
+            status_code=exc.http_status,
+        ) from exc
+    account = get_or_create_account(actor.user)
     return {
         "provider": provider,
         "provider_source": selection.source,
@@ -483,7 +517,16 @@ def build_generation_preview(
         "mode": "offline" if provider.strip().lower() == "mock" else "paid",
         "image_types": normalized_types,
         "provider_call_count": call_count,
-        "estimated_cost_usd": estimated_cost,
+        "estimated_cost_usd": (
+            format(estimate.estimated_cost, "f").rstrip("0").rstrip(".") or "0"
+        ),
+        "reservation_amount": (
+            format(estimate.reservation_amount, "f").rstrip("0").rstrip(".") or "0"
+        ),
+        "currency": estimate.currency,
+        "pricing_source": estimate.pricing_source,
+        "available_balance": format(account.available_balance, "f"),
+        "sufficient_balance": account.available_balance >= estimate.reservation_amount,
         "budgets": {
             "user": {
                 "used": usage["user"],
@@ -788,10 +831,14 @@ def _enqueue_job_atomic(
         "timeout_seconds": configured_timeout_seconds(),
     }
     if not idempotency_key:
-        return CharacterGenerationJob.objects.create(**values)
+        job = CharacterGenerationJob.objects.create(**values)
+        _reserve_character_generation(job)
+        return job
     try:
         with transaction.atomic():
-            return CharacterGenerationJob.objects.create(**values)
+            job = CharacterGenerationJob.objects.create(**values)
+            _reserve_character_generation(job)
+            return job
     except IntegrityError:
         existing = CharacterGenerationJob.objects.get(
             project=locked_character.project,
@@ -808,6 +855,40 @@ def _enqueue_job_atomic(
             compiled=compiled,
             provider_operation=provider_operation,
         )
+
+
+def _reserve_character_generation(job: CharacterGenerationJob) -> None:
+    prompt = "\n".join(
+        part
+        for part in (job.compiled_prompt, job.negative_prompt, job.edit_instruction)
+        if part
+    )
+    try:
+        estimate = estimate_for_pinned_provider(
+            provider=job.provider,
+            provider_snapshot=job.provider_snapshot,
+            model_name=job.model_version,
+            operation="edit" if job.provider_operation == "edit" else "generate",
+            variant_count=job.variant_count,
+            prompt=prompt,
+            resolution=str((job.request_payload or {}).get("resolution") or "1K"),
+        )
+        reserve_generation(
+            user=job.actor.user,
+            domain="character",
+            job_id=str(job.job_id),
+            provider=estimate.provider,
+            model_name=estimate.model_name,
+            estimated_cost=estimate.estimated_cost,
+            reservation_amount=estimate.reservation_amount,
+            pricing_snapshot=estimate.snapshot,
+        )
+    except CreditServiceError as exc:
+        raise CharacterStudioError(
+            message=exc.message,
+            error_code=exc.code,
+            status_code=exc.http_status,
+        ) from exc
 
 
 @transaction.atomic
@@ -833,6 +914,11 @@ def claim_job(job_id) -> JobLease | None:
         job.error_message = "The generation actor no longer exists."
         job.failed_at = now
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return None
     if job.attempts >= job.max_attempts:
         job.status = GenerationJobStatus.FAILED
@@ -840,6 +926,11 @@ def claim_job(job_id) -> JobLease | None:
         job.error_message = "Generation worker exhausted its safe retry attempts."
         job.failed_at = now
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return None
 
     if job.job_type in IMAGE_GENERATION_JOB_TYPES:
@@ -930,6 +1021,11 @@ def fail_job(lease: JobLease, *, error_code: str, error_message: str):
     job.progress = 0
     _clear_lease(job)
     job.save()
+    release_generation(
+        domain="character",
+        job_id=str(job.job_id),
+        reason=job.error_code,
+    )
     return job
 
 
@@ -1008,6 +1104,11 @@ def request_job_cancellation(*, actor, job_id):
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason="cancelled",
+        )
     return job
 
 
@@ -1066,7 +1167,7 @@ def retry_character_job(*, actor, job_id):
         retried.save(update_fields=["retry_of", "updated_at"])
         return retried
 
-    return CharacterGenerationJob.objects.create(
+    retried = CharacterGenerationJob.objects.create(
         character=original.character,
         project=original.project,
         user=original.user,
@@ -1091,3 +1192,5 @@ def retry_character_job(*, actor, job_id):
         timeout_seconds=original.timeout_seconds,
         max_attempts=original.max_attempts,
     )
+    _reserve_character_generation(retried)
+    return retried

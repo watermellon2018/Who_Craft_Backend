@@ -16,6 +16,7 @@ import base64
 import binascii
 import logging
 import re
+from decimal import Decimal
 from typing import Any
 
 from django.conf import settings
@@ -34,6 +35,7 @@ from .errors import (
     map_to_provider_error,
 )
 from .registry import ModelSpec
+from .usage import merge_usage, normalized_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +252,26 @@ class LiteLLMProvider:
         self.spec = spec
         self.name = spec.key
         self.model_id = spec.model_id
+        self._usage_events: list[dict[str, Any]] = []
+
+    def usage_snapshot(self) -> dict[str, Any]:
+        return merge_usage(self._usage_events)
+
+    def _record_usage(self, response: Any, *, output_count: int) -> None:
+        usage = normalized_response_usage(response)
+        if "costUsd" not in usage:
+            pricing = self.spec.provider_pricing or {}
+            output_rate = pricing.get("output_image")
+            input_rate = pricing.get("input_text_token")
+            if output_rate is not None:
+                cost = Decimal(str(output_rate)) * output_count
+                prompt_tokens = usage.get("promptTokens", 0)
+                if input_rate is not None and isinstance(prompt_tokens, int):
+                    cost += Decimal(str(input_rate)) * prompt_tokens
+                usage["costUsd"] = format(cost, "f")
+                usage["costSource"] = "provider-rate"
+        if usage:
+            self._usage_events.append(usage)
 
     def supports_edit(self) -> bool:
         return self.spec.supports_edit
@@ -289,7 +311,9 @@ class LiteLLMProvider:
                 response = litellm.image_generation(**params)
             except Exception as exc:  # noqa: BLE001
                 raise map_to_provider_error(exc) from exc
-            return _extract_image_api(response)
+            images = _extract_image_api(response)
+            self._record_usage(response, output_count=len(images))
+            return images
 
         # mode == "chat"
         try:
@@ -302,7 +326,9 @@ class LiteLLMProvider:
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc
-        return _extract_chat_images(response)
+        images = _extract_chat_images(response)
+        self._record_usage(response, output_count=len(images))
+        return images
 
     # ------------------------------------------------------------------ #
     # Edit
@@ -351,6 +377,7 @@ class LiteLLMProvider:
             raise map_to_provider_error(exc) from exc
 
         images = _extract_chat_images(response)
+        self._record_usage(response, output_count=len(images))
         return images[0]
 
     # ------------------------------------------------------------------ #
@@ -405,4 +432,6 @@ class LiteLLMProvider:
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc
-        return _extract_chat_images(response)
+        images = _extract_chat_images(response)
+        self._record_usage(response, output_count=len(images))
+        return images

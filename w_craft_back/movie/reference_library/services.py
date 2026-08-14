@@ -65,6 +65,12 @@ from w_craft_back.movie.reference_library.providers import (
     resolve_reference_provider,
 )
 from w_craft_back.services.image_generation.errors import ImageProviderError
+from w_craft_back.credits.pricing import estimate_for_pinned_provider
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    generation_charge_payload,
+    reserve_generation,
+)
 from w_craft_back.storage_gateway import (
     NormalizedImage,
     StorageGatewayError,
@@ -836,6 +842,7 @@ def _job_payload(
         ),
         "createdAt": job.created_at.isoformat(),
         "completedAt": job.completed_at.isoformat() if job.completed_at else None,
+        "billing": generation_charge_payload("reference", str(job.id)),
     }
     if detail:
         variants = job.variants.select_related(
@@ -976,6 +983,35 @@ def enqueue_job(
             provider=provider.name,
             model_name=provider.model_id,
         )
+        try:
+            estimate = estimate_for_pinned_provider(
+                provider=provider.name,
+                provider_snapshot=(
+                    {"spec": provider.spec.__dict__}
+                    if getattr(provider, "spec", None) is not None
+                    else None
+                ),
+                model_name=provider.model_id,
+                operation="edit" if operation == ReferenceOperation.EDIT else "generate",
+                variant_count=data["variantCount"],
+                prompt=compiled.compiled_prompt,
+            )
+            reserve_generation(
+                user=actor.user,
+                domain="reference",
+                job_id=str(job.id),
+                provider=estimate.provider,
+                model_name=estimate.model_name,
+                estimated_cost=estimate.estimated_cost,
+                reservation_amount=estimate.reservation_amount,
+                pricing_snapshot=estimate.snapshot,
+            )
+        except CreditServiceError as error:
+            raise ReferenceError(
+                error.message,
+                code=error.code,
+                http_status=error.http_status,
+            ) from error
     except IntegrityError as error:
         raise ReferenceConflict(
             "A generation job is already active for this reference.",

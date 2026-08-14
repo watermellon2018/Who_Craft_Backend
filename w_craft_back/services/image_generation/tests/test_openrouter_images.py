@@ -78,6 +78,7 @@ def _catalog_payload():
                         "nested": {"safe": True},
                     },
                 },
+                "pricing": {"image": "0.040", "prompt": "0.0000005"},
             },
             {
                 "id": "text/not-an-image",
@@ -153,6 +154,7 @@ class OpenRouterCatalogTest(TestCase):
             spec.supported_parameters["future_option"]["type"],
             "future-shape",
         )
+        self.assertEqual(spec.provider_pricing["image"], "0.040")
 
     def test_catalog_is_cached_for_ttl(self):
         session = _session(get_response=_response(200, _catalog_payload()))
@@ -225,7 +227,13 @@ class OpenRouterProviderTest(TestCase):
 
     def test_generate_sends_only_supported_whitelisted_parameters(self):
         session = _session(
-            post_response=_response(200, {"data": [{"b64_json": PNG_B64}]})
+            post_response=_response(
+                200,
+                {
+                    "data": [{"b64_json": PNG_B64}],
+                    "usage": {"cost": 0.040125, "prompt_tokens": 250},
+                },
+            )
         )
         provider = self._provider(session)
 
@@ -256,6 +264,8 @@ class OpenRouterProviderTest(TestCase):
         )
         self.assertEqual(session.headers["HTTP-Referer"], "https://craft.example")
         self.assertEqual(session.headers["X-OpenRouter-Title"], "Craft")
+        self.assertEqual(provider.usage_snapshot()["costUsd"], "0.040125")
+        self.assertEqual(provider.usage_snapshot()["promptTokens"], 250)
 
     def test_generate_sends_n_only_for_multiple_images(self):
         session = _session(

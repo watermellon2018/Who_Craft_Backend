@@ -13,10 +13,15 @@ from w_craft_back.credits.models import (
     CreditAccount,
     CreditLedgerEntry,
     CreditOperationType,
+    GenerationCharge,
+    GenerationChargeStatus,
 )
 from w_craft_back.credits.services import (
     InsufficientCredits,
+    capture_provider_generation,
     demo_top_up,
+    release_generation,
+    reserve_generation,
     transfer_credits,
 )
 
@@ -337,6 +342,127 @@ class CreditsApiTest(TestCase):
 
         self.assertEqual(top_up.status_code, 400)
         self.assertEqual(transfer.status_code, 400)
+
+    def test_generation_estimate_uses_original_provider_price_and_balance(self):
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "character",
+                "operation": "generate",
+                "modelKey": "gemini-flash-image",
+                "variantCount": 1,
+                "promptLength": 0,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["estimatedCost"], "0.039")
+        self.assertEqual(response.json()["reservationAmount"], "0.039")
+        self.assertEqual(response.json()["pricingSource"], "google")
+        self.assertTrue(response.json()["sufficientBalance"])
+
+
+class GenerationCreditSettlementTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="billing", password="password")
+        self.account = CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+    def _reserve(self, job_id: str = "job-1"):
+        return reserve_generation(
+            user=self.user,
+            domain="character",
+            job_id=job_id,
+            provider="litellm",
+            model_name="gemini/gemini-2.5-flash-image",
+            estimated_cost=Decimal("0.050000"),
+            reservation_amount=Decimal("0.050000"),
+            pricing_snapshot={"source": "google"},
+        )
+
+    def test_reserve_capture_release_remainder_and_replay_are_idempotent(self):
+        first = self._reserve()
+        replay = self._reserve()
+
+        class Provider:
+            def usage_snapshot(self):
+                return {"costUsd": "0.039000", "costSource": "provider"}
+
+        settled = capture_provider_generation(
+            domain="character",
+            job_id="job-1",
+            provider=Provider(),
+        )
+        settled_replay = capture_provider_generation(
+            domain="character",
+            job_id="job-1",
+            provider=Provider(),
+        )
+
+        self.assertFalse(first.replayed)
+        self.assertTrue(replay.replayed)
+        self.assertFalse(settled.replayed)
+        self.assertTrue(settled_replay.replayed)
+        charge = GenerationCharge.objects.get(pk=first.charge.pk)
+        self.assertEqual(charge.status, GenerationChargeStatus.CAPTURED)
+        self.assertEqual(charge.actual_cost, Decimal("0.039000"))
+        self.assertFalse(charge.cost_is_estimate)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.available_balance, Decimal("0.961000"))
+        self.assertEqual(self.account.reserved_balance, Decimal("0.000000"))
+        self.assertEqual(
+            list(
+                self.account.ledger_entries.order_by("created_at").values_list(
+                    "operation_type", flat=True
+                )
+            ),
+            ["reserve", "capture", "release"],
+        )
+
+    def test_failure_releases_full_reservation_once(self):
+        self._reserve("job-failed")
+
+        released = release_generation(
+            domain="character",
+            job_id="job-failed",
+            reason="provider_failed",
+        )
+        replay = release_generation(
+            domain="character",
+            job_id="job-failed",
+            reason="provider_failed",
+        )
+
+        self.assertFalse(released.replayed)
+        self.assertTrue(replay.replayed)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.available_balance, Decimal("1.000000"))
+        self.assertEqual(self.account.reserved_balance, Decimal("0.000000"))
+
+    def test_reservation_rejects_insufficient_balance_without_charge(self):
+        with self.assertRaises(InsufficientCredits):
+            reserve_generation(
+                user=self.user,
+                domain="poster",
+                job_id="expensive-job",
+                provider="openrouter-images",
+                model_name="google/gemini-3.1-flash-image-preview",
+                estimated_cost=Decimal("2.000000"),
+                reservation_amount=Decimal("2.000000"),
+            )
+
+        self.assertFalse(GenerationCharge.objects.exists())
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.available_balance, Decimal("1.000000"))
 
 
 class CreditTransferConcurrencyTest(TransactionTestCase):

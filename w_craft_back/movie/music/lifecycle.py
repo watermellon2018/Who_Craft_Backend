@@ -41,6 +41,11 @@ from w_craft_back.movie.music.prompt_compiler import (
 from w_craft_back.movie.music.providers import get_music_provider
 from w_craft_back.movie.project.dashboard_models import MusicTrack, Scene
 from w_craft_back.movie.project.models import Project
+from w_craft_back.credits.services import (
+    capture_generation,
+    release_generation,
+    reserve_generation,
+)
 
 
 TERMINAL_MUSIC_JOB_STATUSES = frozenset(
@@ -366,6 +371,27 @@ def enqueue_music_job(
                     idempotency_key=key,
                     request_fingerprint=fingerprint,
                 )
+                if provider.name != "mock":
+                    raise MusicLifecycleError(
+                        "The selected music provider does not expose billing data.",
+                        code="GENERATION_PRICE_UNAVAILABLE",
+                        http_status=503,
+                    )
+                reserve_generation(
+                    user=actor,
+                    domain="music",
+                    job_id=str(job.id),
+                    provider=provider.name,
+                    model_name=effective_model,
+                    estimated_cost=Decimal("0"),
+                    reservation_amount=Decimal("0"),
+                    pricing_snapshot={
+                        "currency": "USD",
+                        "source": "local",
+                        "markup": "0",
+                        "creditUsdRate": "1",
+                    },
+                )
         except IntegrityError:
             existing = MusicGenerationJob.objects.select_for_update().get(
                 project=project,
@@ -425,6 +451,11 @@ def claim_music_job(
         job.error_retryable = False
         job.completed_at = now
         job.save()
+        release_generation(
+            domain="music",
+            job_id=str(job.id),
+            reason=job.error_code,
+        )
         return None
 
     if job.status == MusicJobStatus.QUEUED:
@@ -492,6 +523,11 @@ def request_music_cancellation(
             job.lease_token = None
             job.lease_expires_at = None
         job.save()
+        release_generation(
+            domain="music",
+            job_id=str(job.id),
+            reason="cancelled",
+        )
     return job
 
 
@@ -549,6 +585,12 @@ def recover_stale_music_jobs(*, limit: int = 100) -> dict[str, list[uuid.UUID]]:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        if job.status == MusicJobStatus.FAILED:
+            release_generation(
+                domain="music",
+                job_id=str(job.id),
+                reason=job.error_code,
+            )
     return {"recovered": recovered, "failed": failed}
 
 
@@ -702,6 +744,13 @@ def finalize_music_job(
     locked.error_http_status = None
     locked.error_retryable = None
     locked.save()
+    capture_generation(
+        domain="music",
+        job_id=str(locked.id),
+        actual_cost=Decimal("0"),
+        provider_usage={"costSource": "local", "costUsd": "0"},
+        cost_is_estimate=False,
+    )
     return locked
 
 
@@ -734,6 +783,11 @@ def fail_music_job(
     locked.lease_expires_at = None
     locked.next_poll_at = None
     locked.save()
+    release_generation(
+        domain="music",
+        job_id=str(locked.id),
+        reason=locked.error_code,
+    )
     return True
 
 
@@ -757,6 +811,11 @@ def confirm_music_cancellation(claimed: MusicGenerationJob) -> MusicGenerationJo
     locked.lease_expires_at = None
     locked.next_poll_at = None
     locked.save()
+    release_generation(
+        domain="music",
+        job_id=str(locked.id),
+        reason="cancelled",
+    )
     return locked
 
 

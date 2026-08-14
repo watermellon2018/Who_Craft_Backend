@@ -267,6 +267,8 @@ def references_payload(character, readiness):
 
 
 def job_dict(job, include_variants=True):
+    from w_craft_back.credits.services import generation_charge_payload
+
     data = model_dict(job)
     if data.get("status") == "failed":
         data["error_message"] = public_generation_error_message(
@@ -300,6 +302,15 @@ def job_dict(job, include_variants=True):
     data["failed_at"] = value_to_json(job.failed_at)
     data["lease_expires_at"] = value_to_json(job.lease_expires_at)
     data["heartbeat_at"] = value_to_json(job.heartbeat_at)
+    billing_domain = (
+        "model3d"
+        if job.job_type == "model3d_reconstruction"
+        else "character"
+    )
+    data["billing"] = generation_charge_payload(
+        billing_domain,
+        str(job.job_id),
+    )
     if include_variants:
         data["variants"] = [variant_dict(variant) for variant in job.variants.order_by("variant_index")]
     return data

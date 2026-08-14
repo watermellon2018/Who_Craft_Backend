@@ -12,14 +12,28 @@ from typing import Any, Optional
 import uuid
 
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from w_craft_back.movie.poster.errors import (
     IdempotencyConflict,
+    PosterError,
     PosterConcurrencyLimit,
     PosterQuotaExceeded,
+)
+from w_craft_back.credits.pricing import estimate_for_pinned_provider
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    capture_provider_generation,
+    generation_charge_payload,
+    release_generation,
+    reserve_generation,
+)
+from w_craft_back.services.image_generation import (
+    ImageProviderError,
+    resolve_provider_for_user,
 )
 from w_craft_back.movie.poster.generation_guard import (
     daily_quota,
@@ -140,6 +154,7 @@ def serialize_job(job: PosterGenerationJob, request=None) -> dict[str, Any]:
             else None
         ),
         "completedAt": job.completed_at.isoformat() if job.completed_at else None,
+        "billing": generation_charge_payload("poster", str(job.id)),
     }
 
 
@@ -248,6 +263,12 @@ def _expire_stale_jobs(user: User, now) -> None:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        if job.status == PosterJobStatus.FAILED:
+            release_generation(
+                domain="poster",
+                job_id=str(job.id),
+                reason=job.error_code,
+            )
 
 
 def enqueue_generation_job(
@@ -266,6 +287,7 @@ def enqueue_generation_job(
     reference_image_url: str = "",
     reference_asset: Optional[ProjectAsset] = None,
     source_variant: Optional[PosterVariant] = None,
+    use_mock: bool | None = None,
 ) -> tuple[ProjectPoster, PosterGenerationJob, bool]:
     """Create one guarded job or replay the job for the same request key."""
     aspect, width, height = POSTER_FORMAT_DIMENSIONS[format]
@@ -354,6 +376,55 @@ def enqueue_generation_job(
             source_variant=source_variant,
             status=PosterJobStatus.QUEUED,
         )
+        try:
+            should_use_mock = (
+                getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
+                if use_mock is None
+                else use_mock
+            )
+            if should_use_mock:
+                estimate = estimate_for_pinned_provider(
+                    provider="mock",
+                    provider_snapshot=None,
+                    model_name="mock-poster-provider",
+                    operation=(
+                        "edit" if operation == PosterJobOperation.EDIT else "generate"
+                    ),
+                    variant_count=1,
+                    prompt=prompt,
+                )
+            else:
+                selected_provider = resolve_provider_for_user(
+                    user,
+                    override=requested_model or None,
+                    require_edit=operation == PosterJobOperation.EDIT,
+                )
+                estimate = estimate_for_pinned_provider(
+                    provider=selected_provider.name,
+                    provider_snapshot={"spec": selected_provider.spec.__dict__},
+                    model_name=selected_provider.model_id,
+                    operation=(
+                        "edit" if operation == PosterJobOperation.EDIT else "generate"
+                    ),
+                    variant_count=1,
+                    prompt=prompt,
+                )
+            reserve_generation(
+                user=user,
+                domain="poster",
+                job_id=str(job.id),
+                provider=estimate.provider,
+                model_name=estimate.model_name,
+                estimated_cost=estimate.estimated_cost,
+                reservation_amount=estimate.reservation_amount,
+                pricing_snapshot=estimate.snapshot,
+            )
+        except (CreditServiceError, ImageProviderError) as error:
+            raise PosterError(
+                str(getattr(error, "message", error)),
+                code=getattr(error, "code", "PROVIDER_UNAVAILABLE"),
+                http_status=getattr(error, "http_status", 503),
+            ) from error
 
         if poster.status in (
             ProjectPosterStatus.EMPTY,
@@ -457,6 +528,11 @@ def mark_generation_processing(
             locked.error_message = "Poster generation retry limit reached"
             locked.completed_at = timezone.now()
             locked.save()
+            release_generation(
+                domain="poster",
+                job_id=str(locked.id),
+                reason=locked.error_code,
+            )
             return None
         now = timezone.now()
         locked.status = PosterJobStatus.PROCESSING
@@ -547,6 +623,7 @@ def complete_generation(
     image_bytes_list: list[bytes],
     *,
     prepared_images: Optional[list[NormalizedImage]] = None,
+    provider: Any = None,
 ) -> list[PosterVariant]:
     """Normalize/store provider results, then commit metadata exactly once."""
 
@@ -629,6 +706,11 @@ def complete_generation(
                 first.is_selected = True
                 poster.selected_variant = first
             poster.save(update_fields=["selected_variant", "status", "updated_at"])
+            capture_provider_generation(
+                domain="poster",
+                job_id=str(locked.id),
+                provider=provider,
+            )
             persisted = True
             return created
     finally:
@@ -686,6 +768,11 @@ def fail_generation(
         if poster.selected_variant_id is None:
             poster.status = ProjectPosterStatus.FAILED
             poster.save(update_fields=["status", "updated_at"])
+        release_generation(
+            domain="poster",
+            job_id=str(locked.id),
+            reason=locked.error_code or "failed",
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -720,6 +807,7 @@ def complete_generation_mock(
     return complete_generation(
         claimed,
         [placeholder_bytes for _ in range(variant_count)],
+        provider=None,
     )
 
 

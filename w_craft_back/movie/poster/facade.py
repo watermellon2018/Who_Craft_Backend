@@ -212,9 +212,14 @@ def _raise_persistence_failure(job, exc: Exception) -> None:
     ) from exc
 
 
-def _complete_provider_result(job, images: list[bytes], provider_key: str) -> None:
+def _complete_provider_result(
+    job,
+    images: list[bytes],
+    provider_key: str,
+    provider=None,
+) -> None:
     try:
-        complete_generation(job, images)
+        complete_generation(job, images, provider=provider)
     except InvalidProviderImage:
         invalid_output = ImageProviderError(
             code="IMAGE_PROVIDER_BAD_RESPONSE",
@@ -396,6 +401,7 @@ def generate_poster(
             reference_storage_key=reference_storage_key,
             reference_mime_type=reference_mime_type if reference_storage_key else "",
             reference_asset=reference_asset,
+            use_mock=run_mock,
         )
     except Exception:
         if reference_storage_key:
@@ -485,7 +491,7 @@ def generate_poster(
             )
             _provider_failure(claimed, provider_key, mapped)
         else:
-            _complete_provider_result(claimed, images, provider_key)
+            _complete_provider_result(claimed, images, provider_key, provider)
 
     job.refresh_from_db()
     poster.refresh_from_db()
@@ -555,6 +561,7 @@ def edit_poster(
             reference_mime_type=source_mime_type,
             source_variant=source,
             requested_model=image_model or "",
+            use_mock=run_mock,
         )
     except Exception:
         default_storage.delete(source_storage_key)
@@ -610,7 +617,7 @@ def edit_poster(
             )
             _provider_failure(claimed, provider_key, mapped)
         else:
-            _complete_provider_result(claimed, [edited], provider_key)
+            _complete_provider_result(claimed, [edited], provider_key, provider)
 
     job.refresh_from_db()
     poster.refresh_from_db()

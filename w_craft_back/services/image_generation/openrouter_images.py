@@ -27,6 +27,7 @@ from .errors import (
 )
 from .litellm_provider import _extract_image_api, _provider_output_count_limit
 from .registry import OPENROUTER_IMAGES_KEY_PREFIX, ModelSpec
+from .usage import merge_usage, normalized_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,13 @@ def _parse_catalog(payload: Any) -> list[ModelSpec]:
         if "image" not in output_modalities:
             continue
         parameters = _normalize_supported_parameters(row.get("supported_parameters"))
+        raw_pricing = _json_safe(row.get("pricing"))
+        if isinstance(raw_pricing, Mapping):
+            provider_pricing = dict(raw_pricing)
+        elif isinstance(raw_pricing, list):
+            provider_pricing = {"catalog": raw_pricing}
+        else:
+            provider_pricing = {}
         supports_reference = _reference_capability(input_modalities, parameters)
         supports_generate = _supports_raster_output(parameters)
         name = row.get("name")
@@ -384,6 +392,7 @@ def _parse_catalog(payload: Any) -> list[ModelSpec]:
                 input_modalities=input_modalities,
                 output_modalities=output_modalities,
                 requires_env=("OPENROUTER_API_KEY",),
+                provider_pricing=provider_pricing,
             )
         )
         seen.add(key)
@@ -654,6 +663,7 @@ class OpenRouterImagesProvider:
         self.name = spec.key
         self.model_id = spec.model_id
         self.session = session or requests.Session()
+        self._usage_events: list[dict[str, Any]] = []
         self.session.headers.update(_request_headers(require_key=True))
         self.session.headers.setdefault("Content-Type", "application/json")
 
@@ -662,6 +672,9 @@ class OpenRouterImagesProvider:
 
     def supports_reference(self) -> bool:
         return self.spec.supports_reference
+
+    def usage_snapshot(self) -> dict[str, Any]:
+        return merge_usage(self._usage_events)
 
     def _options(
         self,
@@ -758,6 +771,9 @@ class OpenRouterImagesProvider:
                 provider_status=response.status_code,
                 provider_body=_response_body(response),
             ) from exc
+        usage = normalized_response_usage(response_payload)
+        if usage:
+            self._usage_events.append(usage)
         return _extract_image_api(response_payload)
 
     def generate(

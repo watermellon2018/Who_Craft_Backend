@@ -45,6 +45,7 @@ from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.observability import log_context
 from w_craft_back.movie.project.policy import Action
 from w_craft_back.character_studio.services.serialization import job_dict
+from w_craft_back.credits.services import capture_provider_generation
 
 
 _SAFE_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
@@ -1207,6 +1208,11 @@ class CharacterGenerationService:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        capture_provider_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            provider=provider,
+        )
         self.logger.info(
             "character_generation_completed",
             extra={
