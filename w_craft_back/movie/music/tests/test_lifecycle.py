@@ -108,12 +108,28 @@ class MusicLifecycleTests(TestCase):
         self.assertEqual(failed.error_detail, "Music provider timed out.")
         self.assertNotIn("secret", failed.error_detail)
 
-    def test_queued_cancel_is_non_terminal_until_worker_confirms(self):
+    def test_queued_cancel_is_immediately_terminal(self):
         job = self.enqueue()
-        requested = request_music_cancellation(job)
-        self.assertEqual(requested.status, MusicJobStatus.CANCELLATION_REQUESTED)
-        cancelled = execute_music_job(job.pk)
+        cancelled = request_music_cancellation(job)
         self.assertEqual(cancelled.status, MusicJobStatus.CANCELLED)
+
+    def test_processing_job_cannot_be_cancelled(self):
+        job = self.enqueue()
+        claimed = claim_music_job(job.pk)
+
+        with self.assertRaises(MusicLifecycleError) as raised:
+            request_music_cancellation(job)
+
+        self.assertEqual(raised.exception.code, "MUSIC_CANNOT_CANCEL")
+        job.refresh_from_db()
+        self.assertEqual(job.status, MusicJobStatus.PROCESSING)
+        fail_music_job(
+            claimed,
+            code="TEST_CLEANUP",
+            detail="cleanup",
+            http_status=500,
+            retryable=False,
+        )
 
     def test_retry_creates_one_new_job_and_unknown_outcome_is_blocked(self):
         job = self.enqueue()

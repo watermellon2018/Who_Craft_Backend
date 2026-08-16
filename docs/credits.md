@@ -20,6 +20,8 @@ All endpoints require the normal `X-User-Token` access header.
 | `GET /api/credits/project-budgets/` | Budget, captured spend, active reserve, and remainder for projects owned by the current user |
 | `PATCH /api/credits/project-budgets/{projectId}/` | Owner-only update or removal of a project's lifetime generation limit |
 | `POST /api/credits/generation-estimate/` | Estimate the provider-native cost and check the available balance before enqueue |
+| `POST /api/projects/{projectId}/characters/{characterId}/secondary-assets/quote` | Exact, short-lived quote for selected full-body/scene jobs before applying a portrait variant |
+| `POST /api/projects/{projectId}/characters/{characterId}/secondary-assets/generate` | Atomically reserve and enqueue every secondary job from the signed quote |
 | `GET /api/credits/spending-statistics/` | Captured generation costs by domain, project, and day for 7/30/90/365 days |
 | `POST /api/credits/admin/operations/` | Staff-only freeze or unfreeze of the current staff user's wallet, with a required reason |
 | `GET /api/credits/admin/audit/` | Staff-only immutable audit for one user's wallet |
@@ -69,9 +71,23 @@ limit and subsequent paid generations remain blocked until the limit is raised.
 Before a paid job is queued, Craft estimates the original provider tariff and
 moves that amount from available to reserved credits in the same transaction as
 job creation. Insufficient balance aborts the enqueue. On success, Craft
-captures the provider-reported cost and releases any unused reservation. On
-failure or cancellation it releases the full reservation. Replayed lifecycle
-events do not charge twice.
+captures the provider-reported cost and releases any unused reservation. A
+user can cancel a job only while it is still queued; that moves the job
+directly to `cancelled` and releases the full reservation. Once a worker starts
+processing, cancellation is rejected and the reservation remains held until
+the normal success or failure settlement, preventing provider costs from being
+shifted to Craft. On failure Craft releases the full reservation. Replayed
+lifecycle events do not charge twice.
+
+The Character Studio secondary-assets flow quotes the concrete
+identity-anchored `reference` jobs, one provider request and charge per selected
+asset. The signed quote expires after five minutes and is scoped to the actor,
+project, character, and portrait variant. It carries immutable provider-route
+and price fingerprints; the launch rejects changed character prompts, altered
+quotes, a different scope, or a portrait that was not applied as the canonical
+identity. Launch requires an `Idempotency-Key`. All selected job rows and wallet
+reservations are created in one outer database transaction, so insufficient
+balance for the complete selection leaves no partial job or reservation.
 
 For image generation the request can use `manual`, `economy`, `fast`,
 `balanced`, or `quality` routing. Manual mode keeps the model chosen by the

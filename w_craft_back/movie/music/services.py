@@ -59,7 +59,7 @@ from w_craft_back.storage_gateway import StorageGatewayError
 
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
-CANCELLABLE_JOB_STATUSES = {"queued", "processing", "cancellation_requested"}
+CANCELLABLE_JOB_STATUSES = {"queued"}
 RETRYABLE_JOB_STATUSES = {"failed", "cancelled"}
 SCENE_SUMMARY_MAX_LENGTH = 240
 MAX_LIBRARY_PAGE_SIZE = 100
@@ -1109,6 +1109,8 @@ def cancel_job(
         job_id=job_id,
         action=policy.Action.RUN_GENERATION,
     )
+    if job.status in TERMINAL_JOB_STATUSES:
+        raise CannotCancel("A terminal generation job cannot be cancelled.")
     from w_craft_back.movie.music.lifecycle import request_music_cancellation
 
     try:
@@ -1118,8 +1120,6 @@ def cancel_job(
         if adapted is None:
             raise
         raise adapted from error
-    if cancelled.status in TERMINAL_JOB_STATUSES:
-        raise CannotCancel("A terminal generation job cannot be cancelled.")
     refreshed = _job_base_queryset().get(pk=job.pk)
     return _job_payload(refreshed, actor, request)
 

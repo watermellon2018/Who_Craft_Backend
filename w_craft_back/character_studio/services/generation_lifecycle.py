@@ -643,6 +643,7 @@ def enqueue_job(
     request_payload,
     compiled,
     provider_operation,
+    provider_selection: CharacterProviderSelection | None = None,
 ) -> CharacterGenerationJob:
     """Resolve a provider, then create/reuse a queued job atomically."""
     idempotency_key = validate_idempotency_key(
@@ -665,7 +666,7 @@ def enqueue_job(
                 compiled=compiled,
                 provider_operation=provider_operation,
             )
-    selection = resolve_character_provider(
+    selection = provider_selection or resolve_character_provider(
         project=character.project,
         actor=actor,
         request_payload=request_payload,
@@ -888,47 +889,79 @@ def _enqueue_job_atomic(
         )
 
 
-def _reserve_character_generation(job: CharacterGenerationJob) -> None:
+def estimate_character_generation(
+    *,
+    provider_selection: CharacterProviderSelection,
+    provider_operation: str,
+    variant_count: int,
+    request_payload: dict | None,
+    compiled: dict,
+):
+    """Price the exact immutable provider selection used by a character job."""
+
     prompt = "\n".join(
         part
-        for part in (job.compiled_prompt, job.negative_prompt, job.edit_instruction)
+        for part in (
+            compiled.get("positive_prompt", ""),
+            compiled.get("negative_prompt", ""),
+            compiled.get("edit_instruction", ""),
+        )
         if part
     )
-    try:
-        operation = (
-            "reference"
-            if job.provider_operation == "reference"
-            else "edit" if job.provider_operation == "edit" else "generate"
+    operation = (
+        "reference"
+        if provider_operation == "reference"
+        else "edit" if provider_operation == "edit" else "generate"
+    )
+    route_snapshot = dict(provider_selection.snapshot or {})
+    resolution = str((request_payload or {}).get("resolution") or "1K")
+    if route_snapshot.get("candidates"):
+        from w_craft_back.services.image_generation.routing import (
+            estimate_route_snapshot,
         )
-        route_snapshot = dict(job.provider_snapshot or {})
-        if route_snapshot.get("candidates"):
-            from w_craft_back.services.image_generation.routing import (
-                estimate_route_snapshot,
-            )
 
-            estimate, reservation_amount, pricing_snapshot = estimate_route_snapshot(
-                route_snapshot,
-                operation=operation,
-                variant_count=job.variant_count,
-                prompt=prompt,
-                resolution=str(
-                    (job.request_payload or {}).get("resolution") or "1K"
+        return estimate_route_snapshot(
+            route_snapshot,
+            operation=operation,
+            variant_count=variant_count,
+            prompt=prompt,
+            resolution=resolution,
+        )
+
+    estimate = estimate_for_pinned_provider(
+        provider=provider_selection.key,
+        provider_snapshot=provider_selection.snapshot,
+        model_name=provider_selection.model_version,
+        operation="edit" if provider_operation == "edit" else "generate",
+        variant_count=variant_count,
+        prompt=prompt,
+        resolution=resolution,
+    )
+    return estimate, estimate.reservation_amount, estimate.snapshot
+
+
+def _reserve_character_generation(job: CharacterGenerationJob) -> None:
+    try:
+        route_snapshot = dict(job.provider_snapshot or {})
+        estimate, reservation_amount, pricing_snapshot = (
+            estimate_character_generation(
+                provider_selection=CharacterProviderSelection(
+                    key=job.provider,
+                    source=str(route_snapshot.get("source") or "persisted"),
+                    snapshot=route_snapshot,
+                    model_name=job.model_name,
+                    model_version=job.model_version,
                 ),
-            )
-        else:
-            estimate = estimate_for_pinned_provider(
-                provider=job.provider,
-                provider_snapshot=job.provider_snapshot,
-                model_name=job.model_version,
-                operation="edit" if job.provider_operation == "edit" else "generate",
+                provider_operation=job.provider_operation,
                 variant_count=job.variant_count,
-                prompt=prompt,
-                resolution=str(
-                    (job.request_payload or {}).get("resolution") or "1K"
-                ),
+                request_payload=job.request_payload,
+                compiled={
+                    "positive_prompt": job.compiled_prompt,
+                    "negative_prompt": job.negative_prompt,
+                    "edit_instruction": job.edit_instruction,
+                },
             )
-            reservation_amount = estimate.reservation_amount
-            pricing_snapshot = estimate.snapshot
+        )
         reserve_generation(
             user=job.actor.user,
             domain="character",
@@ -1144,7 +1177,7 @@ def list_character_jobs(*, actor, project_id, character_id, limit: int = 50):
 
 @transaction.atomic
 def request_job_cancellation(*, actor, job_id):
-    """Fence an active job and record that cancellation was requested."""
+    """Cancel queued work before a provider can incur a billable cost."""
     from w_craft_back.character_studio.services.permissions import (
         get_generation_project,
     )
@@ -1155,19 +1188,28 @@ def request_job_cancellation(*, actor, job_id):
         raise NotFoundError("Generation job not found.") from exc
     get_generation_project(actor, job.project_id)
     if job.status in (
-        GenerationJobStatus.QUEUED,
-        GenerationJobStatus.PROCESSING,
+        GenerationJobStatus.CANCELLED,
+        GenerationJobStatus.CANCELLATION_REQUESTED,
     ):
-        job.status = GenerationJobStatus.CANCELLATION_REQUESTED
-        job.cancellation_requested_at = timezone.now()
-        job.lease_token = None
-        job.lease_expires_at = None
-        job.save()
-        release_generation(
-            domain="character",
-            job_id=str(job.job_id),
-            reason="cancelled",
+        return job
+    if job.status != GenerationJobStatus.QUEUED:
+        raise ConflictError(
+            "Generation can only be cancelled while it is queued.",
+            error_code="GENERATION_ALREADY_STARTED",
         )
+    now = timezone.now()
+    job.status = GenerationJobStatus.CANCELLED
+    job.progress = 0
+    job.cancellation_requested_at = now
+    job.completed_at = now
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.save()
+    release_generation(
+        domain="character",
+        job_id=str(job.job_id),
+        reason="cancelled_before_provider_start",
+    )
     return job
 
 

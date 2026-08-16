@@ -388,3 +388,134 @@ class OpenRouterProviderTest(TestCase):
         self.assertIn("error_type=content_policy_violation", output)
         self.assertIn("provider_code=safety_block", output)
         self.assertNotIn("sensitive moderation detail", output)
+
+    def test_content_policy_in_top_level_message_is_classified_as_blocked(self):
+        sensitive_message = "Request was blocked by the provider content policy"
+        session = _session(
+            post_response=_response(
+                400,
+                {"error": {"message": sensitive_message}},
+                text=sensitive_message,
+            )
+        )
+        provider = self._provider(session)
+
+        with (
+            self.assertLogs(
+                "w_craft_back.services.image_generation.openrouter_images",
+                level="WARNING",
+            ) as logs,
+            self.assertRaises(ImageProviderError) as captured,
+        ):
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BLOCKED)
+        self.assertEqual(
+            captured.exception.message,
+            "Провайдер изображений отклонил запрос по правилам безопасности.",
+        )
+        self.assertIsNone(captured.exception.provider_body)
+        self.assertNotIn(sensitive_message, " ".join(logs.output))
+
+    def test_official_content_policy_failure_message_is_classified_as_blocked(self):
+        provider_message = "Generation failed due to content policy"
+        session = _session(
+            post_response=_response(
+                400,
+                {"error": {"message": provider_message}},
+                text=provider_message,
+            )
+        )
+        provider = self._provider(session)
+
+        with self.assertRaises(ImageProviderError) as captured:
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BLOCKED)
+
+    def test_safety_marker_inside_metadata_reasons_is_classified_as_blocked(self):
+        session = _session(
+            post_response=_response(
+                422,
+                {
+                    "error": {
+                        "metadata": {
+                            "reasons": ["IMAGE_SAFETY", "provider-private-detail"]
+                        }
+                    }
+                },
+                text="provider response omitted",
+            )
+        )
+        provider = self._provider(session)
+
+        with self.assertRaises(ImageProviderError) as captured:
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BLOCKED)
+
+    def test_safety_markers_inside_metadata_raw_are_classified_as_blocked(self):
+        cases = (
+            '{"code": "IMAGE_SAFETY"}',
+            "PROHIBITED_CONTENT",
+        )
+        for raw_error in cases:
+            with self.subTest(raw_error=raw_error):
+                session = _session(
+                    post_response=_response(
+                        400,
+                        {"error": {"metadata": {"raw": raw_error}}},
+                        text="provider response omitted",
+                    )
+                )
+                provider = self._provider(session)
+
+                with self.assertRaises(ImageProviderError) as captured:
+                    provider.generate("cat")
+
+                self.assertEqual(captured.exception.code, CODE_BLOCKED)
+                self.assertIsNone(captured.exception.provider_body)
+
+    def test_invalid_parameter_is_not_classified_as_blocked(self):
+        session = _session(
+            post_response=_response(
+                400,
+                {
+                    "error": {
+                        "code": "INVALID_PARAMETER",
+                        "message": "The resolution parameter is invalid",
+                    }
+                },
+                text="The resolution parameter is invalid",
+            )
+        )
+        provider = self._provider(session)
+
+        with self.assertRaises(ImageProviderError) as captured:
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BAD_RESPONSE)
+
+    def test_malformed_error_response_is_handled_without_leaking_body(self):
+        sensitive_body = "<html>malformed private provider detail</html>"
+        session = _session(
+            post_response=_response(
+                400,
+                ValueError("malformed json"),
+                text=sensitive_body,
+            )
+        )
+        provider = self._provider(session)
+
+        with (
+            self.assertLogs(
+                "w_craft_back.services.image_generation.openrouter_images",
+                level="WARNING",
+            ) as logs,
+            self.assertRaises(ImageProviderError) as captured,
+        ):
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_BAD_RESPONSE)
+        self.assertIsNone(captured.exception.provider_body)
+        self.assertNotIn(sensitive_body, " ".join(logs.output))

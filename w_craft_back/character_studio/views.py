@@ -438,6 +438,44 @@ def generate_edit_variants(request, project_id, character_id):
 
 @api_view(["POST"])
 @handle_errors
+def quote_secondary_assets(request, project_id, character_id):
+    user = get_user_from_request(request)
+    quote = CharacterGenerationService(
+        execute_immediately=False,
+    ).quote_secondary_assets(
+        user,
+        project_id,
+        character_id,
+        payload(request),
+    )
+    return ok(quote)
+
+
+@api_view(["POST"])
+@handle_errors
+def generate_secondary_assets(request, project_id, character_id):
+    user = get_user_from_request(request)
+    data = generation_payload(request)
+    jobs, total_reservation_amount = CharacterGenerationService(
+        execute_immediately=False,
+    ).generate_secondary_assets(
+        user,
+        project_id,
+        character_id,
+        data.get("quote_token"),
+        data.get("_idempotency_key"),
+    )
+    return ok(
+        {
+            "jobs": [generation_job_summary(job) for job in jobs],
+            "total_reservation_amount": str(total_reservation_amount),
+        },
+        status=202,
+    )
+
+
+@api_view(["POST"])
+@handle_errors
 def zone_edit(request, project_id, character_id):
     user = get_user_from_request(request)
     primary_job, secondary_jobs = CharacterGenerationService(execute_immediately=False).generate_zone_edit(

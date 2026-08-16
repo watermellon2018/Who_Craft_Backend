@@ -387,6 +387,43 @@ class ReferenceApiTests(TestCase):
         )
         self.assertFalse(detail.json()["canRetry"])
 
+    def test_processing_job_cannot_be_cancelled(self):
+        created = self.create_reference()
+        jobs_url = f"{self.collection_url}{created['id']}/generation-jobs/"
+        enqueued = self.client.post(
+            jobs_url,
+            {
+                "expectedReferenceVersion": 1,
+                "operation": "generate",
+                "variantCount": 1,
+                "brief": {
+                    "schemaVersion": "reference_brief.v1",
+                    "description": "A paid reference",
+                },
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="processing-cancel-blocked",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        job_id = enqueued.json()["id"]
+        ReferenceGenerationJob.objects.filter(pk=job_id).update(
+            status=ReferenceJobStatus.PROCESSING,
+        )
+
+        detail = self.client.get(
+            f"{jobs_url}{job_id}/",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        cancelled = self.client.post(
+            f"{jobs_url}{job_id}/cancellation-request/",
+            format="json",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+
+        self.assertFalse(detail.json()["canCancel"])
+        self.assertEqual(cancelled.status_code, 409, cancelled.content)
+        self.assertEqual(cancelled.json()["code"], "REFERENCE_JOB_NOT_CANCELLABLE")
+
     def test_upload_requires_rights_and_creates_active_immutable_version(self):
         created = self.create_reference()
         upload_url = f"{self.collection_url}{created['id']}/versions/upload/"

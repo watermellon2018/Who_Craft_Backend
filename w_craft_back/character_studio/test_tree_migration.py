@@ -24,7 +24,7 @@ def _seed_project(apps, suffix: str):
         owner_id=user.pk,
         user_id=user_key.pk,
         title=f"Migration {suffix}",
-        format="",
+        format="series",
         annot="",
         desc="",
     )

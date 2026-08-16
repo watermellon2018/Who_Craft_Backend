@@ -825,7 +825,7 @@ def _job_payload(
         "progress": job.progress,
         "variantCount": job.variant_count,
         "attempts": job.attempts,
-        "canCancel": job.status in NON_TERMINAL_STATUSES,
+        "canCancel": job.status == ReferenceJobStatus.QUEUED,
         "canRetry": (
             job.status in (ReferenceJobStatus.FAILED, ReferenceJobStatus.CANCELLED)
             and job.attempts < job.max_attempts

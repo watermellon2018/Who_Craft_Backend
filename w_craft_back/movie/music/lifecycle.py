@@ -511,25 +511,34 @@ def heartbeat_music_job(
 def request_music_cancellation(
     job_or_id: MusicGenerationJob | uuid.UUID | str,
 ) -> MusicGenerationJob:
-    """Persist non-terminal cancellation; an owned worker confirms the stop."""
+    """Cancel queued music work before provider execution starts."""
 
     job_id = job_or_id.pk if isinstance(job_or_id, MusicGenerationJob) else job_or_id
     job = MusicGenerationJob.objects.select_for_update().get(pk=job_id)
     if job.status in TERMINAL_MUSIC_JOB_STATUSES:
         return job
-    if job.status != MusicJobStatus.CANCELLATION_REQUESTED:
-        previous_status = job.status
-        job.status = MusicJobStatus.CANCELLATION_REQUESTED
-        job.cancellation_requested_at = timezone.now()
-        if previous_status == MusicJobStatus.QUEUED:
-            job.lease_token = None
-            job.lease_expires_at = None
-        job.save()
-        release_generation(
-            domain="music",
-            job_id=str(job.id),
-            reason="cancelled",
+    if job.status == MusicJobStatus.CANCELLATION_REQUESTED:
+        return job
+    if job.status != MusicJobStatus.QUEUED:
+        raise MusicLifecycleError(
+            "Music generation can only be cancelled while it is queued.",
+            code="MUSIC_CANNOT_CANCEL",
+            http_status=409,
+            retryable=False,
         )
+    now = timezone.now()
+    job.status = MusicJobStatus.CANCELLED
+    job.stage = MusicJobStage.CANCELLED
+    job.cancellation_requested_at = now
+    job.completed_at = now
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.save()
+    release_generation(
+        domain="music",
+        job_id=str(job.id),
+        reason="cancelled_before_provider_start",
+    )
     return job
 
 

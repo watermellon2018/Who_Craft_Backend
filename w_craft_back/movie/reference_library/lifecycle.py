@@ -187,32 +187,28 @@ def mark_reference_provider_started(claimed: ReferenceGenerationJob) -> None:
 
 @transaction.atomic
 def cancel_reference_job(job_id: uuid.UUID | str) -> ReferenceGenerationJob:
-    """Cancel queued jobs immediately or request cooperative processing cancel."""
+    """Cancel queued work before provider execution starts."""
 
     job = ReferenceGenerationJob.objects.select_for_update().get(pk=job_id)
-    if job.status in TERMINAL_STATUSES:
+    if job.status != ReferenceJobStatus.QUEUED:
         raise ReferenceConflict(
-            "Generation job is not cancellable.",
+            "Reference generation can only be cancelled while it is queued.",
             code="REFERENCE_JOB_NOT_CANCELLABLE",
         )
     now = timezone.now()
     job.cancellation_requested_at = now
-    if job.status == ReferenceJobStatus.QUEUED:
-        job.status = ReferenceJobStatus.CANCELLED
-        job.stage = ReferenceJobStage.CANCELLED
-        job.progress = 0
-        job.completed_at = now
-        job.lease_token = None
-        job.lease_expires_at = None
-    else:
-        job.status = ReferenceJobStatus.CANCELLATION_REQUESTED
+    job.status = ReferenceJobStatus.CANCELLED
+    job.stage = ReferenceJobStage.CANCELLED
+    job.progress = 0
+    job.completed_at = now
+    job.lease_token = None
+    job.lease_expires_at = None
     job.save()
-    if job.status == ReferenceJobStatus.CANCELLED:
-        release_generation(
-            domain="reference",
-            job_id=str(job.id),
-            reason="cancelled",
-        )
+    release_generation(
+        domain="reference",
+        job_id=str(job.id),
+        reason="cancelled_before_provider_start",
+    )
     return job
 
 

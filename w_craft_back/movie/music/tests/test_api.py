@@ -743,6 +743,23 @@ class MusicApiTests(TestCase):
         self.assertEqual(public_detail, "Music provider timed out.")
         self.assertNotIn("secret", public_detail)
 
+        MusicGenerationJob.objects.filter(pk=queued.pk).update(
+            status=MusicJobStatus.PROCESSING,
+            stage=MusicJobStage.GENERATING,
+        )
+        owner_processing = self.client.get(
+            f"{self.root}generation-jobs/{queued.id}/",
+            **self._header(),
+        )
+        cancelled = self.client.post(
+            f"{self.root}generation-jobs/{queued.id}/cancellation-request/",
+            format="json",
+            **self._header(),
+        )
+        self.assertFalse(owner_processing.json()["canCancel"])
+        self.assertEqual(cancelled.status_code, 409)
+        self.assertEqual(cancelled.json()["code"], "MUSIC_CANNOT_CANCEL")
+
     def test_assignment_payload_includes_prefetched_scene_context(self) -> None:
         track, version = self._track_with_version()
         location = Location.objects.create(project=self.project, name="Harbor")

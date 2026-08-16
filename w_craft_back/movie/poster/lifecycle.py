@@ -6,7 +6,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from w_craft_back.movie.poster.errors import PosterError
-from w_craft_back.movie.poster.models import PosterGenerationJob, PosterJobStatus
+from w_craft_back.movie.poster.models import (
+    PosterGenerationJob,
+    PosterJobStatus,
+    ProjectPosterStatus,
+)
 from w_craft_back.credits.services import release_generation
 
 
@@ -82,19 +86,43 @@ def heartbeat_poster_job(job: PosterGenerationJob) -> bool:
 
 @transaction.atomic
 def request_poster_cancellation(job_id: int) -> PosterGenerationJob:
-    """Record cancellation requested and invalidate the active lease fence."""
-    job = PosterGenerationJob.objects.select_for_update().get(pk=job_id)
-    if job.status in (PosterJobStatus.QUEUED, PosterJobStatus.PROCESSING):
-        job.status = PosterJobStatus.CANCELLATION_REQUESTED
-        job.cancellation_requested_at = timezone.now()
-        job.lease_token = None
-        job.lease_expires_at = None
-        job.save()
-        release_generation(
-            domain="poster",
-            job_id=str(job.id),
-            reason="cancelled",
+    """Cancel queued poster work before provider execution starts."""
+    job = (
+        PosterGenerationJob.objects.select_for_update()
+        .select_related("poster")
+        .get(pk=job_id)
+    )
+    if job.status in (
+        PosterJobStatus.CANCELLED,
+        PosterJobStatus.CANCELLATION_REQUESTED,
+    ):
+        return job
+    if job.status != PosterJobStatus.QUEUED:
+        raise PosterError(
+            "Poster generation can only be cancelled while it is queued.",
+            code="POSTER_GENERATION_ALREADY_STARTED",
+            http_status=409,
         )
+    now = timezone.now()
+    job.status = PosterJobStatus.CANCELLED
+    job.progress = 0
+    job.cancellation_requested_at = now
+    job.completed_at = now
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.save()
+    poster = job.poster
+    poster.status = (
+        ProjectPosterStatus.READY
+        if poster.selected_variant_id
+        else ProjectPosterStatus.EMPTY
+    )
+    poster.save(update_fields=["status", "updated_at"])
+    release_generation(
+        domain="poster",
+        job_id=str(job.id),
+        reason="cancelled_before_provider_start",
+    )
     return job
 
 

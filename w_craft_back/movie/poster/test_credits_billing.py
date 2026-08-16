@@ -12,7 +12,9 @@ from w_craft_back.credits.models import (
     GenerationCharge,
     GenerationChargeStatus,
 )
+from w_craft_back.movie.poster.errors import PosterError
 from w_craft_back.movie.poster.lifecycle import request_poster_cancellation
+from w_craft_back.movie.poster.models import PosterGenerationJob, PosterJobStatus
 from w_craft_back.movie.poster.services import enqueue_generation_job
 from w_craft_back.movie.project.models import Project
 from w_craft_back.services.image_generation.registry import MODEL_REGISTRY
@@ -72,3 +74,37 @@ class PosterGenerationBillingTest(TestCase):
         self.assertEqual(charge.status, GenerationChargeStatus.RELEASED)
         self.assertEqual(self.account.available_balance, Decimal("1.000000"))
         self.assertEqual(self.account.reserved_balance, Decimal("0.000000"))
+
+    def test_processing_cancel_is_rejected_and_reservation_is_kept(self):
+        provider = SimpleNamespace(
+            name="gemini-native",
+            model_id="imagen-4.0-generate-001",
+            spec=MODEL_REGISTRY["gemini-native"],
+        )
+        with patch(
+            "w_craft_back.movie.poster.services.resolve_provider_for_user",
+            return_value=provider,
+        ):
+            _poster, job, _created = enqueue_generation_job(
+                project=self.project,
+                user=self.user,
+                prompt="A paid skyline",
+                style="cinematic",
+                format="vertical",
+                idempotency_key="poster-billing-processing",
+                request_hash="request-hash-processing",
+                requested_model="gemini-native",
+                use_mock=False,
+            )
+        PosterGenerationJob.objects.filter(pk=job.pk).update(
+            status=PosterJobStatus.PROCESSING,
+        )
+
+        with self.assertRaisesMessage(PosterError, "only be cancelled while"):
+            request_poster_cancellation(job.id)
+
+        charge = GenerationCharge.objects.get(domain="poster", job_id=str(job.id))
+        self.account.refresh_from_db()
+        self.assertEqual(charge.status, GenerationChargeStatus.RESERVED)
+        self.assertEqual(self.account.available_balance, Decimal("0.960000"))
+        self.assertEqual(self.account.reserved_balance, Decimal("0.040000"))

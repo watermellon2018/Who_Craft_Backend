@@ -27,7 +27,7 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectMember,
     ProjectMemberRole,
 )
-from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project.models import Project, ProjectFormat
 
 
 def _user_with_token(username: str) -> tuple[User, str]:
@@ -41,7 +41,7 @@ def _project(owner: User, title: str) -> Project:
         owner=owner,
         title=title,
         summary="",
-        format="",
+        format=ProjectFormat.FEATURE_FILM,
         annotation="",
         synopsis="",
     )

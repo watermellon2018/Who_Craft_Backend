@@ -558,7 +558,7 @@
         "operationId": "cancelMusicGenerationJob",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicJobId"}],
         "responses": {
-          "202": {"description": "Cancellation requested", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
+          "202": {"description": "Queued generation cancelled before provider start", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
           "401": {"$ref": "#/components/responses/MusicError"},
           "403": {"$ref": "#/components/responses/MusicError"},
           "404": {"$ref": "#/components/responses/MusicError"},
@@ -825,7 +825,7 @@
         "operationId": "cancelReferenceGenerationJob",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}],
         "responses": {
-          "202": {"description": "Cancellation requested or queued job cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "202": {"description": "Queued generation cancelled before provider start", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
           "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
         }
       }
@@ -849,6 +849,35 @@
           "200": {"description": "Existing application replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
           "201": {"description": "Variant applied as a new immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
           "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/characters/{characterId}/secondary-assets/quote": {
+      "post": {
+        "operationId": "quoteCharacterSecondaryAssets",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/CharacterId"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsQuoteRequest"}}}},
+        "responses": {
+          "200": {"description": "Signed exact quote for identity-anchored secondary jobs", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsQuote"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/characters/{characterId}/secondary-assets/generate": {
+      "post": {
+        "operationId": "generateCharacterSecondaryAssets",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/CharacterId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsGenerateRequest"}}}},
+        "responses": {
+          "202": {"description": "All selected jobs atomically reserved and queued, or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsGenerateResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "409": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -886,6 +915,12 @@
         "in": "path",
         "required": true,
         "schema": {"type": "integer"}
+      },
+      "CharacterId": {
+        "name": "characterId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
       },
       "MusicTrackId": {
         "name": "trackId",
@@ -955,6 +990,79 @@
       }
     },
     "schemas": {
+      "CharacterSecondaryAssetType": {
+        "type": "string",
+        "enum": ["full_body", "scene"]
+      },
+      "CharacterSecondaryAssetsQuoteRequest": {
+        "type": "object",
+        "required": ["variant_id", "image_types"],
+        "properties": {
+          "variant_id": {"type": "string", "format": "uuid"},
+          "image_types": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"}},
+          "image_model": {"type": "string", "nullable": true},
+          "routing_mode": {"type": "string", "enum": ["manual", "economy", "fast", "balanced", "quality"], "default": "manual"}
+        },
+        "additionalProperties": false
+      },
+      "CharacterSecondaryAssetQuoteItem": {
+        "type": "object",
+        "required": ["image_type", "estimated_cost", "reservation_amount", "provider", "model_key", "model_name", "routing_mode"],
+        "properties": {
+          "image_type": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"},
+          "estimated_cost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservation_amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "provider": {"type": "string"},
+          "model_key": {"type": "string"},
+          "model_name": {"type": "string"},
+          "routing_mode": {"type": "string"}
+        }
+      },
+      "CharacterSecondaryAssetsQuote": {
+        "type": "object",
+        "required": ["quote_token", "expires_in_seconds", "items", "totals", "available_balance", "sufficient_balance", "account_frozen"],
+        "properties": {
+          "quote_token": {"type": "string"},
+          "expires_in_seconds": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetQuoteItem"}},
+          "totals": {
+            "type": "object",
+            "required": ["estimated_cost", "reservation_amount"],
+            "properties": {
+              "estimated_cost": {"$ref": "#/components/schemas/CreditAmount"},
+              "reservation_amount": {"$ref": "#/components/schemas/CreditAmount"}
+            }
+          },
+          "available_balance": {"$ref": "#/components/schemas/CreditAmount"},
+          "sufficient_balance": {"type": "boolean"},
+          "account_frozen": {"type": "boolean"}
+        }
+      },
+      "CharacterSecondaryAssetsGenerateRequest": {
+        "type": "object",
+        "required": ["quote_token"],
+        "properties": {"quote_token": {"type": "string"}},
+        "additionalProperties": false
+      },
+      "CharacterSecondaryAssetJob": {
+        "type": "object",
+        "required": ["job_id", "status", "image_type", "error_code", "error_message"],
+        "properties": {
+          "job_id": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "image_type": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"},
+          "error_code": {"type": "string"},
+          "error_message": {"type": "string"}
+        }
+      },
+      "CharacterSecondaryAssetsGenerateResponse": {
+        "type": "object",
+        "required": ["jobs", "total_reservation_amount"],
+        "properties": {
+          "jobs": {"type": "array", "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetJob"}},
+          "total_reservation_amount": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
       "ApiErrorDetail": {
         "type": "object",
         "required": ["code", "message"],
