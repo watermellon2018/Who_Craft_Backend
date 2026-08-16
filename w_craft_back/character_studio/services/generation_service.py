@@ -1,6 +1,9 @@
+from django.core import signing
 from django.db import transaction
 from django.utils import timezone
 import hashlib
+import hmac
+import json
 import logging
 import re
 import time
@@ -20,15 +23,24 @@ from w_craft_back.character_studio.repositories.repositories import (
 )
 from w_craft_back.character_studio.services.asset_service import CharacterAssetService
 from w_craft_back.character_studio.services.character_service import CharacterService
-from w_craft_back.character_studio.services.errors import NotFoundError, ValidationError
+from w_craft_back.character_studio.services.errors import (
+    CharacterStudioError,
+    IdentityAssetRequiredError,
+    NotFoundError,
+    ValidationError,
+)
 from w_craft_back.character_studio.services.generation_lifecycle import (
+    CharacterProviderSelection,
     JobLease,
     claim_job,
     enqueue_job,
+    estimate_character_generation,
     fail_job,
     heartbeat_job,
     mark_provider_started,
     recover_stale_jobs,
+    require_idempotency_key,
+    resolve_character_provider,
 )
 from w_craft_back.character_studio.services.prompt_compiler import (
     CharacterPromptCompiler,
@@ -41,10 +53,27 @@ from w_craft_back.character_studio.services.safety import CharacterSafetyService
 from w_craft_back.observability import log_context
 from w_craft_back.movie.project.policy import Action
 from w_craft_back.character_studio.services.serialization import job_dict
+from w_craft_back.credits.services import (
+    capture_provider_generation,
+    get_or_create_account,
+)
 
 
 _SAFE_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
 _GENERIC_GENERATION_ERROR = "Generation failed. Try again."
+_SECONDARY_QUOTE_SALT = "character-studio.secondary-assets.v1"
+_SECONDARY_QUOTE_TTL_SECONDS = 300
+_SECONDARY_IMAGE_TYPES = (
+    CharacterImageType.FULL_BODY,
+    CharacterImageType.SCENE,
+)
+_SECONDARY_ROUTING_MODES = {
+    "manual",
+    "economy",
+    "fast",
+    "balanced",
+    "quality",
+}
 
 
 def _generation_failure_details(exc: Exception) -> tuple[str, str]:
@@ -514,6 +543,14 @@ class CharacterGenerationService:
                     },
                 )
                 created_jobs.append({"reference_type": ui_type, "job_id": str(job.job_id)})
+            except IdentityAssetRequiredError:
+                # A portrait (or uploaded reference) must finish before
+                # identity-anchored angles can be queued. Keep the batch
+                # request successful and let the client retry after the
+                # identity job completes.
+                skipped.append(
+                    {"reference_type": ui_type, "reason": "identity_pending"}
+                )
             except ValidationError as exc:
                 # generate_reference raises ValidationError on the same conflict
                 # — treat as a soft skip rather than failing the whole batch.
@@ -630,6 +667,418 @@ class CharacterGenerationService:
             edit_request,
             compiled,
         )
+
+    def quote_secondary_assets(self, user, project_id, character_id, params):
+        """Quote identity-anchored full-body/scene jobs before applying a portrait."""
+
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
+        variant = self._secondary_variant(character, params.get("variant_id"))
+        image_types = self._secondary_image_types(params.get("image_types"))
+        routing_mode = str(
+            params.get("routing_mode") or "manual"
+        ).strip().lower()
+        if routing_mode not in _SECONDARY_ROUTING_MODES:
+            raise ValidationError("routing_mode is invalid.")
+        options = {
+            "image_model": params.get("image_model"),
+            "routing_mode": routing_mode,
+        }
+        quoted_items = []
+        public_items = []
+        total_estimated = 0
+        total_reserved = 0
+        for image_type in image_types:
+            request_payload, compiled = self._compile_secondary_asset(
+                character=character,
+                identity_asset=variant.asset,
+                image_type=image_type,
+                options=options,
+            )
+            selection = resolve_character_provider(
+                project=character.project,
+                actor=user,
+                request_payload=request_payload,
+                provider_operation="reference",
+            )
+            estimate, reservation_amount, pricing_snapshot = (
+                estimate_character_generation(
+                    provider_selection=selection,
+                    provider_operation="reference",
+                    variant_count=1,
+                    request_payload=request_payload,
+                    compiled=compiled,
+                )
+            )
+            request_fingerprint = self._secondary_request_fingerprint(
+                request_payload, compiled,
+            )
+            price_fingerprint = self._secondary_price_fingerprint(
+                selection=selection,
+                estimate=estimate,
+                reservation_amount=reservation_amount,
+                pricing_snapshot=pricing_snapshot,
+            )
+            quoted_items.append(
+                {
+                    "image_type": str(image_type),
+                    "request_fingerprint": request_fingerprint,
+                    "price_fingerprint": price_fingerprint,
+                    "estimated_cost": str(estimate.estimated_cost),
+                    "reservation_amount": str(reservation_amount),
+                    "selection": self._selection_payload(selection),
+                }
+            )
+            public_items.append(
+                {
+                    "image_type": str(image_type),
+                    "estimated_cost": str(estimate.estimated_cost),
+                    "reservation_amount": str(reservation_amount),
+                    "provider": estimate.provider,
+                    "model_key": estimate.model_key,
+                    "model_name": estimate.model_name,
+                    "routing_mode": str(
+                        selection.snapshot.get("routingMode") or "manual"
+                    ),
+                }
+            )
+            total_estimated += estimate.estimated_cost
+            total_reserved += reservation_amount
+
+        quote_payload = {
+            "version": 1,
+            "actor_id": str(user.pk),
+            "project_id": int(project_id),
+            "character_id": str(character.character_id),
+            "variant_id": str(variant.variant_id),
+            "identity_asset_id": str(variant.asset_id),
+            "options": options,
+            "items": quoted_items,
+            "total_estimated_cost": str(total_estimated),
+            "total_reservation_amount": str(total_reserved),
+        }
+        account = get_or_create_account(user.user)
+        return {
+            "quote_token": signing.dumps(
+                quote_payload,
+                salt=_SECONDARY_QUOTE_SALT,
+                compress=True,
+            ),
+            "expires_in_seconds": _SECONDARY_QUOTE_TTL_SECONDS,
+            "items": public_items,
+            "totals": {
+                "estimated_cost": str(total_estimated),
+                "reservation_amount": str(total_reserved),
+            },
+            "available_balance": str(account.available_balance),
+            "sufficient_balance": (
+                not account.is_frozen
+                and account.available_balance >= total_reserved
+            ),
+            "account_frozen": account.is_frozen,
+        }
+
+    @transaction.atomic
+    def generate_secondary_assets(
+        self, user, project_id, character_id, quote_token, idempotency_key,
+    ):
+        """Atomically enqueue every job approved by a secondary-assets quote."""
+
+        idempotency_key = require_idempotency_key(idempotency_key)
+        quote = self._load_secondary_quote(quote_token)
+        character = self.characters.get_generation_character(
+            user, project_id, character_id,
+        )
+        self._validate_secondary_quote_scope(
+            quote=quote,
+            actor=user,
+            project_id=project_id,
+            character=character,
+        )
+        variant = self._secondary_variant(character, quote.get("variant_id"))
+        identity_asset = variant.asset
+        if (
+            str(identity_asset.asset_id) != str(quote.get("identity_asset_id"))
+            or str(character.canonical_reference_image_id or "")
+            != str(identity_asset.asset_id)
+        ):
+            raise CharacterStudioError(
+                message=(
+                    "Сначала примените выбранный портрет, затем повторите запуск."
+                ),
+                error_code="SECONDARY_QUOTE_STALE",
+                status_code=409,
+            )
+
+        options = quote.get("options") or {}
+        jobs = []
+        for item in quote.get("items") or []:
+            image_type = self._validate_secondary_quote_item(item)
+            request_payload, compiled = self._compile_secondary_asset(
+                character=character,
+                identity_asset=identity_asset,
+                image_type=image_type,
+                options=options,
+            )
+            selection = self._selection_from_payload(item.get("selection"))
+            self._validate_secondary_quote_fingerprints(
+                item=item,
+                request_payload=request_payload,
+                compiled=compiled,
+                selection=selection,
+            )
+            request_payload["_idempotency_key"] = self._scoped_idempotency_key(
+                idempotency_key, image_type,
+            )
+            job = self._enqueue_and_execute(
+                actor=user,
+                character=character,
+                job_type=GenerationJobType.EDIT_VARIANTS,
+                region=self.IMAGE_TYPE_TO_REGION[image_type],
+                variant_count=1,
+                request_payload=request_payload,
+                compiled=compiled,
+                provider_operation="reference",
+                provider_selection=selection,
+            )
+            jobs.append(job)
+        return jobs, quote["total_reservation_amount"]
+
+    def _secondary_variant(self, character, variant_id):
+        if not variant_id:
+            raise ValidationError("variant_id is required.")
+        try:
+            variant = self.variants.get_for_character(character, variant_id)
+        except Exception as exc:
+            raise NotFoundError("Variant not found for character.") from exc
+        asset = variant.asset
+        if (
+            asset is None
+            or asset.asset_type != CharacterAssetType.PORTRAIT
+            or asset.status != "ready"
+        ):
+            raise ValidationError("variant_id must reference a ready portrait.")
+        return variant
+
+    @staticmethod
+    def _secondary_image_types(raw_image_types):
+        if not isinstance(raw_image_types, (list, tuple)) or not raw_image_types:
+            raise ValidationError("image_types must be a non-empty list.")
+        normalized = []
+        for raw_image_type in raw_image_types:
+            image_type = str(raw_image_type or "").strip()
+            if image_type not in _SECONDARY_IMAGE_TYPES:
+                raise ValidationError(
+                    "image_types supports only full_body and scene."
+                )
+            if image_type not in normalized:
+                normalized.append(image_type)
+        return normalized
+
+    def _compile_secondary_asset(
+        self, *, character, identity_asset, image_type, options,
+    ):
+        request_payload = {
+            "region": self.IMAGE_TYPE_TO_REGION[image_type],
+            "image_type": image_type,
+            "variant_count": 1,
+            "preserve": {"identity": True},
+            "preserve_identity": True,
+            "controls": {},
+            "image_model": options.get("image_model"),
+            "routing_mode": options.get("routing_mode") or "manual",
+            "reference_asset_id": str(identity_asset.asset_id),
+            "source_identity_asset_id": str(identity_asset.asset_id),
+            "activate_image": True,
+        }
+        compiled = self.compiler.compile_identity_anchored(
+            character=character,
+            appearance=character.active_appearance,
+            outfit=character.active_outfit,
+            image_type=image_type,
+            params={
+                "preserve_identity": True,
+                "text_refinement": "",
+                "visual_style": None,
+                "controls": {},
+                "changed_fields": [],
+                "previous_values": {},
+                "new_values": {},
+            },
+        )
+        self.safety.validate_generated_prompt(compiled["positive_prompt"])
+        return request_payload, compiled
+
+    @staticmethod
+    def _canonical_hash(value):
+        canonical = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    @classmethod
+    def _secondary_request_fingerprint(cls, request_payload, compiled):
+        clean_payload = dict(request_payload)
+        clean_payload.pop("_idempotency_key", None)
+        return cls._canonical_hash(
+            {"request_payload": clean_payload, "compiled": compiled}
+        )
+
+    @classmethod
+    def _secondary_price_fingerprint(
+        cls, *, selection, estimate, reservation_amount, pricing_snapshot,
+    ):
+        return cls._canonical_hash(
+            {
+                "selection": cls._selection_payload(selection),
+                "estimated_cost": str(estimate.estimated_cost),
+                "reservation_amount": str(reservation_amount),
+                "pricing_snapshot": pricing_snapshot,
+            }
+        )
+
+    @staticmethod
+    def _selection_payload(selection):
+        return {
+            "key": selection.key,
+            "source": selection.source,
+            "snapshot": selection.snapshot,
+            "model_name": selection.model_name,
+            "model_version": selection.model_version,
+        }
+
+    @staticmethod
+    def _selection_from_payload(raw_selection):
+        if not isinstance(raw_selection, dict):
+            raise ValidationError("Secondary quote provider selection is invalid.")
+        required = ("key", "source", "snapshot", "model_name", "model_version")
+        if any(key not in raw_selection for key in required):
+            raise ValidationError("Secondary quote provider selection is invalid.")
+        if not isinstance(raw_selection["snapshot"], dict):
+            raise ValidationError("Secondary quote provider selection is invalid.")
+        return CharacterProviderSelection(
+            key=str(raw_selection["key"]),
+            source=str(raw_selection["source"]),
+            snapshot=raw_selection["snapshot"],
+            model_name=str(raw_selection["model_name"]),
+            model_version=str(raw_selection["model_version"]),
+        )
+
+    @staticmethod
+    def _load_secondary_quote(quote_token):
+        if not isinstance(quote_token, str) or not quote_token.strip():
+            raise ValidationError("quote_token is required.")
+        try:
+            quote = signing.loads(
+                quote_token,
+                salt=_SECONDARY_QUOTE_SALT,
+                max_age=_SECONDARY_QUOTE_TTL_SECONDS,
+            )
+        except signing.SignatureExpired as exc:
+            raise CharacterStudioError(
+                message="Расчёт стоимости устарел. Получите новый расчёт.",
+                error_code="SECONDARY_QUOTE_EXPIRED",
+                status_code=409,
+            ) from exc
+        except signing.BadSignature as exc:
+            raise CharacterStudioError(
+                message="Расчёт стоимости недействителен.",
+                error_code="SECONDARY_QUOTE_INVALID",
+                status_code=400,
+            ) from exc
+        if not isinstance(quote, dict) or quote.get("version") != 1:
+            raise CharacterStudioError(
+                message="Расчёт стоимости недействителен.",
+                error_code="SECONDARY_QUOTE_INVALID",
+                status_code=400,
+            )
+        return quote
+
+    @staticmethod
+    def _validate_secondary_quote_scope(
+        *, quote, actor, project_id, character,
+    ):
+        expected = (
+            str(actor.pk),
+            str(project_id),
+            str(character.character_id),
+        )
+        actual = (
+            str(quote.get("actor_id")),
+            str(quote.get("project_id")),
+            str(quote.get("character_id")),
+        )
+        if actual != expected:
+            raise CharacterStudioError(
+                message=(
+                    "Расчёт стоимости создан для другого пользователя "
+                    "или персонажа."
+                ),
+                error_code="SECONDARY_QUOTE_SCOPE_MISMATCH",
+                status_code=403,
+            )
+
+    @staticmethod
+    def _validate_secondary_quote_item(item):
+        if not isinstance(item, dict):
+            raise ValidationError("Secondary quote item is invalid.")
+        image_type = str(item.get("image_type") or "")
+        if image_type not in _SECONDARY_IMAGE_TYPES:
+            raise ValidationError("Secondary quote item is invalid.")
+        return image_type
+
+    def _validate_secondary_quote_fingerprints(
+        self, *, item, request_payload, compiled, selection,
+    ):
+        request_fingerprint = self._secondary_request_fingerprint(
+            request_payload, compiled,
+        )
+        estimate, reservation_amount, pricing_snapshot = (
+            estimate_character_generation(
+                provider_selection=selection,
+                provider_operation="reference",
+                variant_count=1,
+                request_payload=request_payload,
+                compiled=compiled,
+            )
+        )
+        price_fingerprint = self._secondary_price_fingerprint(
+            selection=selection,
+            estimate=estimate,
+            reservation_amount=reservation_amount,
+            pricing_snapshot=pricing_snapshot,
+        )
+        if not (
+            hmac.compare_digest(
+                str(item.get("request_fingerprint") or ""),
+                request_fingerprint,
+            )
+            and hmac.compare_digest(
+                str(item.get("price_fingerprint") or ""),
+                price_fingerprint,
+            )
+            and hmac.compare_digest(
+                str(item.get("estimated_cost") or ""),
+                str(estimate.estimated_cost),
+            )
+            and hmac.compare_digest(
+                str(item.get("reservation_amount") or ""),
+                str(reservation_amount),
+            )
+        ):
+            raise CharacterStudioError(
+                message=(
+                    "Параметры персонажа или стоимость изменились. "
+                    "Обновите расчёт."
+                ),
+                error_code="SECONDARY_QUOTE_STALE",
+                status_code=409,
+            )
 
     def _run_identity_anchored_edit(
         self,
@@ -830,6 +1279,7 @@ class CharacterGenerationService:
         reference_bytes=None,
         mime_type=None,
         job_type=GenerationJobType.REFERENCE_VARIANTS,
+        provider_selection=None,
     ):
         return self._enqueue_and_execute(
             actor=actor,
@@ -845,6 +1295,7 @@ class CharacterGenerationService:
             provider_operation="reference",
             reference_bytes=reference_bytes,
             mime_type=mime_type,
+            provider_selection=provider_selection,
         )
 
     def _run_job(
@@ -886,6 +1337,7 @@ class CharacterGenerationService:
         provider_operation,
         reference_bytes=None,
         mime_type=None,
+        provider_selection=None,
     ):
         self.safety.validate_generated_prompt(compiled["positive_prompt"])
         job = enqueue_job(
@@ -897,6 +1349,7 @@ class CharacterGenerationService:
             request_payload=request_payload,
             compiled=compiled,
             provider_operation=provider_operation,
+            provider_selection=provider_selection,
         )
         if not self.execute_immediately:
             return job
@@ -1195,6 +1648,11 @@ class CharacterGenerationService:
         job.lease_token = None
         job.lease_expires_at = None
         job.save()
+        capture_provider_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            provider=provider,
+        )
         self.logger.info(
             "character_generation_completed",
             extra={

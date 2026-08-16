@@ -36,6 +36,13 @@ from w_craft_back.character_studio.services.errors import (
     ValidationError,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.credits.pricing import estimate_for_pinned_provider
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    get_or_create_account,
+    release_generation,
+    reserve_generation,
+)
 
 
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -251,10 +258,11 @@ def _legacy_model_spec(key: str):
             mode="mock",
             supports_generate=True,
             supports_edit=True,
-            supports_reference=True,
+        supports_reference=True,
             supported_parameters={
                 "n": {"type": "integer", "min": 1, "max": 4},
             },
+            provider_pricing={"currency": "USD", "source": "local"},
         )
     return ModelSpec(
         key="gemini",
@@ -271,6 +279,11 @@ def _legacy_model_spec(key: str):
         supported_parameters={
             "aspect_ratio": {"type": "string"},
             "n": {"type": "integer", "min": 1, "max": 4},
+        },
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "output_image": "0.040000",
         },
     )
 
@@ -301,6 +314,37 @@ def resolve_character_provider(
     )
     if requested_key and len(requested_key) > 255:
         raise ValidationError("image_model max length is 255.")
+
+    routing_mode = str(
+        (request_payload or {}).get("routing_mode")
+        or (request_payload or {}).get("routingMode")
+        or "manual"
+    ).strip().lower()
+    if routing_mode != "manual":
+        from w_craft_back.services.image_generation.routing import (
+            build_routing_decision,
+        )
+
+        try:
+            decision = build_routing_decision(
+                mode=routing_mode,
+                requested_model=requested_key,
+                operation=provider_operation,
+            )
+        except ImageProviderError as exc:
+            raise CharacterStudioError(
+                message=exc.message,
+                error_code=exc.code,
+                status_code=exc.http_status,
+            ) from exc
+        spec = decision.primary.spec
+        return CharacterProviderSelection(
+            key=spec.key,
+            source="routing",
+            snapshot=decision.snapshot(),
+            model_name=spec.backend,
+            model_version=spec.model_id,
+        )
 
     try:
         normalized = (requested_key or "").lower()
@@ -401,6 +445,11 @@ def _recover_locked(job, now) -> bool:
         job.failed_at = now
         _clear_lease(job)
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return True
     if job.attempts >= job.max_attempts:
         job.status = GenerationJobStatus.FAILED
@@ -409,6 +458,11 @@ def _recover_locked(job, now) -> bool:
         job.failed_at = now
         _clear_lease(job)
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return True
     job.status = GenerationJobStatus.QUEUED
     job.progress = 0
@@ -472,10 +526,21 @@ def build_generation_preview(
         status=GenerationJobStatus.PROCESSING,
     )
     call_count = len(normalized_types)
-    unit_cost = estimated_cost_per_call(provider)
-    estimated_cost = (
-        None if unit_cost is None else format(unit_cost * call_count, "f")
-    )
+    try:
+        estimate = estimate_for_pinned_provider(
+            provider=provider,
+            provider_snapshot=selection.snapshot,
+            model_name=selection.model_version,
+            operation="generate",
+            variant_count=call_count,
+        )
+    except CreditServiceError as exc:
+        raise CharacterStudioError(
+            message=exc.message,
+            error_code=exc.code,
+            status_code=exc.http_status,
+        ) from exc
+    account = get_or_create_account(actor.user)
     return {
         "provider": provider,
         "provider_source": selection.source,
@@ -483,7 +548,16 @@ def build_generation_preview(
         "mode": "offline" if provider.strip().lower() == "mock" else "paid",
         "image_types": normalized_types,
         "provider_call_count": call_count,
-        "estimated_cost_usd": estimated_cost,
+        "estimated_cost_usd": (
+            format(estimate.estimated_cost, "f").rstrip("0").rstrip(".") or "0"
+        ),
+        "reservation_amount": (
+            format(estimate.reservation_amount, "f").rstrip("0").rstrip(".") or "0"
+        ),
+        "currency": estimate.currency,
+        "pricing_source": estimate.pricing_source,
+        "available_balance": format(account.available_balance, "f"),
+        "sufficient_balance": account.available_balance >= estimate.reservation_amount,
         "budgets": {
             "user": {
                 "used": usage["user"],
@@ -569,6 +643,7 @@ def enqueue_job(
     request_payload,
     compiled,
     provider_operation,
+    provider_selection: CharacterProviderSelection | None = None,
 ) -> CharacterGenerationJob:
     """Resolve a provider, then create/reuse a queued job atomically."""
     idempotency_key = validate_idempotency_key(
@@ -591,7 +666,7 @@ def enqueue_job(
                 compiled=compiled,
                 provider_operation=provider_operation,
             )
-    selection = resolve_character_provider(
+    selection = provider_selection or resolve_character_provider(
         project=character.project,
         actor=actor,
         request_payload=request_payload,
@@ -788,10 +863,14 @@ def _enqueue_job_atomic(
         "timeout_seconds": configured_timeout_seconds(),
     }
     if not idempotency_key:
-        return CharacterGenerationJob.objects.create(**values)
+        job = CharacterGenerationJob.objects.create(**values)
+        _reserve_character_generation(job)
+        return job
     try:
         with transaction.atomic():
-            return CharacterGenerationJob.objects.create(**values)
+            job = CharacterGenerationJob.objects.create(**values)
+            _reserve_character_generation(job)
+            return job
     except IntegrityError:
         existing = CharacterGenerationJob.objects.get(
             project=locked_character.project,
@@ -808,6 +887,100 @@ def _enqueue_job_atomic(
             compiled=compiled,
             provider_operation=provider_operation,
         )
+
+
+def estimate_character_generation(
+    *,
+    provider_selection: CharacterProviderSelection,
+    provider_operation: str,
+    variant_count: int,
+    request_payload: dict | None,
+    compiled: dict,
+):
+    """Price the exact immutable provider selection used by a character job."""
+
+    prompt = "\n".join(
+        part
+        for part in (
+            compiled.get("positive_prompt", ""),
+            compiled.get("negative_prompt", ""),
+            compiled.get("edit_instruction", ""),
+        )
+        if part
+    )
+    operation = (
+        "reference"
+        if provider_operation == "reference"
+        else "edit" if provider_operation == "edit" else "generate"
+    )
+    route_snapshot = dict(provider_selection.snapshot or {})
+    resolution = str((request_payload or {}).get("resolution") or "1K")
+    if route_snapshot.get("candidates"):
+        from w_craft_back.services.image_generation.routing import (
+            estimate_route_snapshot,
+        )
+
+        return estimate_route_snapshot(
+            route_snapshot,
+            operation=operation,
+            variant_count=variant_count,
+            prompt=prompt,
+            resolution=resolution,
+        )
+
+    estimate = estimate_for_pinned_provider(
+        provider=provider_selection.key,
+        provider_snapshot=provider_selection.snapshot,
+        model_name=provider_selection.model_version,
+        operation="edit" if provider_operation == "edit" else "generate",
+        variant_count=variant_count,
+        prompt=prompt,
+        resolution=resolution,
+    )
+    return estimate, estimate.reservation_amount, estimate.snapshot
+
+
+def _reserve_character_generation(job: CharacterGenerationJob) -> None:
+    try:
+        route_snapshot = dict(job.provider_snapshot or {})
+        estimate, reservation_amount, pricing_snapshot = (
+            estimate_character_generation(
+                provider_selection=CharacterProviderSelection(
+                    key=job.provider,
+                    source=str(route_snapshot.get("source") or "persisted"),
+                    snapshot=route_snapshot,
+                    model_name=job.model_name,
+                    model_version=job.model_version,
+                ),
+                provider_operation=job.provider_operation,
+                variant_count=job.variant_count,
+                request_payload=job.request_payload,
+                compiled={
+                    "positive_prompt": job.compiled_prompt,
+                    "negative_prompt": job.negative_prompt,
+                    "edit_instruction": job.edit_instruction,
+                },
+            )
+        )
+        reserve_generation(
+            user=job.actor.user,
+            domain="character",
+            job_id=str(job.job_id),
+            provider=estimate.provider,
+            model_name=estimate.model_name,
+            estimated_cost=estimate.estimated_cost,
+            reservation_amount=reservation_amount,
+            pricing_snapshot=pricing_snapshot,
+            project=job.project,
+            operation=job.provider_operation,
+            routing_mode=str(route_snapshot.get("routingMode") or "manual"),
+        )
+    except CreditServiceError as exc:
+        raise CharacterStudioError(
+            message=exc.message,
+            error_code=exc.code,
+            status_code=exc.http_status,
+        ) from exc
 
 
 @transaction.atomic
@@ -833,6 +1006,11 @@ def claim_job(job_id) -> JobLease | None:
         job.error_message = "The generation actor no longer exists."
         job.failed_at = now
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return None
     if job.attempts >= job.max_attempts:
         job.status = GenerationJobStatus.FAILED
@@ -840,6 +1018,11 @@ def claim_job(job_id) -> JobLease | None:
         job.error_message = "Generation worker exhausted its safe retry attempts."
         job.failed_at = now
         job.save()
+        release_generation(
+            domain="character",
+            job_id=str(job.job_id),
+            reason=job.error_code,
+        )
         return None
 
     if job.job_type in IMAGE_GENERATION_JOB_TYPES:
@@ -930,6 +1113,11 @@ def fail_job(lease: JobLease, *, error_code: str, error_message: str):
     job.progress = 0
     _clear_lease(job)
     job.save()
+    release_generation(
+        domain="character",
+        job_id=str(job.job_id),
+        reason=job.error_code,
+    )
     return job
 
 
@@ -989,7 +1177,7 @@ def list_character_jobs(*, actor, project_id, character_id, limit: int = 50):
 
 @transaction.atomic
 def request_job_cancellation(*, actor, job_id):
-    """Fence an active job and record that cancellation was requested."""
+    """Cancel queued work before a provider can incur a billable cost."""
     from w_craft_back.character_studio.services.permissions import (
         get_generation_project,
     )
@@ -1000,14 +1188,28 @@ def request_job_cancellation(*, actor, job_id):
         raise NotFoundError("Generation job not found.") from exc
     get_generation_project(actor, job.project_id)
     if job.status in (
-        GenerationJobStatus.QUEUED,
-        GenerationJobStatus.PROCESSING,
+        GenerationJobStatus.CANCELLED,
+        GenerationJobStatus.CANCELLATION_REQUESTED,
     ):
-        job.status = GenerationJobStatus.CANCELLATION_REQUESTED
-        job.cancellation_requested_at = timezone.now()
-        job.lease_token = None
-        job.lease_expires_at = None
-        job.save()
+        return job
+    if job.status != GenerationJobStatus.QUEUED:
+        raise ConflictError(
+            "Generation can only be cancelled while it is queued.",
+            error_code="GENERATION_ALREADY_STARTED",
+        )
+    now = timezone.now()
+    job.status = GenerationJobStatus.CANCELLED
+    job.progress = 0
+    job.cancellation_requested_at = now
+    job.completed_at = now
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.save()
+    release_generation(
+        domain="character",
+        job_id=str(job.job_id),
+        reason="cancelled_before_provider_start",
+    )
     return job
 
 
@@ -1066,7 +1268,7 @@ def retry_character_job(*, actor, job_id):
         retried.save(update_fields=["retry_of", "updated_at"])
         return retried
 
-    return CharacterGenerationJob.objects.create(
+    retried = CharacterGenerationJob.objects.create(
         character=original.character,
         project=original.project,
         user=original.user,
@@ -1091,3 +1293,5 @@ def retry_character_job(*, actor, job_id):
         timeout_seconds=original.timeout_seconds,
         max_attempts=original.max_attempts,
     )
+    _reserve_character_generation(retried)
+    return retried

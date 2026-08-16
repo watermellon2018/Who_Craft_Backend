@@ -31,14 +31,13 @@ from w_craft_back.movie.reference_library.models import (
 class ReferenceLifecycleTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="reference-lifecycle")
-        key = UserKey.objects.create(user=self.user)
+        UserKey.objects.create(user=self.user)
         self.project = Project.objects.create(
             owner=self.user,
-            user=key,
             title="Film",
-            format="full-movie",
-            annot="",
-            desc="",
+            format="feature_film",
+            annotation="",
+            synopsis="",
         )
         ProjectMember.objects.create(
             project=self.project,
@@ -116,17 +115,17 @@ class ReferenceLifecycleTests(TestCase):
         with self.assertRaisesMessage(ReferenceConflict, "Archived references"):
             retry_reference_job(self.job.id, actor=self.user)
 
-    def test_failure_after_cancellation_request_finishes_as_cancelled(self):
+    def test_processing_job_cannot_be_cancelled(self):
         claimed = claim_reference_job(self.job.id, lease_seconds=30)
-        cancel_reference_job(self.job.id)
 
+        with self.assertRaisesMessage(ReferenceConflict, "only be cancelled while"):
+            cancel_reference_job(self.job.id)
+
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, ReferenceJobStatus.PROCESSING)
         persisted = fail_reference_job(
             claimed,
-            code="IMAGE_PROVIDER_BAD_RESPONSE",
-            detail="must not overwrite cancellation",
+            code="TEST_CLEANUP",
+            detail="cleanup",
         )
-
-        self.assertFalse(persisted)
-        self.job.refresh_from_db()
-        self.assertEqual(self.job.status, ReferenceJobStatus.CANCELLED)
-        self.assertEqual(self.job.error_code, "")
+        self.assertTrue(persisted)

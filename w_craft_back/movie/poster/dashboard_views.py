@@ -122,8 +122,6 @@ def _read_reference(uploaded_file) -> bytes | None:
 class _AuthedView(APIView):
     """Resolve the custom token once and reject anonymous requests."""
 
-    allow_legacy_body_auth = False
-
     def _user(self, request):
         user = getattr(request, "user", None)
         if user is None or not user.is_authenticated:
@@ -197,6 +195,7 @@ class ProjectPosterGenerateView(_AuthedView):
                 reference_image_url=data.get("reference_image_url") or "",
                 reference_image_asset_id=data.get("reference_image_asset_id"),
                 image_model=data.get("image_model"),
+                routing_mode=data["routing_mode"],
                 request=request,
                 execute_immediately=False,
             )
@@ -230,6 +229,7 @@ class ProjectPosterEditView(_AuthedView):
                 instruction=data["instruction"],
                 idempotency_key=idempotency_key,
                 image_model=data.get("image_model"),
+                routing_mode=data["routing_mode"],
                 request=request,
                 execute_immediately=False,
             )

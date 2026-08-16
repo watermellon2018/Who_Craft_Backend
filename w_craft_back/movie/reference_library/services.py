@@ -65,6 +65,12 @@ from w_craft_back.movie.reference_library.providers import (
     resolve_reference_provider,
 )
 from w_craft_back.services.image_generation.errors import ImageProviderError
+from w_craft_back.credits.pricing import estimate_for_pinned_provider
+from w_craft_back.credits.services import (
+    CreditServiceError,
+    generation_charge_payload,
+    reserve_generation,
+)
 from w_craft_back.storage_gateway import (
     NormalizedImage,
     StorageGatewayError,
@@ -819,7 +825,7 @@ def _job_payload(
         "progress": job.progress,
         "variantCount": job.variant_count,
         "attempts": job.attempts,
-        "canCancel": job.status in NON_TERMINAL_STATUSES,
+        "canCancel": job.status == ReferenceJobStatus.QUEUED,
         "canRetry": (
             job.status in (ReferenceJobStatus.FAILED, ReferenceJobStatus.CANCELLED)
             and job.attempts < job.max_attempts
@@ -836,6 +842,7 @@ def _job_payload(
         ),
         "createdAt": job.created_at.isoformat(),
         "completedAt": job.completed_at.isoformat() if job.completed_at else None,
+        "billing": generation_charge_payload("reference", str(job.id)),
     }
     if detail:
         variants = job.variants.select_related(
@@ -896,6 +903,7 @@ def enqueue_job(
         "sourceVersionId": str(data.get("sourceVersionId") or ""),
         "variantCount": data["variantCount"],
         "imageModel": data.get("imageModel", ""),
+        "routingMode": data.get("routingMode", "manual"),
         "brief": data.get("brief", reference.brief),
         "editInstruction": data.get("editInstruction", ""),
         "expectedReferenceVersion": data["expectedReferenceVersion"],
@@ -945,15 +953,48 @@ def enqueue_job(
         project=project,
         requested_model=data.get("imageModel", ""),
     )
+    routing_mode = str(data.get("routingMode") or "manual").lower()
     try:
-        provider = resolve_reference_provider(
-            actor=actor,
-            project=project,
-            requested_model=effective_model,
-            require_edit=operation == ReferenceOperation.EDIT,
-        )
+        if routing_mode != "manual":
+            from w_craft_back.services.image_generation.routing import (
+                build_routing_decision,
+            )
+
+            decision = build_routing_decision(
+                mode=routing_mode,
+                requested_model=effective_model,
+                operation=(
+                    "edit" if operation == ReferenceOperation.EDIT else "generate"
+                ),
+                variant_count=data["variantCount"],
+                prompt=compiled.compiled_prompt,
+            )
+            provider_snapshot = decision.snapshot()
+            provider_name = decision.primary.spec.backend
+            model_name = decision.primary.spec.model_id
+            effective_model = decision.primary.spec.key
+        else:
+            provider = resolve_reference_provider(
+                actor=actor,
+                project=project,
+                requested_model=effective_model,
+                require_edit=operation == ReferenceOperation.EDIT,
+            )
+            provider_snapshot = (
+                {"spec": provider.spec.__dict__}
+                if getattr(provider, "spec", None) is not None
+                else {}
+            )
+            provider_name = provider.name
+            model_name = provider.model_id
     except ImageProviderError as error:
         raise map_provider_error(error) from error
+    except CreditServiceError as error:
+        raise ReferenceError(
+            error.message,
+            code=error.code,
+            http_status=error.http_status,
+        ) from error
     try:
         job = ReferenceGenerationJob.objects.create(
             project=project,
@@ -971,11 +1012,64 @@ def enqueue_job(
             source_version=source_version,
             variant_count=data["variantCount"],
             requested_model=effective_model,
+            provider_snapshot=provider_snapshot,
             idempotency_key=idempotency_key,
             request_fingerprint=fingerprint,
-            provider=provider.name,
-            model_name=provider.model_id,
+            provider=provider_name,
+            model_name=model_name,
         )
+        try:
+            if provider_snapshot.get("candidates"):
+                from w_craft_back.services.image_generation.routing import (
+                    estimate_route_snapshot,
+                )
+
+                estimate, reservation_amount, pricing_snapshot = (
+                    estimate_route_snapshot(
+                        provider_snapshot,
+                        operation=(
+                            "edit"
+                            if operation == ReferenceOperation.EDIT
+                            else "generate"
+                        ),
+                        variant_count=data["variantCount"],
+                        prompt=compiled.compiled_prompt,
+                    )
+                )
+            else:
+                estimate = estimate_for_pinned_provider(
+                    provider=provider_name,
+                    provider_snapshot=provider_snapshot or None,
+                    model_name=model_name,
+                    operation=(
+                        "edit"
+                        if operation == ReferenceOperation.EDIT
+                        else "generate"
+                    ),
+                    variant_count=data["variantCount"],
+                    prompt=compiled.compiled_prompt,
+                )
+                reservation_amount = estimate.reservation_amount
+                pricing_snapshot = estimate.snapshot
+            reserve_generation(
+                user=actor,
+                domain="reference",
+                job_id=str(job.id),
+                provider=estimate.provider,
+                model_name=estimate.model_name,
+                estimated_cost=estimate.estimated_cost,
+                reservation_amount=reservation_amount,
+                pricing_snapshot=pricing_snapshot,
+                project=project,
+                operation=operation,
+                routing_mode=routing_mode,
+            )
+        except CreditServiceError as error:
+            raise ReferenceError(
+                error.message,
+                code=error.code,
+                http_status=error.http_status,
+            ) from error
     except IntegrityError as error:
         raise ReferenceConflict(
             "A generation job is already active for this reference.",

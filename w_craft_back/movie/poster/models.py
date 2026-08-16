@@ -1,4 +1,4 @@
-"""Poster generation models for the project poster page (`/create-project/gen-poster`).
+"""Poster generation models for the project poster workspace.
 
 Three entities, owned by ``w_craft_back`` so existing migrations stay coherent:
 
@@ -158,6 +158,7 @@ class PosterGenerationJob(models.Model):
     idempotency_key = models.CharField(max_length=128, blank=True, default="")
     request_hash = models.CharField(max_length=64, blank=True, default="")
     requested_model = models.CharField(max_length=128, blank=True, default="")
+    provider_snapshot = models.JSONField(default=dict, blank=True)
     reference_storage_key = models.CharField(max_length=500, blank=True, default="")
     reference_mime_type = models.CharField(max_length=100, blank=True, default="")
     progress = models.PositiveSmallIntegerField(default=0)

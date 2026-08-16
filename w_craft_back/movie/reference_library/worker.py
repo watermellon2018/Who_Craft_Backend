@@ -44,6 +44,7 @@ from w_craft_back.storage_gateway import (
     delete_storage_key,
     normalize_image_bytes,
 )
+from w_craft_back.credits.services import capture_provider_generation
 
 
 class _ReferenceCancellationRequested(RuntimeError):
@@ -78,6 +79,7 @@ def _cleanup_outputs(outputs: list[tuple[Any, Any, list[str]]]) -> None:
 def _finalize_outputs(
     claimed: ReferenceGenerationJob,
     outputs: list[tuple[Any, Any, list[str]]],
+    provider: Any,
 ) -> ReferenceGenerationJob:
     job = ReferenceGenerationJob.objects.select_for_update().get(pk=claimed.pk)
     now = timezone.now()
@@ -116,17 +118,29 @@ def _finalize_outputs(
     job.lease_token = None
     job.lease_expires_at = None
     job.save()
+    capture_provider_generation(
+        domain="reference",
+        job_id=str(job.id),
+        provider=provider,
+    )
     return job
 
 
 def _provider_for_job(job: ReferenceGenerationJob):
     if job.provider == "mock":
         return DeterministicReferenceMockProvider()
-    provider = resolve_pinned_reference_provider(
-        actor=job.actor,
-        requested_model=job.requested_model,
-        require_edit=job.operation == ReferenceOperation.EDIT,
-    )
+    if job.provider_snapshot:
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        provider = provider_from_route_snapshot(job.provider_snapshot)
+    else:
+        provider = resolve_pinned_reference_provider(
+            actor=job.actor,
+            requested_model=job.requested_model,
+            require_edit=job.operation == ReferenceOperation.EDIT,
+        )
     if provider.name != job.provider or provider.model_id != job.model_name:
         raise ReferenceError(
             "The pinned image provider configuration changed.",
@@ -217,7 +231,7 @@ def execute_reference_job(job_id=None) -> ReferenceGenerationJob | None:
             )
             if not heartbeat_reference_job(claimed.id, claimed.lease_token):
                 raise ReferenceLeaseLost()
-        return _finalize_outputs(claimed, outputs)
+        return _finalize_outputs(claimed, outputs, provider)
     except ReferenceLeaseLost:
         _cleanup_outputs(outputs)
         return None

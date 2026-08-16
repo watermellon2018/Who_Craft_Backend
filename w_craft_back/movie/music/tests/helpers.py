@@ -16,12 +16,11 @@ def make_user(username: str) -> User:
 def make_project(owner: User, title: str = "Music project") -> Project:
     project = Project.objects.create(
         owner=owner,
-        user=UserKey.objects.get(user=owner),
         title=title,
-        description="",
-        format="full-movie",
-        annot="",
-        desc="",
+        summary="",
+        format="feature_film",
+        annotation="",
+        synopsis="",
     )
     ProjectMember.objects.create(
         project=project,

@@ -200,6 +200,26 @@ def get_image_provider(name="mock", provider_snapshot=None):
                 )
             return GeminiProvider(model_version=snapshot_spec["model_id"])
         return GeminiProvider()
+    if isinstance(provider_snapshot, dict) and provider_snapshot.get("candidates"):
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        try:
+            routed = provider_from_route_snapshot(provider_snapshot)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderUserFacingError(
+                "The saved provider route is invalid.",
+                error_code="PROVIDER_CONFIGURATION_ERROR",
+            ) from exc
+        if routed.spec.key != raw:
+            raise ProviderUserFacingError(
+                "The saved provider route does not match the job provider.",
+                error_code="PROVIDER_CONFIGURATION_ERROR",
+            )
+        adapter = RegistryCharacterProvider(spec=routed.spec)
+        adapter.provider = routed
+        return adapter
     try:
         if provider_snapshot and provider_snapshot.get("spec"):
             spec = deserialize_model_spec(provider_snapshot["spec"])
@@ -321,6 +341,7 @@ class RegistryCharacterProvider(AIImageProvider):
                     timeout=_provider_timeout(job),
                     **parameters,
                 )
+                self._sync_active_provider()
                 _provider_heartbeat(job)
             except ImageProviderError as exc:
                 raise ProviderUserFacingError(
@@ -369,6 +390,7 @@ class RegistryCharacterProvider(AIImageProvider):
                     timeout=_provider_timeout(job),
                     **parameters,
                 )
+                self._sync_active_provider()
                 _provider_heartbeat(job)
             except ImageProviderError as exc:
                 raise ProviderUserFacingError(
@@ -416,6 +438,14 @@ class RegistryCharacterProvider(AIImageProvider):
             1,
             min(requested_count, maximum, configured_maximum, 10),
         )
+
+    def _sync_active_provider(self) -> None:
+        active_spec = getattr(self.provider, "spec", None)
+        if active_spec is None:
+            return
+        self.spec = active_spec
+        self.model_name = active_spec.backend
+        self.model_version = active_spec.model_id
 
     def _provider_parameters(self, job) -> dict[str, object]:
         payload = job.request_payload if isinstance(job.request_payload, dict) else {}

@@ -6,8 +6,8 @@ from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
 
-class LegacyProjectRouteRemovalTests(SimpleTestCase):
-    legacy_routes = (
+class RemovedProjectRouteTests(SimpleTestCase):
+    removed_routes = (
         ("post", "/api/projects/create/"),
         ("get", "/api/projects/get-list-projects/"),
         ("delete", "/api/projects/delete-project-by-id/"),
@@ -18,8 +18,8 @@ class LegacyProjectRouteRemovalTests(SimpleTestCase):
     def setUp(self) -> None:
         self.client = APIClient()
 
-    def test_legacy_project_routes_are_unmounted(self) -> None:
-        for method, path in self.legacy_routes:
+    def test_removed_project_routes_are_unmounted(self) -> None:
+        for method, path in self.removed_routes:
             with self.subTest(method=method, path=path):
                 response = getattr(self.client, method)(
                     path,
@@ -36,27 +36,6 @@ class LegacyProjectRouteRemovalTests(SimpleTestCase):
         )
 
         self.assertEqual(response.status_code, 404)
-
-    def test_removed_route_attempt_is_logged_without_request_data(self) -> None:
-        with self.assertLogs("w_craft_back.request", level="INFO") as captured:
-            response = self.client.post(
-                "/api/projects/create/?token=query-secret",
-                {"payload_secret": "body-secret"},
-                format="json",
-            )
-
-        self.assertEqual(response.status_code, 404)
-        usage_records = [
-            record
-            for record in captured.records
-            if record.getMessage() == "legacy_project_route_requested"
-        ]
-        self.assertEqual(len(usage_records), 1)
-        self.assertEqual(usage_records[0].operation, "create")
-        self.assertEqual(usage_records[0].method, "POST")
-        rendered_logs = "\n".join(captured.output)
-        self.assertNotIn("query-secret", rendered_logs)
-        self.assertNotIn("body-secret", rendered_logs)
 
 
 class ProjectGenerationMigrationGuardTests(SimpleTestCase):

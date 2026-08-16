@@ -32,6 +32,7 @@ class ModelSpec:
     input_modalities: tuple[str, ...] = field(default_factory=tuple)
     output_modalities: tuple[str, ...] = field(default_factory=tuple)
     requires_env: tuple[str, ...] = field(default_factory=tuple)
+    provider_pricing: dict[str, Any] = field(default_factory=dict)
     default: bool = False
 
 
@@ -55,6 +56,11 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         input_modalities=("text",),
         output_modalities=("image",),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "output_image": "0.040000",
+        },
     ),
     "gemini-flash-image": ModelSpec(
         key="gemini-flash-image",
@@ -72,6 +78,12 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         input_modalities=("text", "image"),
         output_modalities=("image", "text"),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "input_text_token": "0.000000300",
+            "output_image": "0.039000",
+        },
         default=True,
     ),
     "openrouter-flash-image": ModelSpec(
@@ -114,6 +126,17 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         input_modalities=("text", "image"),
         output_modalities=("image",),
         requires_env=("OPENROUTER_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "openrouter",
+            "input_text_token": "0.000000500",
+            "output_image_by_resolution": {
+                "512": "0.045000",
+                "1K": "0.067000",
+                "2K": "0.101000",
+                "4K": "0.151000",
+            },
+        },
     ),
     "gemini-native": ModelSpec(
         key="gemini-native",
@@ -134,6 +157,13 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         input_modalities=("text", "image"),
         output_modalities=("image",),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "generate_output_image": "0.040000",
+            "edit_input_text_token": "0.000000300",
+            "edit_output_image": "0.039000",
+        },
     ),
 }
 
@@ -319,6 +349,17 @@ def deserialize_model_spec(snapshot: Mapping[str, Any] | str) -> ModelSpec:
     description = raw.get("description", "")
     if not isinstance(description, str):
         raise ValueError("Model snapshot description must be a string")
+    provider_pricing = raw.get("provider_pricing", {})
+    if not isinstance(provider_pricing, dict):
+        raise ValueError("Model snapshot provider_pricing must be an object")
+    try:
+        safe_pricing = json.loads(json.dumps(
+            provider_pricing,
+            ensure_ascii=False,
+            allow_nan=False,
+        ))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Model snapshot pricing is not JSON-safe") from exc
 
     spec = ModelSpec(
         key=raw["key"],
@@ -338,6 +379,7 @@ def deserialize_model_spec(snapshot: Mapping[str, Any] | str) -> ModelSpec:
             raw.get("output_modalities", []), "output_modalities"
         ),
         requires_env=_string_tuple(raw.get("requires_env", []), "requires_env"),
+        provider_pricing=safe_pricing,
         default=raw.get("default", False),
     )
     if (

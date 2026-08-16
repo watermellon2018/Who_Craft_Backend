@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import math
 import os
 import re
 import threading
 import time
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import requests
 
@@ -27,6 +28,7 @@ from .errors import (
 )
 from .litellm_provider import _extract_image_api, _provider_output_count_limit
 from .registry import OPENROUTER_IMAGES_KEY_PREFIX, ModelSpec
+from .usage import merge_usage, normalized_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,57 @@ _ASPECT_RATIOS = {
     "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "9:19.5",
     "19.5:9", "9:20", "20:9", "9:21", "21:9", "auto",
 }
+
+_ERROR_SCAN_FIELDS = frozenset({
+    "blocked_reason",
+    "code",
+    "details",
+    "error",
+    "error_type",
+    "finish_reason",
+    "message",
+    "metadata",
+    "provider_code",
+    "provider_error",
+    "raw",
+    "reason",
+    "reasons",
+    "type",
+})
+_ERROR_SCAN_MAX_DEPTH = 5
+_ERROR_SCAN_MAX_ITEMS = 10
+_ERROR_SCAN_MAX_LENGTH = 4096
+_BLOCKED_ERROR_MARKERS = frozenset({
+    "content_blocked",
+    "content_filter",
+    "content_filtered",
+    "content_policy",
+    "content_policy_violation",
+    "image_safety",
+    "prohibited_content",
+    "refusal",
+    "safety_block",
+    "safety_blocked",
+})
+_BLOCKED_MESSAGE_PATTERNS = (
+    re.compile(r"\bcontent\s+policy\s+violation\b", re.IGNORECASE),
+    re.compile(r"\bprohibited\s+content\b", re.IGNORECASE),
+    re.compile(
+        r"\bfailed\s+due\s+to\s+(?:content\s+policy|safety)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:content|image|prompt|request)\b.{0,80}"
+        r"\b(?:blocked|filtered|refused|rejected)\b.{0,80}"
+        r"\b(?:moderation|policy|safety)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:blocked|filtered|refused|rejected)\b.{0,80}"
+        r"\b(?:content\s+policy|moderation|safety)\b",
+        re.IGNORECASE,
+    ),
+)
 
 _catalog_lock = threading.Lock()
 _catalog_condition = threading.Condition(_catalog_lock)
@@ -127,23 +180,94 @@ def _provider_error_tokens(
             return None
         return value
 
-    return (
-        safe_token(metadata.get("error_type")),
-        safe_token(metadata.get("provider_code")),
+    def marker_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+    def limited_values(value: Any, *, depth: int = 0) -> Iterator[str]:
+        if depth > _ERROR_SCAN_MAX_DEPTH:
+            return
+        if isinstance(value, str):
+            bounded = value[:_ERROR_SCAN_MAX_LENGTH]
+            yield bounded
+            if (
+                depth == _ERROR_SCAN_MAX_DEPTH
+                or len(value) > _ERROR_SCAN_MAX_LENGTH
+            ):
+                return
+            try:
+                decoded = json.loads(bounded)
+            except (TypeError, ValueError):
+                return
+            if not isinstance(decoded, str):
+                yield from limited_values(decoded, depth=depth + 1)
+            return
+        if isinstance(value, Mapping):
+            for field in _ERROR_SCAN_FIELDS:
+                if field in value:
+                    yield from limited_values(value[field], depth=depth + 1)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value[:_ERROR_SCAN_MAX_ITEMS]:
+                yield from limited_values(item, depth=depth + 1)
+
+    candidates = tuple(
+        limited_values(
+            {
+                "code": error.get("code"),
+                "message": error.get("message"),
+                "type": error.get("type"),
+                "details": error.get("details"),
+                "metadata": {
+                    field: metadata.get(field)
+                    for field in _ERROR_SCAN_FIELDS
+                    if field in metadata
+                },
+            }
+        )
     )
+    blocked = any(
+        marker_key(candidate) in _BLOCKED_ERROR_MARKERS
+        or any(pattern.search(candidate) for pattern in _BLOCKED_MESSAGE_PATTERNS)
+        for candidate in candidates
+    )
+
+    error_type = safe_token(metadata.get("error_type")) or safe_token(
+        error.get("type")
+    )
+    provider_code = safe_token(metadata.get("provider_code")) or safe_token(
+        error.get("code")
+    )
+    if blocked:
+        error_type = error_type or "content_policy"
+        if provider_code is None:
+            provider_code = next(
+                (
+                    token
+                    for candidate in candidates
+                    if (token := safe_token(candidate)) is not None
+                    and marker_key(token) in _BLOCKED_ERROR_MARKERS
+                ),
+                None,
+            )
+    return error_type, provider_code
 
 
 def _http_error(response: requests.Response) -> ImageProviderError:
     provider_status = int(getattr(response, "status_code", 0) or 0)
-    error_type, _ = _provider_error_tokens(response)
+    error_type, provider_code = _provider_error_tokens(response)
     common = {
         "provider_status": provider_status or None,
         "provider_body": _response_body(response),
     }
-    if error_type in {"content_policy_violation", "refusal"}:
+    if any(
+        isinstance(token, str)
+        and re.sub(r"[^a-z0-9]+", "_", token.casefold()).strip("_")
+        in _BLOCKED_ERROR_MARKERS
+        for token in (error_type, provider_code)
+    ):
         return ImageProviderError(
             code=CODE_BLOCKED,
-            message="OpenRouter заблокировал запрос правилами безопасности.",
+            message="Провайдер изображений отклонил запрос по правилам безопасности.",
             http_status=400,
             **common,
         )
@@ -357,6 +481,13 @@ def _parse_catalog(payload: Any) -> list[ModelSpec]:
         if "image" not in output_modalities:
             continue
         parameters = _normalize_supported_parameters(row.get("supported_parameters"))
+        raw_pricing = _json_safe(row.get("pricing"))
+        if isinstance(raw_pricing, Mapping):
+            provider_pricing = dict(raw_pricing)
+        elif isinstance(raw_pricing, list):
+            provider_pricing = {"catalog": raw_pricing}
+        else:
+            provider_pricing = {}
         supports_reference = _reference_capability(input_modalities, parameters)
         supports_generate = _supports_raster_output(parameters)
         name = row.get("name")
@@ -384,6 +515,7 @@ def _parse_catalog(payload: Any) -> list[ModelSpec]:
                 input_modalities=input_modalities,
                 output_modalities=output_modalities,
                 requires_env=("OPENROUTER_API_KEY",),
+                provider_pricing=provider_pricing,
             )
         )
         seen.add(key)
@@ -654,6 +786,7 @@ class OpenRouterImagesProvider:
         self.name = spec.key
         self.model_id = spec.model_id
         self.session = session or requests.Session()
+        self._usage_events: list[dict[str, Any]] = []
         self.session.headers.update(_request_headers(require_key=True))
         self.session.headers.setdefault("Content-Type", "application/json")
 
@@ -662,6 +795,9 @@ class OpenRouterImagesProvider:
 
     def supports_reference(self) -> bool:
         return self.spec.supports_reference
+
+    def usage_snapshot(self) -> dict[str, Any]:
+        return merge_usage(self._usage_events)
 
     def _options(
         self,
@@ -758,6 +894,9 @@ class OpenRouterImagesProvider:
                 provider_status=response.status_code,
                 provider_body=_response_body(response),
             ) from exc
+        usage = normalized_response_usage(response_payload)
+        if usage:
+            self._usage_events.append(usage)
         return _extract_image_api(response_payload)
 
     def generate(

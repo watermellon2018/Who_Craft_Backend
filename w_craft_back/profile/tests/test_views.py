@@ -1,5 +1,3 @@
-import json
-
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
@@ -168,8 +166,9 @@ class ProfileSettingsViewTest(TestCase):
     def test_patch_language_saves_and_returns(self):
         response = self.client.patch(
             self.url,
-            {'token_user': self.token, 'language': 'en'},
+            {'language': 'en'},
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['language'], 'en')
@@ -179,8 +178,9 @@ class ProfileSettingsViewTest(TestCase):
     def test_patch_private_account_saves(self):
         response = self.client.patch(
             self.url,
-            {'token_user': self.token, 'private_account': True},
+            {'private_account': True},
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()['private_account'])
@@ -189,8 +189,9 @@ class ProfileSettingsViewTest(TestCase):
     def test_patch_notifications_saves(self):
         response = self.client.patch(
             self.url,
-            {'token_user': self.token, 'notifications_enabled': False},
+            {'notifications_enabled': False},
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()['notifications_enabled'])
@@ -198,8 +199,13 @@ class ProfileSettingsViewTest(TestCase):
     def test_patch_multiple_fields_at_once(self):
         response = self.client.patch(
             self.url,
-            {'token_user': self.token, 'language': 'en', 'private_account': True, 'notifications_enabled': False},
+            {
+                'language': 'en',
+                'private_account': True,
+                'notifications_enabled': False,
+            },
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -211,21 +217,23 @@ class ProfileSettingsViewTest(TestCase):
         for _ in range(2):
             response = self.client.patch(
                 self.url,
-                {'token_user': self.token, 'language': 'en'},
+                {'language': 'en'},
                 format='json',
+                HTTP_X_USER_TOKEN=self.token,
             )
             self.assertEqual(response.status_code, 200)
         self.assertEqual(UserProfile.objects.get(user=self.user).language, 'en')
 
     def test_patch_only_updates_own_profile(self):
         other_user = User.objects.create_user(username='other', password='pass')
-        other_key = UserKey.objects.create(user=other_user)
+        UserKey.objects.create(user=other_user)
         UserProfile.objects.create(user=other_user, language='ru')
 
         self.client.patch(
             self.url,
-            {'token_user': self.token, 'language': 'en'},
+            {'language': 'en'},
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
 
         other_profile = UserProfile.objects.get(user=other_user)
@@ -234,8 +242,9 @@ class ProfileSettingsViewTest(TestCase):
     def test_response_contains_only_settings_fields(self):
         response = self.client.patch(
             self.url,
-            {'token_user': self.token, 'language': 'en'},
+            {'language': 'en'},
             format='json',
+            HTTP_X_USER_TOKEN=self.token,
         )
         data = response.json()
         self.assertIn('language', data)

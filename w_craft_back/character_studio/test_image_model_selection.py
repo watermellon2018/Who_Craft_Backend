@@ -325,6 +325,11 @@ class CharacterImageModelSelectionTests(CharacterStudioTestCase):
             supports_generate=True,
             supports_edit=False,
             supports_reference=False,
+            provider_pricing={
+                "currency": "USD",
+                "source": "test",
+                "output_image": "0",
+            },
         )
         selection = CharacterProviderSelection(
             key=spec.key,
@@ -378,6 +383,11 @@ class CharacterImageModelSelectionTests(CharacterStudioTestCase):
             supports_generate=True,
             supports_edit=False,
             supports_reference=False,
+            provider_pricing={
+                "currency": "USD",
+                "source": "test",
+                "output_image": "0",
+            },
         )
         changed_spec = ModelSpec(
             key=first_spec.key,
@@ -389,6 +399,11 @@ class CharacterImageModelSelectionTests(CharacterStudioTestCase):
             supports_edit=False,
             supports_reference=False,
             description="Catalog metadata changed after enqueue.",
+            provider_pricing={
+                "currency": "USD",
+                "source": "test",
+                "output_image": "0",
+            },
         )
         first_selection = CharacterProviderSelection(
             key=first_spec.key,

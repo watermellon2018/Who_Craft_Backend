@@ -3,8 +3,6 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from w_craft_back.auth.models import UserKey
-
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
@@ -28,10 +26,3 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['username', 'password']
-
-
-class UserKeySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserKey
-        fields = ["expires_at", "refresh_expires_at", "revoked_at"]
-        read_only_fields = fields

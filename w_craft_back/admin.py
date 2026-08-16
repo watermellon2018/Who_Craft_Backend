@@ -1,5 +1,11 @@
 from django.contrib import admin
 
+from w_craft_back.credits.models import (
+    CreditAccount,
+    CreditAdminAuditEvent,
+    CreditLedgerEntry,
+    GenerationCharge,
+)
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.dashboard_models import (
     ProjectTag,
@@ -15,12 +21,139 @@ from w_craft_back.movie.project.dashboard_models import (
 )
 
 
+@admin.register(CreditAccount)
+class CreditAccountAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "available_balance",
+        "reserved_balance",
+        "is_frozen",
+        "updated_at",
+    )
+    search_fields = ("user__username",)
+    raw_id_fields = ("user",)
+    readonly_fields = (
+        "user",
+        "available_balance",
+        "reserved_balance",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CreditLedgerEntry)
+class CreditLedgerEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "operation_type",
+        "available_delta",
+        "reserved_delta",
+        "counterparty",
+        "created_at",
+    )
+    list_filter = ("operation_type",)
+    search_fields = ("account__user__username", "counterparty__username")
+    raw_id_fields = ("account", "counterparty")
+    readonly_fields = (
+        "id",
+        "account",
+        "operation_type",
+        "available_delta",
+        "reserved_delta",
+        "available_balance_after",
+        "reserved_balance_after",
+        "correlation_id",
+        "counterparty",
+        "idempotency_key",
+        "description",
+        "metadata",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(GenerationCharge)
+class GenerationChargeAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "domain",
+        "provider",
+        "model_name",
+        "status",
+        "estimated_cost",
+        "charged_amount",
+        "created_at",
+    )
+    list_filter = ("domain", "provider", "status", "cost_is_estimate", "routing_mode")
+    search_fields = ("account__user__username", "job_id", "model_name")
+    raw_id_fields = ("account",)
+    readonly_fields = tuple(
+        field.name for field in GenerationCharge._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CreditAdminAuditEvent)
+class CreditAdminAuditEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "account",
+        "event_type",
+        "amount",
+        "actor",
+        "created_at",
+    )
+    list_filter = ("event_type",)
+    search_fields = ("account__user__username", "actor__username", "reason")
+    raw_id_fields = ("account", "actor")
+    readonly_fields = tuple(
+        field.name for field in CreditAdminAuditEvent._meta.fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
     list_display = ("id", "title", "status", "owner", "is_favorite", "updated_at")
     list_filter = ("status", "is_favorite")
-    search_fields = ("title", "description", "slug")
-    raw_id_fields = ("owner", "user")
+    search_fields = ("title", "summary", "synopsis", "slug")
+    raw_id_fields = ("owner",)
     readonly_fields = ("created_at", "updated_at")
     ordering = ("-updated_at",)
 

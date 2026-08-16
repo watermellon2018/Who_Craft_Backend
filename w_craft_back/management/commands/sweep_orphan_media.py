@@ -16,7 +16,6 @@ from w_craft_back.character_studio.models import (
     CharacterImage,
     CharacterVariant,
 )
-from w_craft_back.characters.creating.models import Character
 from w_craft_back.movie.poster.models import PosterVariant
 from w_craft_back.movie.music.models import MusicAsset
 from w_craft_back.movie.project.dashboard_models import (
@@ -69,13 +68,12 @@ def _file_names(queryset, *field_names: str) -> set[str]:
 def referenced_storage_keys(cutoff) -> set[str]:
     """Return live and retention-protected storage keys."""
 
-    keys = _file_names(Project.objects.all(), "image", "cover_image")
+    keys = _file_names(Project.objects.all(), "cover_image")
     keys |= _file_names(ProjectAsset.objects.all(), "file")
     keys |= _file_names(Location.objects.all(), "image")
     keys |= _file_names(Scene.objects.all(), "preview_image")
     keys |= _file_names(MusicTrack.objects.all(), "audio_file", "cover_image")
     keys |= _file_names(MusicAsset.objects.all(), "file")
-    keys |= _file_names(Character.objects.all(), "photo")
     keys |= _file_names(UserProfile.objects.all(), "avatar", "cover")
     for model in (CharacterAsset, CharacterImage):
         for value in model.objects.exclude(storage_path="").values_list(

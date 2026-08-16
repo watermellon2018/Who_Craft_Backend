@@ -690,7 +690,7 @@ def probe_stored_audio(
     *,
     max_bytes: int | None = None,
 ) -> NormalizedAudio:
-    """Boundedly validate an existing managed object for legacy metadata backfill."""
+    """Boundedly validate a managed audio object for metadata completion."""
 
     key = safe_storage_key(storage_key)
     byte_limit = max_bytes or _positive_setting(
@@ -701,16 +701,6 @@ def probe_stored_audio(
     with default_storage.open(key, "rb") as handle:
         payload = handle.read(byte_limit + 1)
     return normalize_audio_bytes(payload, max_bytes=byte_limit)
-
-
-def safe_audio_display_name(raw_name: str | None) -> str:
-    """Return a display-only basename without paths or control characters."""
-
-    name = PurePosixPath(str(raw_name or "").replace("\\", "/")).name
-    cleaned = "".join(
-        char for char in name if char.isprintable() and char not in "\r\n"
-    )
-    return cleaned[:255]
 
 
 def _allowed_mimes_for_asset_type(asset_type: str) -> set[str]:

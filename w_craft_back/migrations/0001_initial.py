@@ -5,7 +5,7 @@ from django.db import migrations, models
 import django.db.models.deletion
 import mptt.fields
 import uuid
-import w_craft_back.characters.creating.models
+import w_craft_back.migration_validators
 
 
 class Migration(migrations.Migration):
@@ -33,7 +33,7 @@ class Migration(migrations.Migration):
                 ('first_name', models.CharField(default='', max_length=100)),
                 ('last_name', models.CharField(default='', max_length=100)),
                 ('middle_name', models.CharField(default='', max_length=100)),
-                ('birth_date', models.CharField(default='', max_length=25, validators=[w_craft_back.characters.creating.models.validate_birth_date])),
+                ('birth_date', models.CharField(default='', max_length=25, validators=[w_craft_back.migration_validators.validate_birth_date])),
                 ('birth_place', models.CharField(default='', max_length=100)),
             ],
         ),

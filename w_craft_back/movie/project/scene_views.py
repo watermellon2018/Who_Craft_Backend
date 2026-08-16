@@ -1,7 +1,7 @@
 """Detail endpoints for the high-risk concurrent-edit entities.
 
-Scene (holds the script + camera settings), Location and MusicTrack get GET +
-PATCH endpoints with optimistic-locking. The client sends the ``version`` it
+Scene (holds the script + camera settings) and Location get GET + PATCH
+endpoints with optimistic-locking. The client sends the ``version`` it
 started editing from; if the stored version has moved on, we return 409 instead
 of silently overwriting another member's changes.
 """
@@ -21,7 +21,6 @@ from rest_framework.views import APIView
 from w_craft_back.movie.project import policy, project_mutations
 from w_craft_back.movie.project.dashboard_models import (
     Location,
-    MusicTrack,
     Scene,
 )
 from w_craft_back.movie.project.models import Project
@@ -93,7 +92,7 @@ class _VersionedEntityView(APIView):
                 {"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED
             )
         project = get_object_or_404(
-            Project.objects.select_related("owner", "user"), pk=project_id
+            Project.objects.select_related("owner"), pk=project_id
         )
         if not policy.can_view(user, project):
             return None, None, None, Response(
@@ -254,26 +253,5 @@ class LocationDetailView(_VersionedEntityView):
             "updatedById": loc.updated_by_id,
             "updatedByUsername": (
                 loc.updated_by.username if loc.updated_by_id else None
-            ),
-        }
-
-
-class MusicTrackDetailView(_VersionedEntityView):
-    model = MusicTrack
-    url_kwarg = "track_id"
-    editable_fields = ("title", "author", "duration_seconds", "tags")
-
-    def serialize(self, track: MusicTrack) -> dict:
-        return {
-            "id": track.id,
-            "title": track.title,
-            "author": track.author,
-            "durationSeconds": track.duration_seconds,
-            "tags": list(track.tags or []),
-            "version": track.version,
-            "updatedAt": track.updated_at.isoformat() if track.updated_at else None,
-            "updatedById": track.updated_by_id,
-            "updatedByUsername": (
-                track.updated_by.username if track.updated_by_id else None
             ),
         }

@@ -28,12 +28,11 @@ class CharacterActorAttributionTests(TestCase):
         self.actor = User.objects.create_user(username="actor-editor")
         self.actor_key = UserKey.objects.create(user=self.actor)
         self.project = Project.objects.create(
-            user=self.owner_key,
             owner=owner,
             title="Shared character",
-            format="full-movie",
-            annot="",
-            desc="",
+            format="feature_film",
+            annotation="",
+            synopsis="",
         )
         ProjectMember.objects.create(
             project=self.project,

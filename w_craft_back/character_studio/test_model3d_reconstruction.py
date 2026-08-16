@@ -51,12 +51,11 @@ class Model3DReconstructionTests(TestCase):
         user = User.objects.create_user(username="model3d-owner", password="x")
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
-            user=self.user_key,
             owner=user,
             title="3D film",
             format="series",
-            annot="Short",
-            desc="Long",
+            annotation="Short",
+            synopsis="Long",
         )
         self.character = CharacterService().create_character(
             self.user_key,

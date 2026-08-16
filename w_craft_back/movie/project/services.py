@@ -11,7 +11,7 @@ from typing import Any, Optional
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Count, Q
+from django.db.models import Count
 from django.utils import timezone
 
 from w_craft_back.character_studio.models import CharacterRole, StudioCharacter
@@ -21,10 +21,8 @@ from w_craft_back.movie.project.dashboard_models import (
     ProjectAsset,
     ProjectMember,
     ProjectMemberRole,
-    ProjectProgress,
     ProjectTag,
     Scene,
-    SceneCharacter,
     SceneMusic,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
@@ -249,11 +247,10 @@ def _hero_payload(project: Project, request, user: Optional[User] = None) -> dic
         )
         owner_name = owner_payload["displayName"]
 
-    description = project.description or project.desc or ""
+    description = project.summary or project.synopsis or ""
     cover_url = (
         _absolute_url(request, project.cover_image, project=project)
         or _selected_poster_url(project, request)
-        or _absolute_url(request, project.image, project=project)
     )
 
     from w_craft_back.movie.project import policy as _policy
@@ -510,11 +507,7 @@ def _music_payload(project: Project, request, limit: int = 5) -> list[dict]:
             active_version_id = str(active_version.id)
             active_version_number = active_version.version_number
         else:
-            audio_url = _absolute_url(
-                request,
-                t.audio_file,
-                project=project,
-            )
+            audio_url = None
             duration_seconds = float(t.duration_seconds or 0)
             active_version_id = None
             active_version_number = None
@@ -677,7 +670,6 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
     cover_url = (
         _absolute_url(request, project.cover_image, project=project)
         or _selected_poster_url(project, request)
-        or _absolute_url(request, project.image, project=project)
     )
 
     # When the caller did a ``prefetch_related('tags')`` we read the cache
@@ -696,7 +688,7 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
     payload = {
         "id": project.id,
         "title": project.title,
-        "description": project.description or project.desc or "",
+        "description": project.summary or project.synopsis or "",
         "status": project.status,
         "statusLabel": _STATUS_LABELS.get(project.status, project.status),
         "coverImageUrl": cover_url,
@@ -711,7 +703,7 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
     }
 
     # Team-collaboration fields for the "My Projects" cards. Only emitted when a
-    # user is known (the list endpoint passes it; legacy callers may not).
+    # user is known (the list endpoint passes it; internal callers may not).
     if user is not None:
         # Prefer the prefetched members cache to avoid an N+1 over the list.
         members_cache = getattr(project, "_prefetched_objects_cache", {}).get("members")
@@ -722,7 +714,7 @@ def build_project_summary(project: Project, request=None, user=None) -> dict[str
                 ProjectMember.objects.filter(project=project).select_related("user")
             )
         member_count = len(members)
-        # Role: owner via FK/legacy, else the matching member row.
+        # Role: canonical owner, else the matching member row.
         role = _resolve_user_role(project, user)
         # Compact avatar list (first few members).
         ordered = sorted(
@@ -761,17 +753,16 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
     base = build_project_summary(project, request)
     poster_url = (
         _selected_poster_url(project, request)
-        or _absolute_url(request, project.image, project=project)
         or _absolute_url(request, project.cover_image, project=project)
     )
     base.update({
         "format": project.format or "",
-        "genre": [g.translit for g in project.genre.all()],
+        "genre": [g.translit for g in project.genres.all()],
         # Stable English values (e.g. "kids") so the frontend chips can match
         # by value, not by display label.
-        "audience": [a.translit for a in project.audience.all() if a.translit],
-        "annotation": project.annot or "",
-        "synopsis": project.desc or project.description or "",
+        "audience": [a.translit for a in project.audiences.all() if a.translit],
+        "annotation": project.annotation or "",
+        "synopsis": project.synopsis or project.summary or "",
         "posterUrl": poster_url,
         "generationSettings": dict(project.generation_settings or {}),
         "createdAt": project.created_at.isoformat() if project.created_at else None,

@@ -1,4 +1,4 @@
-"""Idempotently probe legacy music objects after the additive schema deploy."""
+"""Idempotently verify imported music assets without migration storage I/O."""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ from django.core.management.base import BaseCommand
 
 from w_craft_back.movie.music.models import (
     MusicAsset,
-    MusicAssetOrigin,
     MusicAssetVerificationStatus,
 )
 from w_craft_back.storage_gateway import StorageGatewayError, probe_stored_audio
 
 
 class Command(BaseCommand):
-    help = "Probe legacy music files and fill verified metadata without migration I/O."
+    help = "Verify pending music files and fill their stored metadata."
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--limit", type=int, default=1000)
@@ -23,9 +22,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         limit = max(1, min(int(options["limit"]), 10000))
         assets = MusicAsset.objects.filter(
-            origin=MusicAssetOrigin.LEGACY,
             verification_status__in=(
-                MusicAssetVerificationStatus.LEGACY_UNVERIFIED,
+                MusicAssetVerificationStatus.PENDING,
                 MusicAssetVerificationStatus.MISSING,
             ),
         ).order_by("created_at")[:limit]
@@ -57,7 +55,7 @@ class Command(BaseCommand):
             verified += 1
         self.stdout.write(
             self.style.SUCCESS(
-                "Legacy music probe complete: "
+                "Pending music verification complete: "
                 f"verified={verified}, missing={missing}, invalid={invalid}."
             )
         )

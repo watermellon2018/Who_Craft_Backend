@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from io import StringIO
 import os
 import shutil
@@ -11,6 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.db import connection
 from django.test import override_settings
+from w_craft_back.credits.models import CreditAccount
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -95,6 +97,10 @@ class CountingProvider(MockProvider):
 class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
     def setUp(self):
         super().setUp()
+        CreditAccount.objects.update_or_create(
+            user=self.user_key.user,
+            defaults={"available_balance": Decimal("100.000000")},
+        )
         self.media_root = tempfile.mkdtemp()
         self.settings_override = override_settings(MEDIA_ROOT=self.media_root)
         self.settings_override.enable()
@@ -543,6 +549,10 @@ class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
         character = self.create_character()
         editor = User.objects.create_user(username="preference-editor")
         editor_key = UserKey.objects.create(user=editor)
+        CreditAccount.objects.create(
+            user=editor,
+            available_balance=Decimal("100.000000"),
+        )
         ProjectMember.objects.create(
             project=self.project,
             user=editor,
