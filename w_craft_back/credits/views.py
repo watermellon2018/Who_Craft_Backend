@@ -11,13 +11,15 @@ from rest_framework.views import APIView
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
 from .pricing import GenerationEstimate
 from .serializers import (
-    CreditTransferSerializer,
     CreditAdminOperationSerializer,
+    CreditTransferSerializer,
     DemoTopUpSerializer,
     GenerationEstimateSerializer,
+    ProjectCreditBudgetSerializer,
 )
 from .services import (
     CreditServiceError,
+    admin_transfer_credits,
     administer_credit_account,
     account_statistics,
     demo_top_up,
@@ -25,7 +27,8 @@ from .services import (
     generation_spending_statistics,
     list_admin_audit_events,
     list_entries,
-    transfer_credits,
+    list_project_credit_budgets,
+    set_project_credit_budget,
     validate_idempotency_key,
 )
 from w_craft_back.services.image_generation.errors import ImageProviderError
@@ -66,6 +69,23 @@ def _admin_event_payload(event) -> dict:
         "reason": event.reason,
         "actor": event.actor.username if event.actor else None,
         "createdAt": event.created_at.isoformat(),
+    }
+
+
+def _project_budget_payload(snapshot: dict) -> dict:
+    project = snapshot["project"]
+    return {
+        "projectId": project.pk,
+        "projectTitle": project.title,
+        "limit": _credit(snapshot["limit"]) if snapshot["limit"] is not None else None,
+        "spent": _credit(snapshot["spent"]),
+        "reserved": _credit(snapshot["reserved"]),
+        "remaining": (
+            _credit(snapshot["remaining"])
+            if snapshot["remaining"] is not None
+            else None
+        ),
+        "overLimit": snapshot["over_limit"],
     }
 
 
@@ -157,7 +177,7 @@ class CreditSummaryView(APIView):
                 },
                 "capabilities": {
                     "demoTopUpEnabled": settings.CREDITS_DEMO_TOP_UP_ENABLED,
-                    "transfersEnabled": not account.is_frozen,
+                    "transfersEnabled": bool(request.user.is_staff),
                     "adminWalletManagement": bool(request.user.is_staff),
                 },
                 "alerts": {
@@ -375,9 +395,7 @@ class CreditAdminOperationView(APIView):
             key = validate_idempotency_key(request.headers.get("Idempotency-Key"))
             result = administer_credit_account(
                 actor=request.user,
-                username=serializer.validated_data["username"],
                 action=serializer.validated_data["action"],
-                amount=serializer.validated_data.get("amount"),
                 reason=serializer.validated_data["reason"],
                 idempotency_key=key,
             )
@@ -467,30 +485,61 @@ class CreditTransferView(APIView):
             return _validation_error(serializer)
         try:
             key = validate_idempotency_key(request.headers.get("Idempotency-Key"))
-            result = transfer_credits(
-                sender=request.user,
-                recipient_username=serializer.validated_data["username"],
+            admin_result = admin_transfer_credits(
+                actor=request.user,
+                sender_username=serializer.validated_data["senderUsername"],
+                recipient_username=serializer.validated_data["recipientUsername"],
                 amount=serializer.validated_data["amount"],
-                note=serializer.validated_data["note"],
+                reason=serializer.validated_data["reason"],
                 idempotency_key=key,
             )
         except CreditServiceError as error:
             return _error_response(error)
+
+        result = admin_result.transfer
 
         response_status = (
             status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED
         )
         return Response(
             {
-                "account": _account_payload(get_or_create_account(request.user)),
+                "account": _account_payload(result.sender_entry.account),
                 "transfer": {
                     "id": str(result.sender_entry.correlation_id),
                     "amount": _credit(-result.sender_entry.available_delta),
+                    "sender": result.sender_entry.account.user.username,
                     "recipient": _counterparty_payload(result.sender_entry),
                     "note": result.sender_entry.description,
                     "createdAt": result.sender_entry.created_at.isoformat(),
                 },
+                "auditEvent": _admin_event_payload(admin_result.event),
                 "replayed": result.replayed,
             },
             status=response_status,
         )
+
+
+class ProjectCreditBudgetListView(APIView):
+    def get(self, request):
+        return Response({
+            "items": [
+                _project_budget_payload(snapshot)
+                for snapshot in list_project_credit_budgets(request.user)
+            ],
+        })
+
+
+class ProjectCreditBudgetDetailView(APIView):
+    def patch(self, request, project_id: int):
+        serializer = ProjectCreditBudgetSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer)
+        try:
+            snapshot = set_project_credit_budget(
+                actor=request.user,
+                project_id=project_id,
+                limit=serializer.validated_data["limit"],
+            )
+        except CreditServiceError as error:
+            return _error_response(error)
+        return Response(_project_budget_payload(snapshot))

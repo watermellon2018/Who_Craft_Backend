@@ -94,6 +94,8 @@ def check_contract() -> None:
         "/api/projects/{projectId}/character-tree/nodes/{nodeId}/",
         "/api/projects/{projectId}/poster/generate/",
         "/api/projects/{projectId}/team/invitations/",
+        "/api/credits/project-budgets/",
+        "/api/credits/project-budgets/{projectId}/",
     }
     assert required_paths.issubset(document["paths"])
     assert not any(path.startswith("/api/character/") for path in document["paths"])
@@ -101,6 +103,19 @@ def check_contract() -> None:
         document["paths"]["/api/projects/{projectId}/"]["get"]["operationId"]
         == "getProject"
     )
+    admin_operation = _schema(document, "CreditAdminOperationRequest")
+    assert set(admin_operation["properties"]) == {"action", "reason"}
+    assert set(admin_operation["properties"]["action"]["enum"]) == {
+        "freeze",
+        "unfreeze",
+    }
+    transfer = _schema(document, "CreditTransferRequest")
+    assert set(transfer["required"]) == {
+        "senderUsername",
+        "recipientUsername",
+        "amount",
+        "reason",
+    }
 
 
 if __name__ == "__main__":

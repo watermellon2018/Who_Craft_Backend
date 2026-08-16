@@ -20,6 +20,7 @@ from w_craft_back.credits.models import (
 from w_craft_back.movie.project.models import Project
 from w_craft_back.credits.services import (
     InsufficientCredits,
+    ProjectCreditBudgetExceeded,
     capture_generation,
     capture_provider_generation,
     demo_top_up,
@@ -32,7 +33,11 @@ from w_craft_back.credits.services import (
 class CreditsApiTest(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = User.objects.create_user(username="alice", password="password")
+        self.user = User.objects.create_user(
+            username="alice",
+            password="password",
+            is_staff=True,
+        )
         self.recipient = User.objects.create_user(username="test", password="12345678")
         self.token = UserKey.objects.create(user=self.user).key
         self.auth = {"HTTP_X_USER_TOKEN": self.token}
@@ -122,7 +127,12 @@ class CreditsApiTest(TestCase):
 
         response = self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "35.50", "note": "На раскадровку"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "35.50",
+                "reason": "На раскадровку",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-0001",
             **self.auth,
@@ -147,7 +157,12 @@ class CreditsApiTest(TestCase):
     @override_settings(CREDITS_DEMO_TOP_UP_ENABLED=True)
     def test_transfer_replay_does_not_move_credits_twice(self):
         self._top_up()
-        payload = {"username": "test", "amount": "25.00"}
+        payload = {
+            "senderUsername": "alice",
+            "recipientUsername": "test",
+            "amount": "25.00",
+            "reason": "Командный перевод",
+        }
 
         created = self.client.post(
             reverse("credit-transfer"),
@@ -187,7 +202,12 @@ class CreditsApiTest(TestCase):
 
         response = self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "1.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "1.00",
+                "reason": "Командный перевод",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="shared-client-key",
             **self.auth,
@@ -208,7 +228,12 @@ class CreditsApiTest(TestCase):
 
         response = self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "21.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "21.00",
+                "reason": "Командный перевод",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-0003",
             **self.auth,
@@ -224,21 +249,36 @@ class CreditsApiTest(TestCase):
 
         self_transfer = self.client.post(
             reverse("credit-transfer"),
-            {"username": "alice", "amount": "1.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "alice",
+                "amount": "1.00",
+                "reason": "Проверка",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-self",
             **self.auth,
         )
         unknown = self.client.post(
             reverse("credit-transfer"),
-            {"username": "nobody", "amount": "1.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "nobody",
+                "amount": "1.00",
+                "reason": "Проверка",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-unknown",
             **self.auth,
         )
         wrong_case = self.client.post(
             reverse("credit-transfer"),
-            {"username": "Test", "amount": "1.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "Test",
+                "amount": "1.00",
+                "reason": "Проверка",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-case",
             **self.auth,
@@ -253,7 +293,12 @@ class CreditsApiTest(TestCase):
         self._top_up(amount="100.00")
         self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "25.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "25.00",
+                "reason": "Командный перевод",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-key-0004",
             **self.auth,
@@ -383,7 +428,12 @@ class CreditsApiTest(TestCase):
         self._top_up(amount="100.00")
         too_large = self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "11.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "11.00",
+                "reason": "Проверка лимита",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-limit-large",
             **self.auth,
@@ -396,7 +446,12 @@ class CreditsApiTest(TestCase):
         account.save(update_fields=["is_frozen", "freeze_reason", "updated_at"])
         frozen = self.client.post(
             reverse("credit-transfer"),
-            {"username": "test", "amount": "1.00"},
+            {
+                "senderUsername": "alice",
+                "recipientUsername": "test",
+                "amount": "1.00",
+                "reason": "Проверка заморозки",
+            },
             format="json",
             HTTP_IDEMPOTENCY_KEY="transfer-frozen-wallet",
             **self.auth,
@@ -404,42 +459,47 @@ class CreditsApiTest(TestCase):
         summary = self.client.get(reverse("credit-summary"), **self.auth)
         self.assertEqual(frozen.status_code, 423)
         self.assertTrue(summary.json()["account"]["isFrozen"])
-        self.assertFalse(summary.json()["capabilities"]["transfersEnabled"])
+        self.assertTrue(summary.json()["capabilities"]["transfersEnabled"])
 
-    def test_staff_manual_operations_are_audited_and_idempotent(self):
-        staff = User.objects.create_user(
-            username="wallet-admin",
-            password="password",
-            is_staff=True,
-        )
-        staff_auth = {
-            "HTTP_X_USER_TOKEN": UserKey.objects.create(user=staff).key,
-        }
+    def test_staff_freezes_own_wallet_without_username_and_is_audited(self):
         payload = {
-            "username": self.user.username,
-            "action": "adjustment",
-            "amount": "25.50",
-            "reason": "Demo support credit",
+            "action": "freeze",
+            "reason": "Security review",
         }
         created = self.client.post(
             reverse("credit-admin-operation"),
             payload,
             format="json",
-            HTTP_IDEMPOTENCY_KEY="admin-adjustment-001",
-            **staff_auth,
+            HTTP_IDEMPOTENCY_KEY="admin-freeze-self-001",
+            **self.auth,
         )
         replay = self.client.post(
             reverse("credit-admin-operation"),
             payload,
             format="json",
-            HTTP_IDEMPOTENCY_KEY="admin-adjustment-001",
-            **staff_auth,
+            HTTP_IDEMPOTENCY_KEY="admin-freeze-self-001",
+            **self.auth,
         )
+        regular = User.objects.create_user(username="regular", password="password")
+        regular_auth = {
+            "HTTP_X_USER_TOKEN": UserKey.objects.create(user=regular).key,
+        }
         forbidden = self.client.post(
             reverse("credit-admin-operation"),
             payload,
             format="json",
-            HTTP_IDEMPOTENCY_KEY="admin-adjustment-002",
+            HTTP_IDEMPOTENCY_KEY="admin-freeze-self-002",
+            **regular_auth,
+        )
+        retired_adjustment = self.client.post(
+            reverse("credit-admin-operation"),
+            {
+                "action": "adjustment",
+                "amount": "25.50",
+                "reason": "Old action",
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-adjustment-retired",
             **self.auth,
         )
 
@@ -447,31 +507,107 @@ class CreditsApiTest(TestCase):
         self.assertEqual(replay.status_code, 200)
         self.assertTrue(replay.json()["replayed"])
         self.assertEqual(forbidden.status_code, 403)
-        self.assertEqual(
-            CreditAccount.objects.get(user=self.user).available_balance,
-            Decimal("25.50"),
-        )
+        self.assertEqual(retired_adjustment.status_code, 400)
+        account = CreditAccount.objects.get(user=self.user)
+        self.assertTrue(account.is_frozen)
+        self.assertEqual(account.freeze_reason, "Security review")
         self.assertEqual(CreditAdminAuditEvent.objects.count(), 1)
 
-        frozen = self.client.post(
+        unfrozen = self.client.post(
             reverse("credit-admin-operation"),
             {
-                "username": self.user.username,
-                "action": "freeze",
-                "reason": "Charge review",
+                "action": "unfreeze",
+                "reason": "Review complete",
             },
             format="json",
-            HTTP_IDEMPOTENCY_KEY="admin-freeze-wallet-001",
-            **staff_auth,
+            HTTP_IDEMPOTENCY_KEY="admin-unfreeze-self-001",
+            **self.auth,
         )
         audit = self.client.get(
             reverse("credit-admin-audit"),
             {"username": self.user.username},
-            **staff_auth,
+            **self.auth,
         )
-        self.assertEqual(frozen.status_code, 201)
+        self.assertEqual(unfrozen.status_code, 201)
         self.assertEqual(audit.status_code, 200)
         self.assertEqual(len(audit.json()["items"]), 2)
+
+    @override_settings(CREDITS_DEMO_TOP_UP_ENABLED=True)
+    def test_transfer_is_staff_only_and_requires_a_reason(self):
+        self._top_up()
+        regular = User.objects.create_user(username="regular", password="password")
+        regular_auth = {
+            "HTTP_X_USER_TOKEN": UserKey.objects.create(user=regular).key,
+        }
+        payload = {
+            "senderUsername": "alice",
+            "recipientUsername": "test",
+            "amount": "1.00",
+            "reason": "Support transfer",
+        }
+
+        forbidden = self.client.post(
+            reverse("credit-transfer"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-transfer-forbidden",
+            **regular_auth,
+        )
+        missing_reason = self.client.post(
+            reverse("credit-transfer"),
+            {key: value for key, value in payload.items() if key != "reason"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-transfer-no-reason",
+            **self.auth,
+        )
+
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(missing_reason.status_code, 400)
+
+    def test_staff_can_transfer_between_other_users_with_audited_actor(self):
+        sender = User.objects.create_user(username="producer", password="password")
+        CreditAccount.objects.create(
+            user=sender,
+            available_balance=Decimal("20.00"),
+        )
+        payload = {
+            "senderUsername": sender.username,
+            "recipientUsername": self.recipient.username,
+            "amount": "7.50",
+            "reason": "Project allocation",
+        }
+
+        response = self.client.post(
+            reverse("credit-transfer"),
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-transfer-others-001",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["transfer"]["sender"], sender.username)
+        self.assertEqual(response.json()["auditEvent"]["actor"], self.user.username)
+        self.assertEqual(
+            CreditAccount.objects.get(user=sender).available_balance,
+            Decimal("12.50"),
+        )
+        self.assertEqual(
+            CreditAccount.objects.get(user=self.recipient).available_balance,
+            Decimal("7.50"),
+        )
+
+        recipient_account = CreditAccount.objects.get(user=self.recipient)
+        recipient_account.is_frozen = True
+        recipient_account.save(update_fields=["is_frozen", "updated_at"])
+        blocked = self.client.post(
+            reverse("credit-transfer"),
+            {**payload, "amount": "1.00"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="admin-transfer-frozen-recipient",
+            **self.auth,
+        )
+        self.assertEqual(blocked.status_code, 409)
 
     def test_generation_spending_statistics_group_project_domain_and_period(self):
         project = Project.objects.create(
@@ -515,6 +651,55 @@ class CreditsApiTest(TestCase):
         self.assertEqual(response.json()["totalCharged"], "0.20")
         self.assertEqual(response.json()["byDomain"][0]["domain"], "poster")
         self.assertEqual(response.json()["byProject"][0]["projectTitle"], "Film")
+
+    def test_project_owner_can_set_clear_and_read_generation_budget(self):
+        project = Project.objects.create(
+            owner=self.user,
+            title="Budget Film",
+            format="other",
+            annotation="",
+            synopsis="",
+        )
+
+        initial = self.client.get(reverse("credit-project-budget-list"), **self.auth)
+        updated = self.client.patch(
+            reverse("credit-project-budget-detail", args=[project.pk]),
+            {"limit": "12.50"},
+            format="json",
+            **self.auth,
+        )
+        cleared = self.client.patch(
+            reverse("credit-project-budget-detail", args=[project.pk]),
+            {"limit": None},
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(initial.status_code, 200)
+        self.assertIsNone(initial.json()["items"][0]["limit"])
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["limit"], "12.50")
+        self.assertEqual(updated.json()["remaining"], "12.50")
+        self.assertEqual(cleared.status_code, 200)
+        self.assertIsNone(cleared.json()["limit"])
+
+    def test_non_owner_cannot_change_project_budget(self):
+        project = Project.objects.create(
+            owner=self.recipient,
+            title="Foreign Film",
+            format="other",
+            annotation="",
+            synopsis="",
+        )
+
+        response = self.client.patch(
+            reverse("credit-project-budget-detail", args=[project.pk]),
+            {"limit": "10.00"},
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 403)
 
 
 class GenerationCreditSettlementTest(TestCase):
@@ -636,6 +821,64 @@ class GenerationCreditSettlementTest(TestCase):
         self.account.refresh_from_db()
         self.assertEqual(self.account.available_balance, Decimal("0.950000"))
         self.assertEqual(self.account.reserved_balance, Decimal("0.000000"))
+
+    def test_project_budget_counts_captured_and_reserved_generation_costs(self):
+        collaborator = User.objects.create_user(
+            username="project-member",
+            password="password",
+        )
+        CreditAccount.objects.create(
+            user=collaborator,
+            available_balance=Decimal("1.000000"),
+        )
+        project = Project.objects.create(
+            owner=self.user,
+            title="Limited Film",
+            format="other",
+            annotation="",
+            synopsis="",
+            credit_budget_limit=Decimal("0.080000"),
+        )
+        reserve_generation(
+            user=self.user,
+            domain="character",
+            job_id="budget-job-1",
+            provider="test",
+            model_name="test-model",
+            estimated_cost=Decimal("0.050000"),
+            reservation_amount=Decimal("0.050000"),
+            project=project,
+        )
+
+        with self.assertRaises(ProjectCreditBudgetExceeded):
+            reserve_generation(
+                user=collaborator,
+                domain="poster",
+                job_id="budget-job-2",
+                provider="test",
+                model_name="test-model",
+                estimated_cost=Decimal("0.040000"),
+                reservation_amount=Decimal("0.040000"),
+                project=project,
+            )
+
+        release_generation(
+            domain="character",
+            job_id="budget-job-1",
+            reason="provider_failed",
+        )
+        accepted = reserve_generation(
+            user=collaborator,
+            domain="poster",
+            job_id="budget-job-2",
+            provider="test",
+            model_name="test-model",
+            estimated_cost=Decimal("0.040000"),
+            reservation_amount=Decimal("0.040000"),
+            project=project,
+        )
+
+        self.assertFalse(accepted.replayed)
 
 
 class CreditTransferConcurrencyTest(TransactionTestCase):

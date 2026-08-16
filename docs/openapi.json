@@ -106,11 +106,37 @@
         },
         "responses": {
           "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
-          "201": {"description": "Credits transferred", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
+          "201": {"description": "Staff-administered credits transferred", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
           "400": {"$ref": "#/components/responses/ApiError"},
           "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"},
           "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/project-budgets/": {
+      "get": {
+        "operationId": "listProjectCreditBudgets",
+        "responses": {
+          "200": {"description": "Lifetime generation budget snapshots for projects owned by the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudgetList"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/project-budgets/{projectId}/": {
+      "patch": {
+        "operationId": "updateProjectCreditBudget",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudgetUpdateRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated project generation budget", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudget"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -123,10 +149,9 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationRequest"}}}},
         "responses": {
           "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
-          "201": {"description": "Manual wallet operation recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
+          "201": {"description": "Current administrator wallet freeze state changed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
           "400": {"$ref": "#/components/responses/ApiError"},
           "403": {"$ref": "#/components/responses/ApiError"},
-          "404": {"$ref": "#/components/responses/ApiError"},
           "409": {"$ref": "#/components/responses/ApiError"}
         }
       }
@@ -1076,19 +1101,21 @@
       "CreditTransferRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["username", "amount"],
+        "required": ["senderUsername", "recipientUsername", "amount", "reason"],
         "properties": {
-          "username": {"type": "string", "minLength": 1, "maxLength": 150},
+          "senderUsername": {"type": "string", "minLength": 1, "maxLength": 150},
+          "recipientUsername": {"type": "string", "minLength": 1, "maxLength": 150},
           "amount": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "example": "25.00"},
-          "note": {"type": "string", "maxLength": 140}
+          "reason": {"type": "string", "minLength": 1, "maxLength": 255}
         }
       },
       "CreditTransfer": {
         "type": "object",
-        "required": ["id", "amount", "recipient", "note", "createdAt"],
+        "required": ["id", "amount", "sender", "recipient", "note", "createdAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "sender": {"type": "string"},
           "recipient": {"$ref": "#/components/schemas/CreditCounterparty"},
           "note": {"type": "string"},
           "createdAt": {"type": "string", "format": "date-time"}
@@ -1096,11 +1123,40 @@
       },
       "CreditTransferResponse": {
         "type": "object",
-        "required": ["account", "transfer", "replayed"],
+        "required": ["account", "transfer", "auditEvent", "replayed"],
         "properties": {
           "account": {"$ref": "#/components/schemas/CreditAccount"},
           "transfer": {"$ref": "#/components/schemas/CreditTransfer"},
+          "auditEvent": {"$ref": "#/components/schemas/CreditAdminAuditEvent"},
           "replayed": {"type": "boolean"}
+        }
+      },
+      "ProjectCreditBudget": {
+        "type": "object",
+        "required": ["projectId", "projectTitle", "limit", "spent", "reserved", "remaining", "overLimit"],
+        "properties": {
+          "projectId": {"type": "integer"},
+          "projectTitle": {"type": "string"},
+          "limit": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "spent": {"$ref": "#/components/schemas/CreditAmount"},
+          "reserved": {"$ref": "#/components/schemas/CreditAmount"},
+          "remaining": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "overLimit": {"type": "boolean"}
+        }
+      },
+      "ProjectCreditBudgetList": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectCreditBudget"}}
+        }
+      },
+      "ProjectCreditBudgetUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["limit"],
+        "properties": {
+          "limit": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true}
         }
       },
       "CreditSpendingGroup": {
@@ -1130,11 +1186,9 @@
       "CreditAdminOperationRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["username", "action", "reason"],
+        "required": ["action", "reason"],
         "properties": {
-          "username": {"type": "string", "maxLength": 150},
-          "action": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze"]},
-          "amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "action": {"type": "string", "enum": ["freeze", "unfreeze"]},
           "reason": {"type": "string", "maxLength": 255}
         }
       },
@@ -1143,7 +1197,7 @@
         "required": ["id", "eventType", "amount", "reason", "actor", "createdAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
-          "eventType": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze"]},
+          "eventType": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze", "transfer"]},
           "amount": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
           "reason": {"type": "string"},
           "actor": {"type": "string", "nullable": true},

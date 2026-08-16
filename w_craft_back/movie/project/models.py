@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 
 from w_craft_back.movie.properties.models import Genre, Audience
@@ -46,6 +47,13 @@ class Project(models.Model):
     )
     is_favorite = models.BooleanField(default=False)
     generation_settings = models.JSONField(default=dict, blank=True)
+    credit_budget_limit = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
     archived_at = models.DateTimeField(null=True, blank=True)
@@ -62,6 +70,13 @@ class Project(models.Model):
             models.CheckConstraint(
                 check=models.Q(format__in=ProjectFormat.values),
                 name="chk_project_format_canonical",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(credit_budget_limit__isnull=True)
+                    | models.Q(credit_budget_limit__gte=0)
+                ),
+                name="project_credit_budget_nonnegative",
             ),
         ]
 

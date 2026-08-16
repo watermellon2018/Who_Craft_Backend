@@ -260,6 +260,7 @@ class CreditAdminEventType(models.TextChoices):
     REFUND = "refund", "Manual refund"
     FREEZE = "freeze", "Wallet frozen"
     UNFREEZE = "unfreeze", "Wallet unfrozen"
+    TRANSFER = "transfer", "Administrative transfer"
 
 
 class ImmutableCreditAdminAuditQuerySet(models.QuerySet):

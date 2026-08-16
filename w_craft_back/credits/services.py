@@ -17,6 +17,8 @@ from django.db.models.functions import Coalesce
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
+from w_craft_back.movie.project.models import Project
+
 from .models import (
     CreditAccount,
     CreditAdminAuditEvent,
@@ -95,6 +97,21 @@ class CreditAdminOperationInvalid(CreditServiceError):
     code = "CREDIT_ADMIN_OPERATION_INVALID"
 
 
+class ProjectCreditBudgetExceeded(CreditServiceError):
+    code = "PROJECT_CREDIT_BUDGET_EXCEEDED"
+    http_status = 409
+
+
+class ProjectCreditBudgetForbidden(CreditServiceError):
+    code = "PROJECT_CREDIT_BUDGET_FORBIDDEN"
+    http_status = 403
+
+
+class ProjectCreditBudgetNotFound(CreditServiceError):
+    code = "PROJECT_CREDIT_BUDGET_NOT_FOUND"
+    http_status = 404
+
+
 @dataclass(frozen=True)
 class TopUpResult:
     entry: CreditLedgerEntry
@@ -120,6 +137,12 @@ class AdminCreditOperationResult:
     event: CreditAdminAuditEvent
     ledger_entry: CreditLedgerEntry | None
     replayed: bool
+
+
+@dataclass(frozen=True)
+class AdminTransferResult:
+    transfer: TransferResult
+    event: CreditAdminAuditEvent
 
 
 def money(value: Any) -> Decimal:
@@ -201,6 +224,71 @@ def _generation_metadata(charge: GenerationCharge, **extra: Any) -> dict[str, An
     }
 
 
+def project_credit_budget_snapshot(project: Project) -> dict[str, Any]:
+    """Return lifetime captured and active reserved spend for one project."""
+
+    decimal_output = DecimalField(max_digits=18, decimal_places=6)
+    totals = project.generation_charges.aggregate(
+        spent=Coalesce(
+            Sum(
+                "charged_amount",
+                filter=Q(status=GenerationChargeStatus.CAPTURED),
+            ),
+            ZERO,
+            output_field=decimal_output,
+        ),
+        reserved=Coalesce(
+            Sum(
+                "reserved_amount",
+                filter=Q(status=GenerationChargeStatus.RESERVED),
+            ),
+            ZERO,
+            output_field=decimal_output,
+        ),
+    )
+    limit = project.credit_budget_limit
+    committed = totals["spent"] + totals["reserved"]
+    remaining = None if limit is None else max(limit - committed, ZERO)
+    return {
+        "project": project,
+        "limit": limit,
+        "spent": totals["spent"],
+        "reserved": totals["reserved"],
+        "remaining": remaining,
+        "over_limit": limit is not None and committed > limit,
+    }
+
+
+def list_project_credit_budgets(user: User) -> list[dict[str, Any]]:
+    """List budget snapshots for projects owned by the current user."""
+
+    return [
+        project_credit_budget_snapshot(project)
+        for project in Project.objects.filter(owner=user).order_by("title", "pk")
+    ]
+
+
+@transaction.atomic
+def set_project_credit_budget(
+    *,
+    actor: User,
+    project_id: int,
+    limit: Decimal | None,
+) -> dict[str, Any]:
+    """Set or clear a lifetime generation budget as the project owner."""
+
+    project = Project.objects.select_for_update().filter(pk=project_id).first()
+    if project is None:
+        raise ProjectCreditBudgetNotFound("Проект не найден.")
+    if project.owner_id != actor.pk:
+        raise ProjectCreditBudgetForbidden(
+            "Лимит расходов может менять только владелец проекта."
+        )
+    project.credit_budget_limit = money(limit) if limit is not None else None
+    project.save(update_fields=["credit_budget_limit", "updated_at"])
+    return project_credit_budget_snapshot(project)
+
+
 def _generation_entry(
     *,
     charge: GenerationCharge,
@@ -256,6 +344,17 @@ def reserve_generation(
         if existing.account_id != account.id:
             raise IdempotencyConflict("Generation job is owned by another account.")
         return GenerationSettlementResult(charge=existing, replayed=True)
+    locked_project = None
+    if project is not None:
+        locked_project = Project.objects.select_for_update().get(pk=project.pk)
+        budget = project_credit_budget_snapshot(locked_project)
+        limit = budget["limit"]
+        committed = budget["spent"] + budget["reserved"]
+        if limit is not None and committed + reserved > limit:
+            raise ProjectCreditBudgetExceeded(
+                "Лимит расходов проекта исчерпан. Увеличьте бюджет "
+                "или дождитесь освобождения резерва."
+            )
     if account.is_frozen:
         raise CreditAccountFrozen(
             "Кошелёк заморожен. Новые платные операции временно недоступны."
@@ -266,7 +365,7 @@ def reserve_generation(
         )
     charge = GenerationCharge.objects.create(
         account=account,
-        project=project,
+        project=locked_project,
         domain=str(domain)[:32],
         operation=str(operation or "generate")[:32],
         routing_mode=str(routing_mode or "manual")[:16],
@@ -790,61 +889,93 @@ def generation_spending_statistics(
     }
 
 
-def _signed_money(value: Any) -> Decimal:
-    try:
-        amount = Decimal(str(value)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
-    except (InvalidOperation, TypeError, ValueError) as exc:
-        raise CreditAdminOperationInvalid("Некорректная сумма операции.") from exc
-    if not amount.is_finite() or amount == ZERO:
-        raise CreditAdminOperationInvalid("Сумма операции не может быть нулевой.")
-    return amount
-
-
 def _require_credit_admin(actor: User) -> None:
     if not getattr(actor, "is_staff", False):
         raise CreditAdminForbidden("Операция доступна только администратору.")
 
 
 @transaction.atomic
+def admin_transfer_credits(
+    *,
+    actor: User,
+    sender_username: str,
+    recipient_username: str,
+    amount: Decimal,
+    reason: str,
+    idempotency_key: str,
+) -> AdminTransferResult:
+    """Transfer credits between users through an audited staff-only action."""
+
+    _require_credit_admin(actor)
+    sender = User.objects.filter(username=sender_username, is_active=True).first()
+    if sender is None:
+        raise RecipientNotFound("Отправитель с таким логином не найден.")
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise CreditAdminOperationInvalid("Укажите причину перевода.")
+    normalized_amount = money(amount)
+    if normalized_amount == ZERO:
+        raise CreditAdminOperationInvalid("Сумма перевода должна быть больше нуля.")
+
+    result = transfer_credits(
+        sender=sender,
+        recipient_username=recipient_username,
+        amount=normalized_amount,
+        note=normalized_reason,
+        idempotency_key=idempotency_key,
+    )
+    sender_account = result.sender_entry.account
+    existing = sender_account.admin_audit_events.filter(
+        idempotency_key=idempotency_key,
+    ).first()
+    if existing is not None:
+        return AdminTransferResult(transfer=result, event=existing)
+
+    event = CreditAdminAuditEvent.objects.create(
+        account=sender_account,
+        actor=actor,
+        event_type=CreditAdminEventType.TRANSFER,
+        amount=normalized_amount,
+        reason=normalized_reason[:255],
+        idempotency_key=idempotency_key,
+        metadata={
+            "correlationId": str(result.sender_entry.correlation_id),
+            "recipientUserId": result.recipient_entry.account.user_id,
+            "request_hash": result.sender_entry.metadata.get("request_hash"),
+        },
+    )
+    return AdminTransferResult(transfer=result, event=event)
+
+
+@transaction.atomic
 def administer_credit_account(
     *,
     actor: User,
-    username: str,
     action: str,
     reason: str,
     idempotency_key: str,
-    amount: Any | None = None,
 ) -> AdminCreditOperationResult:
-    """Apply one audited staff adjustment, refund, freeze or unfreeze."""
+    """Freeze or unfreeze the current staff user's own wallet."""
 
     _require_credit_admin(actor)
-    target = User.objects.filter(username=username).first()
-    if target is None:
-        raise RecipientNotFound("Пользователь с таким логином не найден.")
-    accounts = _locked_accounts(target)
-    account = accounts[target.pk]
+    accounts = _locked_accounts(actor)
+    account = accounts[actor.pk]
     normalized_action = str(action or "").strip().lower()
     normalized_reason = str(reason or "").strip()
-    if normalized_action not in CreditAdminEventType.values:
-        raise CreditAdminOperationInvalid("Неизвестная административная операция.")
+    if normalized_action not in {
+        CreditAdminEventType.FREEZE,
+        CreditAdminEventType.UNFREEZE,
+    }:
+        raise CreditAdminOperationInvalid(
+            "Доступны только заморозка и разморозка собственного кошелька."
+        )
     if not normalized_reason:
         raise CreditAdminOperationInvalid("Укажите причину ручной операции.")
-    signed_amount: Decimal | None = None
-    if normalized_action in {
-        CreditAdminEventType.ADJUSTMENT,
-        CreditAdminEventType.REFUND,
-    }:
-        signed_amount = _signed_money(amount)
-        if normalized_action == CreditAdminEventType.REFUND and signed_amount < ZERO:
-            raise CreditAdminOperationInvalid("Возврат должен быть положительным.")
-    elif amount not in (None, ""):
-        raise CreditAdminOperationInvalid("Для заморозки сумма не используется.")
 
     request_hash = _request_hash({
         "action": normalized_action,
-        "amount": str(signed_amount) if signed_amount is not None else None,
         "reason": normalized_reason,
-        "target_id": target.pk,
+        "target_id": actor.pk,
     })
     existing = account.admin_audit_events.filter(
         idempotency_key=idempotency_key,
@@ -861,67 +992,34 @@ def administer_credit_account(
             replayed=True,
         )
 
-    ledger_entry = None
-    if signed_amount is not None:
-        if signed_amount < ZERO and account.available_balance < -signed_amount:
-            raise InsufficientCredits(
-                "Административное списание не может сделать баланс отрицательным."
-            )
-        account.available_balance += signed_amount
-        account.save(update_fields=["available_balance", "updated_at"])
-        ledger_entry = CreditLedgerEntry.objects.create(
-            account=account,
-            operation_type=(
-                CreditOperationType.REFUND
-                if normalized_action == CreditAdminEventType.REFUND
-                else CreditOperationType.ADJUSTMENT
-            ),
-            available_delta=signed_amount,
-            reserved_delta=ZERO,
-            available_balance_after=account.available_balance,
-            reserved_balance_after=account.reserved_balance,
-            correlation_id=uuid.uuid4(),
-            idempotency_key=(
-                "admin:"
-                + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:50]
-            ),
-            description=normalized_reason[:255],
-            metadata={
-                "adminUserId": actor.pk,
-                "manual": True,
-                "request_hash": request_hash,
-            },
-        )
-    else:
-        is_frozen = normalized_action == CreditAdminEventType.FREEZE
-        account.is_frozen = is_frozen
-        account.freeze_reason = normalized_reason if is_frozen else ""
-        account.frozen_at = timezone.now() if is_frozen else None
-        account.frozen_by = actor if is_frozen else None
-        account.save(update_fields=[
-            "is_frozen",
-            "freeze_reason",
-            "frozen_at",
-            "frozen_by",
-            "updated_at",
-        ])
+    is_frozen = normalized_action == CreditAdminEventType.FREEZE
+    account.is_frozen = is_frozen
+    account.freeze_reason = normalized_reason if is_frozen else ""
+    account.frozen_at = timezone.now() if is_frozen else None
+    account.frozen_by = actor if is_frozen else None
+    account.save(update_fields=[
+        "is_frozen",
+        "freeze_reason",
+        "frozen_at",
+        "frozen_by",
+        "updated_at",
+    ])
 
     event = CreditAdminAuditEvent.objects.create(
         account=account,
         actor=actor,
         event_type=normalized_action,
-        amount=signed_amount,
+        amount=None,
         reason=normalized_reason[:255],
         idempotency_key=idempotency_key,
         metadata={
             "request_hash": request_hash,
-            "ledgerEntryId": str(ledger_entry.id) if ledger_entry else None,
         },
     )
     return AdminCreditOperationResult(
         account=account,
         event=event,
-        ledger_entry=ledger_entry,
+        ledger_entry=None,
         replayed=False,
     )
 

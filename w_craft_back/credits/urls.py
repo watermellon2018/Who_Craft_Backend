@@ -9,6 +9,8 @@ from .views import (
     CreditSpendingStatisticsView,
     CreditTransferView,
     GenerationEstimateView,
+    ProjectCreditBudgetDetailView,
+    ProjectCreditBudgetListView,
 )
 
 
@@ -22,6 +24,16 @@ urlpatterns = [
     ),
     path("demo-top-up/", CreditDemoTopUpView.as_view(), name="credit-demo-top-up"),
     path("transfers/", CreditTransferView.as_view(), name="credit-transfer"),
+    path(
+        "project-budgets/",
+        ProjectCreditBudgetListView.as_view(),
+        name="credit-project-budget-list",
+    ),
+    path(
+        "project-budgets/<int:project_id>/",
+        ProjectCreditBudgetDetailView.as_view(),
+        name="credit-project-budget-detail",
+    ),
     path(
         "admin/operations/",
         CreditAdminOperationView.as_view(),

@@ -13,19 +13,17 @@ class DemoTopUpSerializer(serializers.Serializer):
 
 
 class CreditTransferSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=150, trim_whitespace=True)
+    senderUsername = serializers.CharField(max_length=150, trim_whitespace=True)
+    recipientUsername = serializers.CharField(max_length=150, trim_whitespace=True)
     amount = serializers.DecimalField(
         max_digits=18,
         decimal_places=2,
         min_value=Decimal("0.01"),
         max_value=Decimal("1000000.00"),
     )
-    note = serializers.CharField(
-        max_length=140,
-        required=False,
-        allow_blank=True,
+    reason = serializers.CharField(
+        max_length=255,
         trim_whitespace=True,
-        default="",
     )
 
 
@@ -56,14 +54,14 @@ class GenerationEstimateSerializer(serializers.Serializer):
 
 
 class CreditAdminOperationSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=150, trim_whitespace=True)
-    action = serializers.ChoiceField(
-        choices=("adjustment", "refund", "freeze", "unfreeze")
-    )
-    amount = serializers.DecimalField(
+    action = serializers.ChoiceField(choices=("freeze", "unfreeze"))
+    reason = serializers.CharField(max_length=255, trim_whitespace=True)
+
+
+class ProjectCreditBudgetSerializer(serializers.Serializer):
+    limit = serializers.DecimalField(
         max_digits=18,
         decimal_places=6,
-        required=False,
         allow_null=True,
+        min_value=Decimal("0"),
     )
-    reason = serializers.CharField(max_length=255, trim_whitespace=True)
