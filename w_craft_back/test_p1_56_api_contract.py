@@ -39,7 +39,11 @@ class ApiContractTests(SimpleTestCase):
         self.assertEqual(security["in"], "header")
         self.assertEqual(security["name"], "X-User-Token")
         self.assertNotIn("token_user", create_schema["properties"])
-        self.assertIn("projectId", create_schema["required"])
+        self.assertNotIn("projectId", create_schema["properties"])
+        self.assertEqual(
+            set(create_schema["properties"]["type"]["enum"]),
+            {"folder", "character"},
+        )
 
     def test_limits_match_runtime_serializers(self) -> None:
         constraints = self.schema["x-contract-constraints"]
@@ -92,7 +96,7 @@ class ApiContractTests(SimpleTestCase):
         self.assertEqual(payload["detail"], "validation error")
 
     def test_api_middleware_wraps_real_drf_errors(self) -> None:
-        response = Client().get("/api/character/select/", {"projectId": 1})
+        response = Client().get("/api/projects/1/character-tree/")
 
         self.assertIn(response.status_code, {401, 403})
         payload = response.json()

@@ -277,9 +277,8 @@ class UploadEndpointCompatibilityTests(TestCase):
         user_key = UserKey.objects.create(user=user)
         project = Project.objects.create(
             owner=user,
-            user=user_key,
             title="Upload project",
-            format="full-movie",
+            format="feature_film",
         )
         ProjectMember.objects.create(
             project=project,
@@ -316,9 +315,8 @@ class UploadEndpointCompatibilityTests(TestCase):
         user_key = UserKey.objects.create(user=user)
         project = Project.objects.create(
             owner=user,
-            user=user_key,
             title="Stream project",
-            format="full-movie",
+            format="feature_film",
         )
         ProjectMember.objects.create(
             project=project,
@@ -363,9 +361,8 @@ class UploadEndpointCompatibilityTests(TestCase):
         user_key = UserKey.objects.create(user=user)
         project = Project.objects.create(
             owner=user,
-            user=user_key,
             title="Character stream project",
-            format="full-movie",
+            format="feature_film",
         )
         ProjectMember.objects.create(
             project=project,

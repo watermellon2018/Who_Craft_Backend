@@ -3,7 +3,7 @@
   "info": {
     "title": "W Craft API",
     "version": "1.0.0",
-    "description": "Canonical contract for frontend-facing project, character tree, poster and Music Studio operations."
+    "description": "Canonical contract for frontend-facing credits, project, character tree, poster and Music Studio operations."
   },
   "servers": [
     {"url": "/"}
@@ -30,16 +30,168 @@
         }
       }
     },
-    "/api/character/select/": {
+    "/api/credits/summary/": {
+      "get": {
+        "operationId": "getCreditSummary",
+        "responses": {
+          "200": {
+            "description": "Current Craft credit balance and 30-day statistics",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditSummary"}}}
+          },
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/history/": {
+      "get": {
+        "operationId": "listCreditHistory",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}},
+          {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+          {"name": "operationType", "in": "query", "schema": {"$ref": "#/components/schemas/CreditOperationType"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated append-only credit ledger",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditHistoryPage"}}}
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/spending-statistics/": {
+      "get": {
+        "operationId": "getCreditSpendingStatistics",
+        "parameters": [
+          {"name": "periodDays", "in": "query", "schema": {"type": "integer", "enum": [7, 30, 90, 365], "default": 30}},
+          {"name": "projectId", "in": "query", "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Generation spending grouped by day, project and domain", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditSpendingStatistics"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/demo-top-up/": {
+      "post": {
+        "operationId": "createCreditDemoTopUp",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditDemoTopUpRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditMutationResponse"}}}},
+          "201": {"description": "Demo credits added", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/transfers/": {
+      "post": {
+        "operationId": "createCreditTransfer",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
+          "201": {"description": "Staff-administered credits transferred", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditTransferResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/project-budgets/": {
+      "get": {
+        "operationId": "listProjectCreditBudgets",
+        "responses": {
+          "200": {"description": "Lifetime generation budget snapshots for projects owned by the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudgetList"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/project-budgets/{projectId}/": {
+      "patch": {
+        "operationId": "updateProjectCreditBudget",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudgetUpdateRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated project generation budget", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectCreditBudget"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/admin/operations/": {
+      "post": {
+        "operationId": "createCreditAdminOperation",
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 64}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Idempotent replay", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
+          "201": {"description": "Current administrator wallet freeze state changed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/admin/audit/": {
+      "get": {
+        "operationId": "getCreditAdminAudit",
+        "parameters": [
+          {"name": "username", "in": "query", "required": true, "schema": {"type": "string", "maxLength": 150}}
+        ],
+        "responses": {
+          "200": {"description": "Append-only manual wallet audit", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreditAdminAudit"}}}},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/credits/generation-estimate/": {
+      "post": {
+        "operationId": "estimateGenerationCost",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GenerationCostEstimateRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Provider-price estimate and current wallet sufficiency",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GenerationCostEstimate"}}}
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "503": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/character-tree/": {
       "get": {
         "operationId": "listCharacterTree",
         "parameters": [
-          {
-            "name": "projectId",
-            "in": "query",
-            "required": true,
-            "schema": {"type": "integer"}
-          }
+          {"$ref": "#/components/parameters/ProjectId"}
         ],
         "responses": {
           "200": {
@@ -59,9 +211,12 @@
         }
       }
     },
-    "/api/character/create/": {
+    "/api/projects/{projectId}/character-tree/nodes/": {
       "post": {
         "operationId": "createCharacterTreeNode",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"}
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -71,7 +226,14 @@
           }
         },
         "responses": {
-          "200": {"description": "Tree node created"},
+          "201": {
+            "description": "Tree node created or placeholder completed",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CharacterTreeNode"}
+              }
+            }
+          },
           "400": {"$ref": "#/components/responses/ApiError"},
           "401": {"$ref": "#/components/responses/ApiError"},
           "403": {"$ref": "#/components/responses/ApiError"},
@@ -79,14 +241,23 @@
         }
       }
     },
-    "/api/character/rename/": {
-      "post": {
+    "/api/projects/{projectId}/character-tree/nodes/{nodeId}/": {
+      "parameters": [
+        {"$ref": "#/components/parameters/ProjectId"},
+        {
+          "name": "nodeId",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string", "format": "uuid"}
+        }
+      ],
+      "patch": {
         "operationId": "renameCharacterTreeNode",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {"$ref": "#/components/schemas/CharacterTreeRenameRequest"}
+              "schema": {"$ref": "#/components/schemas/CharacterTreeUpdateRequest"}
             }
           }
         },
@@ -95,7 +266,7 @@
             "description": "Tree node renamed",
             "content": {
               "application/json": {
-                "schema": {"$ref": "#/components/schemas/CharacterTreeRenameResponse"}
+                "schema": {"$ref": "#/components/schemas/CharacterTreeNode"}
               }
             }
           },
@@ -104,28 +275,11 @@
           "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"}
         }
-      }
-    },
-    "/api/character/delete/": {
-      "post": {
+      },
+      "delete": {
         "operationId": "deleteCharacterTreeNode",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {"$ref": "#/components/schemas/CharacterTreeDeleteRequest"}
-            }
-          }
-        },
         "responses": {
-          "200": {
-            "description": "Tree node deleted",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/DeleteResponse"}
-              }
-            }
-          },
+          "204": {"description": "Tree placement or subtree deleted"},
           "401": {"$ref": "#/components/responses/ApiError"},
           "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"}
@@ -295,18 +449,6 @@
           "403": {"$ref": "#/components/responses/MusicError"},
           "404": {"$ref": "#/components/responses/MusicError"}
         }
-      },
-      "post": {
-        "operationId": "createLegacyMusicTrackMetadata",
-        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
-        "description": "Compatibility endpoint for creating a metadata-only track.",
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackRequest"}}}},
-        "responses": {
-          "201": {"description": "Track metadata created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LegacyMusicTrackResponse"}}}},
-          "400": {"$ref": "#/components/responses/MusicError"},
-          "401": {"$ref": "#/components/responses/MusicError"},
-          "403": {"$ref": "#/components/responses/MusicError"}
-        }
       }
     },
     "/api/projects/{projectId}/music/capabilities/": {
@@ -416,7 +558,7 @@
         "operationId": "cancelMusicGenerationJob",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/MusicJobId"}],
         "responses": {
-          "202": {"description": "Cancellation requested", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
+          "202": {"description": "Queued generation cancelled before provider start", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicGenerationJob"}}}},
           "401": {"$ref": "#/components/responses/MusicError"},
           "403": {"$ref": "#/components/responses/MusicError"},
           "404": {"$ref": "#/components/responses/MusicError"},
@@ -683,7 +825,7 @@
         "operationId": "cancelReferenceGenerationJob",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ReferenceId"}, {"$ref": "#/components/parameters/ReferenceJobId"}],
         "responses": {
-          "202": {"description": "Cancellation requested or queued job cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
+          "202": {"description": "Queued generation cancelled before provider start", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceGenerationJob"}}}},
           "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
         }
       }
@@ -707,6 +849,35 @@
           "200": {"description": "Existing application replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
           "201": {"description": "Variant applied as a new immutable version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReferenceVersionMutationResponse"}}}},
           "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/characters/{characterId}/secondary-assets/quote": {
+      "post": {
+        "operationId": "quoteCharacterSecondaryAssets",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/CharacterId"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsQuoteRequest"}}}},
+        "responses": {
+          "200": {"description": "Signed exact quote for identity-anchored secondary jobs", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsQuote"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/characters/{characterId}/secondary-assets/generate": {
+      "post": {
+        "operationId": "generateCharacterSecondaryAssets",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/CharacterId"},
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsGenerateRequest"}}}},
+        "responses": {
+          "202": {"description": "All selected jobs atomically reserved and queued, or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CharacterSecondaryAssetsGenerateResponse"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "409": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -744,6 +915,12 @@
         "in": "path",
         "required": true,
         "schema": {"type": "integer"}
+      },
+      "CharacterId": {
+        "name": "characterId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
       },
       "MusicTrackId": {
         "name": "trackId",
@@ -813,6 +990,79 @@
       }
     },
     "schemas": {
+      "CharacterSecondaryAssetType": {
+        "type": "string",
+        "enum": ["full_body", "scene"]
+      },
+      "CharacterSecondaryAssetsQuoteRequest": {
+        "type": "object",
+        "required": ["variant_id", "image_types"],
+        "properties": {
+          "variant_id": {"type": "string", "format": "uuid"},
+          "image_types": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"}},
+          "image_model": {"type": "string", "nullable": true},
+          "routing_mode": {"type": "string", "enum": ["manual", "economy", "fast", "balanced", "quality"], "default": "manual"}
+        },
+        "additionalProperties": false
+      },
+      "CharacterSecondaryAssetQuoteItem": {
+        "type": "object",
+        "required": ["image_type", "estimated_cost", "reservation_amount", "provider", "model_key", "model_name", "routing_mode"],
+        "properties": {
+          "image_type": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"},
+          "estimated_cost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservation_amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "provider": {"type": "string"},
+          "model_key": {"type": "string"},
+          "model_name": {"type": "string"},
+          "routing_mode": {"type": "string"}
+        }
+      },
+      "CharacterSecondaryAssetsQuote": {
+        "type": "object",
+        "required": ["quote_token", "expires_in_seconds", "items", "totals", "available_balance", "sufficient_balance", "account_frozen"],
+        "properties": {
+          "quote_token": {"type": "string"},
+          "expires_in_seconds": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetQuoteItem"}},
+          "totals": {
+            "type": "object",
+            "required": ["estimated_cost", "reservation_amount"],
+            "properties": {
+              "estimated_cost": {"$ref": "#/components/schemas/CreditAmount"},
+              "reservation_amount": {"$ref": "#/components/schemas/CreditAmount"}
+            }
+          },
+          "available_balance": {"$ref": "#/components/schemas/CreditAmount"},
+          "sufficient_balance": {"type": "boolean"},
+          "account_frozen": {"type": "boolean"}
+        }
+      },
+      "CharacterSecondaryAssetsGenerateRequest": {
+        "type": "object",
+        "required": ["quote_token"],
+        "properties": {"quote_token": {"type": "string"}},
+        "additionalProperties": false
+      },
+      "CharacterSecondaryAssetJob": {
+        "type": "object",
+        "required": ["job_id", "status", "image_type", "error_code", "error_message"],
+        "properties": {
+          "job_id": {"type": "string", "format": "uuid"},
+          "status": {"type": "string"},
+          "image_type": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"},
+          "error_code": {"type": "string"},
+          "error_message": {"type": "string"}
+        }
+      },
+      "CharacterSecondaryAssetsGenerateResponse": {
+        "type": "object",
+        "required": ["jobs", "total_reservation_amount"],
+        "properties": {
+          "jobs": {"type": "array", "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetJob"}},
+          "total_reservation_amount": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
       "ApiErrorDetail": {
         "type": "object",
         "required": ["code", "message"],
@@ -835,16 +1085,329 @@
           "errors": {"type": "object", "additionalProperties": true, "deprecated": true}
         }
       },
+      "CreditAmount": {
+        "type": "string",
+        "pattern": "^-?[0-9]+\\.[0-9]{2,6}$",
+        "example": "0.039",
+        "description": "Exact credit/USD amount with two to six decimal places."
+      },
+      "CreditAccount": {
+        "type": "object",
+        "required": ["availableBalance", "reservedBalance", "totalBalance", "isFrozen", "freezeReason"],
+        "properties": {
+          "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "totalBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "isFrozen": {"type": "boolean"},
+          "freezeReason": {"type": "string"}
+        }
+      },
+      "CreditStatistics": {
+        "type": "object",
+        "required": ["periodDays", "received", "sent", "spent", "refunded"],
+        "properties": {
+          "periodDays": {"type": "integer", "minimum": 1},
+          "received": {"$ref": "#/components/schemas/CreditAmount"},
+          "sent": {"$ref": "#/components/schemas/CreditAmount"},
+          "spent": {"$ref": "#/components/schemas/CreditAmount"},
+          "refunded": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "CreditCapabilities": {
+        "type": "object",
+        "required": ["demoTopUpEnabled", "transfersEnabled", "adminWalletManagement"],
+        "properties": {
+          "demoTopUpEnabled": {"type": "boolean"},
+          "transfersEnabled": {"type": "boolean"},
+          "adminWalletManagement": {"type": "boolean"}
+        }
+      },
+      "CreditAlerts": {
+        "type": "object",
+        "required": ["lowBalance", "lowBalanceThreshold"],
+        "properties": {
+          "lowBalance": {"type": "boolean"},
+          "lowBalanceThreshold": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "CreditTransferLimits": {
+        "type": "object",
+        "required": ["perTransfer", "rollingDay", "rollingDayCount"],
+        "properties": {
+          "perTransfer": {"$ref": "#/components/schemas/CreditAmount"},
+          "rollingDay": {"$ref": "#/components/schemas/CreditAmount"},
+          "rollingDayCount": {"type": "integer", "minimum": 0}
+        }
+      },
+      "CreditSummary": {
+        "type": "object",
+        "required": ["account", "stats", "capabilities", "alerts", "transferLimits"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "stats": {"$ref": "#/components/schemas/CreditStatistics"},
+          "capabilities": {"$ref": "#/components/schemas/CreditCapabilities"},
+          "alerts": {"$ref": "#/components/schemas/CreditAlerts"},
+          "transferLimits": {"$ref": "#/components/schemas/CreditTransferLimits"}
+        }
+      },
+      "CreditOperationType": {
+        "type": "string",
+        "enum": ["demo_top_up", "transfer_out", "transfer_in", "reserve", "capture", "release", "refund", "adjustment"]
+      },
+      "CreditCounterparty": {
+        "type": "object",
+        "required": ["username", "displayName"],
+        "properties": {
+          "username": {"type": "string"},
+          "displayName": {"type": "string"}
+        }
+      },
+      "CreditLedgerEntry": {
+        "type": "object",
+        "required": ["id", "operationType", "availableDelta", "reservedDelta", "availableBalanceAfter", "reservedBalanceAfter", "correlationId", "counterparty", "description", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "operationType": {"$ref": "#/components/schemas/CreditOperationType"},
+          "availableDelta": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedDelta": {"$ref": "#/components/schemas/CreditAmount"},
+          "availableBalanceAfter": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedBalanceAfter": {"$ref": "#/components/schemas/CreditAmount"},
+          "correlationId": {"type": "string", "format": "uuid"},
+          "counterparty": {"allOf": [{"$ref": "#/components/schemas/CreditCounterparty"}], "nullable": true},
+          "description": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditHistoryPage": {
+        "type": "object",
+        "required": ["items", "total", "limit", "offset", "nextOffset"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CreditLedgerEntry"}},
+          "total": {"type": "integer", "minimum": 0},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+          "offset": {"type": "integer", "minimum": 0},
+          "nextOffset": {"type": "integer", "minimum": 0, "nullable": true}
+        }
+      },
+      "CreditDemoTopUpRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["amount"],
+        "properties": {
+          "amount": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "example": "500.00"}
+        }
+      },
+      "CreditMutationResponse": {
+        "type": "object",
+        "required": ["account", "transaction", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "transaction": {"$ref": "#/components/schemas/CreditLedgerEntry"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "CreditTransferRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["senderUsername", "recipientUsername", "amount", "reason"],
+        "properties": {
+          "senderUsername": {"type": "string", "minLength": 1, "maxLength": 150},
+          "recipientUsername": {"type": "string", "minLength": 1, "maxLength": 150},
+          "amount": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{2}$", "example": "25.00"},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 255}
+        }
+      },
+      "CreditTransfer": {
+        "type": "object",
+        "required": ["id", "amount", "sender", "recipient", "note", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "amount": {"$ref": "#/components/schemas/CreditAmount"},
+          "sender": {"type": "string"},
+          "recipient": {"$ref": "#/components/schemas/CreditCounterparty"},
+          "note": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditTransferResponse": {
+        "type": "object",
+        "required": ["account", "transfer", "auditEvent", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "transfer": {"$ref": "#/components/schemas/CreditTransfer"},
+          "auditEvent": {"$ref": "#/components/schemas/CreditAdminAuditEvent"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "ProjectCreditBudget": {
+        "type": "object",
+        "required": ["projectId", "projectTitle", "limit", "spent", "reserved", "remaining", "overLimit"],
+        "properties": {
+          "projectId": {"type": "integer"},
+          "projectTitle": {"type": "string"},
+          "limit": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "spent": {"$ref": "#/components/schemas/CreditAmount"},
+          "reserved": {"$ref": "#/components/schemas/CreditAmount"},
+          "remaining": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "overLimit": {"type": "boolean"}
+        }
+      },
+      "ProjectCreditBudgetList": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectCreditBudget"}}
+        }
+      },
+      "ProjectCreditBudgetUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["limit"],
+        "properties": {
+          "limit": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true}
+        }
+      },
+      "CreditSpendingGroup": {
+        "type": "object",
+        "required": ["charged", "jobCount"],
+        "properties": {
+          "domain": {"type": "string"},
+          "projectId": {"type": "integer", "nullable": true},
+          "projectTitle": {"type": "string"},
+          "date": {"type": "string", "format": "date"},
+          "charged": {"$ref": "#/components/schemas/CreditAmount"},
+          "jobCount": {"type": "integer", "minimum": 0}
+        }
+      },
+      "CreditSpendingStatistics": {
+        "type": "object",
+        "required": ["periodDays", "totalCharged", "jobCount", "byDomain", "byProject", "timeline"],
+        "properties": {
+          "periodDays": {"type": "integer"},
+          "totalCharged": {"$ref": "#/components/schemas/CreditAmount"},
+          "jobCount": {"type": "integer", "minimum": 0},
+          "byDomain": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}},
+          "byProject": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}},
+          "timeline": {"type": "array", "items": {"$ref": "#/components/schemas/CreditSpendingGroup"}}
+        }
+      },
+      "CreditAdminOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "reason"],
+        "properties": {
+          "action": {"type": "string", "enum": ["freeze", "unfreeze"]},
+          "reason": {"type": "string", "maxLength": 255}
+        }
+      },
+      "CreditAdminAuditEvent": {
+        "type": "object",
+        "required": ["id", "eventType", "amount", "reason", "actor", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "eventType": {"type": "string", "enum": ["adjustment", "refund", "freeze", "unfreeze", "transfer"]},
+          "amount": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "reason": {"type": "string"},
+          "actor": {"type": "string", "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreditAdminOperationResponse": {
+        "type": "object",
+        "required": ["account", "auditEvent", "replayed"],
+        "properties": {
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "auditEvent": {"$ref": "#/components/schemas/CreditAdminAuditEvent"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "CreditAdminAudit": {
+        "type": "object",
+        "required": ["username", "account", "items"],
+        "properties": {
+          "username": {"type": "string"},
+          "account": {"$ref": "#/components/schemas/CreditAccount"},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CreditAdminAuditEvent"}}
+        }
+      },
+      "GenerationRoutingMode": {
+        "type": "string",
+        "enum": ["manual", "economy", "fast", "balanced", "quality"]
+      },
+      "GenerationRouteCandidate": {
+        "type": "object",
+        "required": ["modelKey", "modelName", "provider", "estimatedCost"],
+        "properties": {
+          "modelKey": {"type": "string"},
+          "modelName": {"type": "string"},
+          "provider": {"type": "string"},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "GenerationCostEstimateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["domain"],
+        "properties": {
+          "domain": {"type": "string", "enum": ["character", "poster", "reference", "music", "model3d"]},
+          "operation": {"type": "string", "enum": ["generate", "edit", "reference"], "default": "generate"},
+          "modelKey": {"type": "string", "maxLength": 300},
+          "variantCount": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1},
+          "promptLength": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
+          "resolution": {"type": "string", "enum": ["512", "1K", "2K", "4K"], "default": "1K"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
+        }
+      },
+      "GenerationCostEstimate": {
+        "type": "object",
+        "required": ["domain", "operation", "provider", "modelKey", "modelName", "currency", "estimatedCost", "reservationAmount", "pricingSource", "costIsEstimate", "availableBalance", "sufficientBalance", "accountFrozen", "routingMode", "routingReason", "routeCandidates"],
+        "properties": {
+          "domain": {"type": "string"},
+          "operation": {"type": "string"},
+          "provider": {"type": "string"},
+          "modelKey": {"type": "string"},
+          "modelName": {"type": "string"},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservationAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "pricingSource": {"type": "string"},
+          "costIsEstimate": {"type": "boolean"},
+          "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
+          "sufficientBalance": {"type": "boolean"},
+          "accountFrozen": {"type": "boolean"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
+          "routingReason": {"type": "string"},
+          "routeCandidates": {"type": "array", "items": {"$ref": "#/components/schemas/GenerationRouteCandidate"}}
+        }
+      },
+      "GenerationBilling": {
+        "type": "object",
+        "required": ["status", "currency", "estimatedCost", "reservedAmount", "actualCost", "chargedAmount", "uncoveredCost", "costIsEstimate", "provider", "model", "operation", "routingMode", "routingAttempts"],
+        "properties": {
+          "status": {"type": "string", "enum": ["reserved", "captured", "released"]},
+          "currency": {"type": "string", "enum": ["USD"]},
+          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "reservedAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "actualCost": {"allOf": [{"$ref": "#/components/schemas/CreditAmount"}], "nullable": true},
+          "chargedAmount": {"$ref": "#/components/schemas/CreditAmount"},
+          "uncoveredCost": {"$ref": "#/components/schemas/CreditAmount"},
+          "costIsEstimate": {"type": "boolean"},
+          "provider": {"type": "string"},
+          "model": {"type": "string"},
+          "operation": {"type": "string"},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
+          "routingAttempts": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+        }
+      },
       "CharacterTreeNode": {
         "type": "object",
-        "required": ["id", "key", "name", "is_folder"],
+        "required": ["id", "key", "name", "is_folder", "character_id"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "key": {"type": "string"},
           "name": {"type": "string"},
           "is_folder": {"type": "boolean"},
           "character_id": {"type": "string", "format": "uuid", "nullable": true},
-          "legacy_hero_id": {"type": "integer", "nullable": true},
           "children": {
             "type": "array",
             "items": {"$ref": "#/components/schemas/CharacterTreeNode"}
@@ -854,45 +1417,22 @@
       "CharacterTreeCreateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "type", "projectId"],
+        "required": ["id", "name", "type"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 255},
-          "type": {"type": "string", "enum": ["leaf", "node"]},
-          "projectId": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
-          "parent": {"type": "string", "format": "uuid", "nullable": true},
-          "heroID": {"type": "integer", "nullable": true},
-          "studioCharacterId": {"type": "string", "format": "uuid", "nullable": true}
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "type": {"type": "string", "enum": ["folder", "character"]},
+          "parent_id": {"type": "string", "format": "uuid", "nullable": true},
+          "studio_character_id": {"type": "string", "format": "uuid", "nullable": true}
         }
       },
-      "CharacterTreeRenameRequest": {
+      "CharacterTreeUpdateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name"],
+        "required": ["name"],
         "properties": {
-          "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 255}
+          "name": {"type": "string", "minLength": 1, "maxLength": 100}
         }
-      },
-      "CharacterTreeRenameResponse": {
-        "type": "object",
-        "required": ["id", "name"],
-        "properties": {
-          "id": {"type": "string", "format": "uuid"},
-          "name": {"type": "string"},
-          "character_id": {"type": "string", "format": "uuid", "nullable": true}
-        }
-      },
-      "CharacterTreeDeleteRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id"],
-        "properties": {"id": {"type": "string"}}
-      },
-      "DeleteResponse": {
-        "type": "object",
-        "required": ["message"],
-        "properties": {"message": {"type": "string"}}
       },
       "PosterGenerateRequest": {
         "type": "object",
@@ -903,7 +1443,8 @@
           "format": {"type": "string", "enum": ["vertical", "square", "horizontal"]},
           "reference_image_url": {"type": "string"},
           "reference_image_asset_id": {"type": "integer"},
-          "image_model": {"type": "string", "maxLength": 128}
+          "image_model": {"type": "string", "maxLength": 128},
+          "routing_mode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
         }
       },
       "PosterGenerateMultipartRequest": {
@@ -931,14 +1472,15 @@
         "properties": {
           "jobId": {"type": "integer"},
           "status": {"type": "string", "enum": ["queued", "processing", "completed", "failed", "cancelled"]},
-          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/PosterVariant"}}
+          "variants": {"type": "array", "items": {"$ref": "#/components/schemas/PosterVariant"}},
+          "billing": {"allOf": [{"$ref": "#/components/schemas/GenerationBilling"}], "nullable": true}
         }
       },
       "ProjectMutationRequest": {
         "type": "object",
         "properties": {
           "title": {"type": "string", "maxLength": 255},
-          "format": {"type": "string"},
+          "format": {"type": "string", "enum": ["short_film", "feature_film", "series", "clip", "commercial", "other"]},
           "genre": {"type": "array", "items": {"type": "string"}},
           "audience": {"type": "array", "items": {"type": "string"}},
           "annotation": {"type": "string", "maxLength": 800},
@@ -964,7 +1506,7 @@
           "isFavorite": {"type": "boolean"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "stats": {"type": "object", "additionalProperties": true},
-          "format": {"type": "string"},
+          "format": {"type": "string", "enum": ["short_film", "feature_film", "series", "clip", "commercial", "other"]},
           "genre": {"type": "array", "items": {"type": "string"}},
           "audience": {"type": "array", "items": {"type": "string"}},
           "annotation": {"type": "string"},
@@ -1050,8 +1592,7 @@
           "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
           "createdAt": {"type": "string", "format": "date-time", "nullable": true},
           "createdById": {"type": "integer", "nullable": true},
-          "provenance": {"type": "object", "additionalProperties": true},
-          "legacy": {"type": "boolean"}
+          "provenance": {"type": "object", "additionalProperties": true}
         }
       },
       "MusicTrackSummary": {
@@ -1063,7 +1604,7 @@
           "author": {"type": "string"},
           "tags": {"type": "array", "items": {"type": "string"}},
           "status": {"type": "string", "enum": ["active", "archived"]},
-          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "source": {"type": "string", "enum": ["manual", "generated"]},
           "version": {"type": "integer"},
           "activeVersion": {"$ref": "#/components/schemas/MusicTrackVersion", "nullable": true},
           "usageCount": {"type": "integer"},
@@ -1102,7 +1643,7 @@
           "activeVersionNumber": {"type": "integer", "nullable": true},
           "activeVersion": {"$ref": "#/components/schemas/DashboardMusicTrackVersion", "nullable": true},
           "version": {"type": "integer"},
-          "source": {"type": "string", "enum": ["manual", "generated", "legacy"]},
+          "source": {"type": "string", "enum": ["manual", "generated"]},
           "usageCount": {"type": "integer"},
           "usageLabel": {"type": "string"}
         }
@@ -1129,22 +1670,6 @@
             }
           }
         ]
-      },
-      "LegacyMusicTrackRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["title"],
-        "properties": {
-          "title": {"type": "string", "maxLength": 255},
-          "author": {"type": "string", "maxLength": 255},
-          "duration_seconds": {"type": "integer", "minimum": 0},
-          "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}}
-        }
-      },
-      "LegacyMusicTrackResponse": {
-        "type": "object",
-        "required": ["id", "title"],
-        "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}
       },
       "MusicCapabilities": {
         "type": "object",
@@ -1363,12 +1888,12 @@
       "MusicTrackPatchRequest": {
         "type": "object",
         "additionalProperties": false,
+        "required": ["expectedTrackVersion"],
         "properties": {
-          "version": {"type": "integer", "minimum": 1},
+          "expectedTrackVersion": {"type": "integer", "minimum": 1},
           "title": {"type": "string", "maxLength": 255},
           "author": {"type": "string", "maxLength": 255},
           "durationSeconds": {"type": "integer", "minimum": 0},
-          "duration_seconds": {"type": "integer", "minimum": 0, "deprecated": true},
           "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}},
           "activeVersionId": {"type": "string", "format": "uuid"}
         }
@@ -1484,7 +2009,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "number": {"type": "integer", "minimum": 1},
-          "origin": {"type": "string", "enum": ["upload", "generated", "edit", "legacy"]},
+          "origin": {"type": "string", "enum": ["upload", "generated", "edit"]},
           "imageUrl": {"type": "string", "nullable": true},
           "thumbnailUrl": {"type": "string", "nullable": true},
           "provider": {"type": "string", "nullable": true},
@@ -1641,6 +2166,7 @@
           "sourceVersionId": {"type": "string", "format": "uuid", "nullable": true},
           "variantCount": {"type": "integer", "enum": [1, 2, 4]},
           "imageModel": {"type": "string", "maxLength": 128},
+          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
           "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
           "editInstruction": {"type": "string", "maxLength": 2000}
         },
@@ -1678,6 +2204,7 @@
           "attempts": {"type": "integer", "minimum": 0},
           "canCancel": {"type": "boolean"},
           "canRetry": {"type": "boolean"},
+          "billing": {"allOf": [{"$ref": "#/components/schemas/GenerationBilling"}], "nullable": true},
           "error": {"oneOf": [{"$ref": "#/components/schemas/ReferenceGenerationError"}, {"type": "object", "nullable": true, "enum": [null]}]},
           "createdAt": {"type": "string", "format": "date-time"},
           "completedAt": {"type": "string", "format": "date-time", "nullable": true}

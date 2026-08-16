@@ -97,7 +97,7 @@ class CharacterWorkerContractTests(CharacterStudioTestCase):
         self.assertEqual(error_message, "Reconstruction failed. Try again.")
         self.assertNotIn(r"C:\Users", error_message)
 
-    def test_cancellation_request_fences_stale_terminal_update_and_retry_history(self):
+    def test_queued_cancellation_is_immediate_and_retry_history_is_stable(self):
         character = self.create_character()
         job = CharacterGenerationService(execute_immediately=False).create_initial_variants(
             self.user_key,
@@ -105,7 +105,6 @@ class CharacterWorkerContractTests(CharacterStudioTestCase):
             character.character_id,
             {"variant_count": 1},
         )
-        lease = claim_job(job.job_id)
         cancelled = self.client.post(
             f"/api/generation-jobs/{job.job_id}/cancellation-request",
             HTTP_X_USER_TOKEN=str(self.user_key.key),
@@ -113,11 +112,11 @@ class CharacterWorkerContractTests(CharacterStudioTestCase):
         self.assertEqual(cancelled.status_code, 202, cancelled.content)
         self.assertEqual(
             cancelled.json()["status"],
-            GenerationJobStatus.CANCELLATION_REQUESTED,
+            GenerationJobStatus.CANCELLED,
         )
-        fail_job(lease, error_code="STALE", error_message="must not win")
         job.refresh_from_db()
-        self.assertEqual(job.status, GenerationJobStatus.CANCELLATION_REQUESTED)
+        self.assertEqual(job.status, GenerationJobStatus.CANCELLED)
+        self.assertIsNone(claim_job(job.job_id))
 
         job.provider_started_at = None
         job.save(update_fields=["provider_started_at", "updated_at"])
@@ -148,6 +147,27 @@ class CharacterWorkerContractTests(CharacterStudioTestCase):
         )
         self.assertEqual(history.status_code, 200, history.content)
         self.assertEqual(len(history.json()["jobs"]), 2)
+
+    def test_processing_cancellation_is_rejected(self):
+        character = self.create_character()
+        job = CharacterGenerationService(execute_immediately=False).create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1},
+        )
+        lease = claim_job(job.job_id)
+
+        response = self.client.post(
+            f"/api/generation-jobs/{job.job_id}/cancellation-request",
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(response.json()["code"], "GENERATION_ALREADY_STARTED")
+        job.refresh_from_db()
+        self.assertEqual(job.status, GenerationJobStatus.PROCESSING)
+        fail_job(lease, error_code="TEST_CLEANUP", error_message="cleanup")
 
 
 @override_settings(POSTER_GENERATION_USE_MOCK=True)
@@ -209,7 +229,7 @@ class PosterWorkerContractTests(TestCase):
             HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(cancelled.status_code, 202, cancelled.content)
-        self.assertEqual(cancelled.json()["status"], PosterJobStatus.CANCELLATION_REQUESTED)
+        self.assertEqual(cancelled.json()["status"], PosterJobStatus.CANCELLED)
         retried = self.client.post(
             f"/api/projects/{self.project.id}/poster/jobs/{job_id}/retry/",
             HTTP_X_USER_TOKEN=self.token,
@@ -229,10 +249,33 @@ class PosterWorkerContractTests(TestCase):
             HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(terminal_replay.json()["job_id"], retried.json()["job_id"])
-
         history = self.client.get(
             f"/api/projects/{self.project.id}/poster/jobs/",
             HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(history.status_code, 200, history.content)
         self.assertEqual(len(history.json()["jobs"]), 2)
+
+    def test_processing_poster_cancellation_is_rejected(self):
+        response = self.client.post(
+            f"/api/projects/{self.project.id}/poster/generate/",
+            {"prompt": "Started", "style": "cinematic", "format": "vertical"},
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+            HTTP_IDEMPOTENCY_KEY="job01-poster-processing-cancel",
+        )
+        job_id = response.json()["jobId"]
+        PosterGenerationJob.objects.filter(pk=job_id).update(
+            status=PosterJobStatus.PROCESSING,
+        )
+
+        cancelled = self.client.post(
+            f"/api/projects/{self.project.id}/poster/jobs/{job_id}/cancellation-request/",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+
+        self.assertEqual(cancelled.status_code, 409, cancelled.content)
+        self.assertEqual(
+            cancelled.json()["code"],
+            "POSTER_GENERATION_ALREADY_STARTED",
+        )

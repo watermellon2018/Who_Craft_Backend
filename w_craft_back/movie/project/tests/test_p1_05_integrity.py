@@ -5,7 +5,6 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
-from django.utils import timezone
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import (
@@ -27,8 +26,7 @@ from w_craft_back.character_studio.models import (
     RevisionChangeType,
     StudioCharacter,
 )
-from w_craft_back.characters.display_tree.models import MenuFolder
-from w_craft_back.characters.pages.graph.model import GraphEdge, RelationshipType
+from w_craft_back.character_studio.tree_models import MenuFolder
 from w_craft_back.movie.poster.models import (
     PosterFormat,
     PosterGenerationJob,
@@ -56,11 +54,10 @@ def _create_user(username: str) -> tuple[User, UserKey]:
 def _create_project(owner: User, owner_key: UserKey, title: str) -> Project:
     return Project.objects.create(
         owner=owner,
-        user=owner_key,
         title=title,
         format="",
-        annot="",
-        desc="",
+        annotation="",
+        synopsis="",
     )
 
 
@@ -124,19 +121,7 @@ class AttributionDeletionTests(TestCase):
         folder = MenuFolder.objects.create(
             name="Characters",
             is_folder=True,
-            user=self.actor_key,
             cur_project=self.project,
-        )
-        relation_type = RelationshipType.objects.create(
-            name="Friend",
-            translit="friend",
-        )
-        edge = GraphEdge.objects.create(
-            user=self.actor_key,
-            project=self.project,
-            from_node="Hero",
-            to_node="Friend",
-            label=relation_type,
         )
         poster = ProjectPoster.objects.create(
             project=self.project,
@@ -158,14 +143,13 @@ class AttributionDeletionTests(TestCase):
             asset,
             character_job,
             revision,
-            folder,
-            edge,
             poster,
             poster_job,
             variant,
         ):
             entity.refresh_from_db()
             self.assertIsNone(entity.user_id)
+        self.assertTrue(MenuFolder.objects.filter(pk=folder.pk).exists())
 
 
 class CrossProjectValidationTests(TestCase):
@@ -488,43 +472,6 @@ class CrossProjectValidationTests(TestCase):
                 relation_type="friend",
             )
 
-    def test_graph_edge_direction_is_unique_per_project(self) -> None:
-        _, other_actor_key = _create_user("graph-edge-other-actor")
-        label_a = RelationshipType.objects.create(
-            name="Friend",
-            translit="graph-friend",
-        )
-        label_b = RelationshipType.objects.create(
-            name="Enemy",
-            translit="graph-enemy",
-        )
-        GraphEdge.objects.create(
-            user=self.owner_key,
-            project=self.project_a,
-            from_node="A",
-            to_node="B",
-            label=label_a,
-        )
-
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                GraphEdge.objects.create(
-                    user=other_actor_key,
-                    project=self.project_a,
-                    from_node="A",
-                    to_node="B",
-                    label=label_b,
-                )
-
-        other_project_edge = GraphEdge.objects.create(
-            user=other_actor_key,
-            project=self.project_b,
-            from_node="A",
-            to_node="B",
-            label=label_b,
-        )
-        self.assertEqual(other_project_edge.project_id, self.project_b.id)
-
     def test_poster_job_rejects_another_project(self) -> None:
         poster_a = ProjectPoster.objects.create(
             project=self.project_a,
@@ -599,24 +546,10 @@ class SceneOrderingMigrationTests(TransactionTestCase):
 
     def _seed_scenes(self, apps) -> None:
         User = apps.get_model("auth", "User")
-        GraphEdge = apps.get_model("w_craft_back", "GraphEdge")
         Project = apps.get_model("w_craft_back", "Project")
-        RelationshipType = apps.get_model("w_craft_back", "RelationshipType")
         Scene = apps.get_model("w_craft_back", "Scene")
-        UserKey = apps.get_model("w_craft_back", "UserKey")
 
         owner = User.objects.create(username="scene-migration-owner")
-        actor = User.objects.create(username="graph-migration-actor")
-        owner_key = UserKey.objects.create(
-            user_id=owner.pk,
-            key_digest="a" * 64,
-            expires_at=timezone.now(),
-        )
-        actor_key = UserKey.objects.create(
-            user_id=actor.pk,
-            key_digest="b" * 64,
-            expires_at=timezone.now(),
-        )
         project_a = Project.objects.create(
             owner_id=owner.pk,
             title="A",
@@ -631,24 +564,6 @@ class SceneOrderingMigrationTests(TransactionTestCase):
             annot="",
             desc="",
         )
-        label = RelationshipType.objects.create(
-            name="Friend",
-            translit="migration-friend",
-        )
-        kept_edge = GraphEdge.objects.create(
-            user_id=owner_key.pk,
-            project_id=project_a.pk,
-            from_node="A",
-            to_node="B",
-            label_id=label.pk,
-        )
-        removed_edge = GraphEdge.objects.create(
-            user_id=actor_key.pk,
-            project_id=project_a.pk,
-            from_node="A",
-            to_node="B",
-            label_id=label.pk,
-        )
         scenes = (
             Scene.objects.create(project_id=project_a.pk, title="Zero", order=0),
             Scene.objects.create(project_id=project_a.pk, title="Two A", order=2),
@@ -658,13 +573,8 @@ class SceneOrderingMigrationTests(TransactionTestCase):
         self.project_a_id = project_a.pk
         self.project_b_id = project_b.pk
         self.scene_ids = [scene.pk for scene in scenes]
-        self.kept_edge_id = kept_edge.pk
-        self.removed_edge_id = removed_edge.pk
-        self.graph_actor_key_id = actor_key.pk
-        self.graph_label_id = label.pk
 
     def test_resequences_existing_scenes_and_enforces_constraints(self) -> None:
-        GraphEdge = self.apps.get_model("w_craft_back", "GraphEdge")
         Scene = self.apps.get_model("w_craft_back", "Scene")
 
         self.assertEqual(
@@ -676,28 +586,6 @@ class SceneOrderingMigrationTests(TransactionTestCase):
             [1, 2, 3],
         )
         self.assertEqual(Scene.objects.get(project_id=self.project_b_id).order, 1)
-        self.assertEqual(
-            list(
-                GraphEdge.objects.filter(
-                    project_id=self.project_a_id,
-                    from_node="A",
-                    to_node="B",
-                ).values_list("pk", flat=True)
-            ),
-            [self.kept_edge_id],
-        )
-        self.assertFalse(GraphEdge.objects.filter(pk=self.removed_edge_id).exists())
-
-        with self.assertRaises(IntegrityError):
-            with transaction.atomic():
-                GraphEdge.objects.create(
-                    user_id=self.graph_actor_key_id,
-                    project_id=self.project_a_id,
-                    from_node="A",
-                    to_node="B",
-                    label_id=self.graph_label_id,
-                )
-
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 Scene.objects.create(
@@ -712,84 +600,3 @@ class SceneOrderingMigrationTests(TransactionTestCase):
                     title="Duplicate",
                     order=1,
                 )
-
-
-class GraphEdgeConflictMigrationTests(TransactionTestCase):
-    migrate_from = [("w_craft_back", "0042_userkey_authentication_lifecycle")]
-    migrate_to = [("w_craft_back", "0043_project_aggregate_integrity")]
-
-    def setUp(self) -> None:
-        super().setUp()
-        executor = MigrationExecutor(connection)
-        executor.migrate(self.migrate_from)
-        self.old_apps = executor.loader.project_state(self.migrate_from).apps
-        self._seed_conflicting_edges()
-
-    def tearDown(self) -> None:
-        if hasattr(self, "conflicting_edge_id"):
-            GraphEdge = self.old_apps.get_model("w_craft_back", "GraphEdge")
-            GraphEdge.objects.filter(pk=self.conflicting_edge_id).delete()
-        executor = MigrationExecutor(connection)
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        super().tearDown()
-
-    def _seed_conflicting_edges(self) -> None:
-        User = self.old_apps.get_model("auth", "User")
-        GraphEdge = self.old_apps.get_model("w_craft_back", "GraphEdge")
-        Project = self.old_apps.get_model("w_craft_back", "Project")
-        RelationshipType = self.old_apps.get_model(
-            "w_craft_back",
-            "RelationshipType",
-        )
-        UserKey = self.old_apps.get_model("w_craft_back", "UserKey")
-
-        owner = User.objects.create(username="graph-conflict-owner")
-        actor = User.objects.create(username="graph-conflict-actor")
-        owner_key = UserKey.objects.create(
-            user_id=owner.pk,
-            key_digest="c" * 64,
-            expires_at=timezone.now(),
-        )
-        actor_key = UserKey.objects.create(
-            user_id=actor.pk,
-            key_digest="d" * 64,
-            expires_at=timezone.now(),
-        )
-        project = Project.objects.create(
-            owner_id=owner.pk,
-            title="Graph conflict",
-            format="",
-            annot="",
-            desc="",
-        )
-        label_a = RelationshipType.objects.create(
-            name="Friend",
-            translit="conflict-friend",
-        )
-        label_b = RelationshipType.objects.create(
-            name="Enemy",
-            translit="conflict-enemy",
-        )
-        GraphEdge.objects.create(
-            user_id=owner_key.pk,
-            project_id=project.pk,
-            from_node="A",
-            to_node="B",
-            label_id=label_a.pk,
-        )
-        conflicting_edge = GraphEdge.objects.create(
-            user_id=actor_key.pk,
-            project_id=project.pk,
-            from_node="A",
-            to_node="B",
-            label_id=label_b.pk,
-        )
-        self.conflicting_edge_id = conflicting_edge.pk
-
-    def test_conflicting_labels_require_manual_repair(self) -> None:
-        executor = MigrationExecutor(connection)
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Conflicting graph edge labels require manual repair",
-        ):
-            executor.migrate(self.migrate_to)

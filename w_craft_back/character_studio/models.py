@@ -25,6 +25,13 @@ class CharacterRole(models.TextChoices):
     CAMEO = "cameo", "Камео"
 
 
+class HairLength(models.TextChoices):
+    BALD = "bald", "Bald"
+    SHORT = "short", "Short"
+    MEDIUM = "medium", "Medium"
+    LONG = "long", "Long"
+
+
 class CharacterStatus(models.TextChoices):
     # A character that has been started but not yet confirmed by the user.
     # We persist drafts because generation needs a character_id to attach
@@ -327,7 +334,12 @@ class CharacterAppearance(models.Model):
     nose_shape = models.CharField(max_length=100, blank=True, default="")
     lips_shape = models.CharField(max_length=100, blank=True, default="")
     jawline = models.CharField(max_length=100, blank=True, default="")
-    hair_length = models.CharField(max_length=100, blank=True, default="")
+    hair_length = models.CharField(
+        max_length=16,
+        choices=HairLength.choices,
+        blank=True,
+        default="",
+    )
     hair_style = models.CharField(max_length=100, blank=True, default="")
     hair_color = models.CharField(max_length=100, blank=True, default="")
     hair_details = models.JSONField(default=dict, blank=True)
@@ -352,6 +364,12 @@ class CharacterAppearance(models.Model):
     class Meta:
         db_table = "character_appearances"
         indexes = [models.Index(fields=["character"], name="character_a_charact_7741ba_idx")]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(hair_length__in=("", *HairLength.values)),
+                name="chk_character_hair_length_canonical",
+            ),
+        ]
 
 
 class CharacterOutfit(models.Model):
@@ -606,14 +624,15 @@ class CharacterGenerationJob(models.Model):
     edit_instruction = models.TextField(blank=True, default="")
     preserve_options = models.JSONField(default=dict, blank=True)
     compiled_metadata = models.JSONField(default=dict, blank=True)
-    provider = models.CharField(max_length=100, blank=True, default="mock")
+    provider = models.CharField(max_length=255, blank=True, default="mock")
+    provider_snapshot = models.JSONField(default=dict, blank=True)
     provider_operation = models.CharField(
         max_length=32,
         blank=True,
         default="generate",
     )
-    model_name = models.CharField(max_length=100, blank=True, default="")
-    model_version = models.CharField(max_length=100, blank=True, default="")
+    model_name = models.CharField(max_length=255, blank=True, default="")
+    model_version = models.CharField(max_length=255, blank=True, default="")
     progress = models.PositiveSmallIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
     error_code = models.CharField(max_length=100, blank=True, default="")

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from importlib import import_module
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
@@ -81,57 +81,74 @@ class MusicDomainTests(TestCase):
             )
 
     def test_legacy_backfill_never_reads_storage_and_keeps_zero_duration_null(self):
-        track = MusicTrack.objects.create(
-            project=self.project,
-            title="Legacy",
+        track = SimpleNamespace(
+            project_id=self.project.pk,
             audio_file="projects/music/missing.wav",
             duration_seconds=0,
-            created_by=self.owner,
+            created_by_id=self.owner.pk,
+            pk=17,
+        )
+        historical_track = MagicMock()
+        filtered_tracks = historical_track.objects.filter.return_value
+        filtered_tracks.exclude.return_value.iterator.return_value = [track]
+        historical_asset = MagicMock()
+        historical_asset.objects.create.return_value = SimpleNamespace(pk="asset-1")
+        historical_version = MagicMock()
+        historical_version.objects.create.return_value = SimpleNamespace(pk="version-1")
+        historical_scene_music = MagicMock()
+        historical_models = {
+            "MusicTrack": historical_track,
+            "MusicAsset": historical_asset,
+            "MusicTrackVersion": historical_version,
+            "SceneMusic": historical_scene_music,
+        }
+        historical_apps = MagicMock()
+        historical_apps.get_model.side_effect = (
+            lambda _app_label, model_name: historical_models[model_name]
         )
         migration = import_module(
             "w_craft_back.migrations."
             "0049_musictrack_archived_at_musictrack_source_musicasset_and_more"
         )
         with patch("django.core.files.storage.default_storage.open") as storage_open:
-            migration.backfill_legacy_music_tracks(apps, None)
+            migration.backfill_legacy_music_tracks(historical_apps, None)
         storage_open.assert_not_called()
-        track.refresh_from_db()
-        self.assertEqual(track.source, "legacy")
-        self.assertIsNotNone(track.active_version_id)
-        self.assertIsNone(track.active_version.asset.duration_seconds)
-        self.assertEqual(
-            track.active_version.asset.verification_status,
-            MusicAssetVerificationStatus.LEGACY_UNVERIFIED,
+        historical_asset.objects.create.assert_called_once_with(
+            project_id=self.project.pk,
+            file="projects/music/missing.wav",
+            asset_role="generated",
+            origin="legacy",
+            duration_seconds=None,
+            verification_status="legacy_unverified",
+            moderation_status="not_required",
+            created_by_id=self.owner.pk,
         )
-        self.assertEqual(track.audio_file.name, "projects/music/missing.wav")
+        historical_track.objects.filter.assert_any_call(pk=17)
+        historical_track.objects.filter.return_value.update.assert_called_once_with(
+            active_version_id="version-1",
+            source="legacy",
+        )
 
     def test_legacy_backfill_skips_null_and_empty_audio_file(self):
-        null_track = MusicTrack.objects.create(
-            project=self.project,
-            title="Null audio",
-            audio_file=None,
-            created_by=self.owner,
-        )
-        empty_track = MusicTrack.objects.create(
-            project=self.project,
-            title="Empty audio",
-            audio_file="",
-            created_by=self.owner,
+        historical_track = MagicMock()
+        filtered_tracks = historical_track.objects.filter.return_value
+        filtered_tracks.exclude.return_value.iterator.return_value = []
+        historical_asset = MagicMock()
+        historical_models = {
+            "MusicTrack": historical_track,
+            "MusicAsset": historical_asset,
+            "MusicTrackVersion": MagicMock(),
+            "SceneMusic": MagicMock(),
+        }
+        historical_apps = MagicMock()
+        historical_apps.get_model.side_effect = (
+            lambda _app_label, model_name: historical_models[model_name]
         )
         migration = import_module(
             "w_craft_back.migrations."
             "0049_musictrack_archived_at_musictrack_source_musicasset_and_more"
         )
 
-        migration.backfill_legacy_music_tracks(apps, None)
+        migration.backfill_legacy_music_tracks(historical_apps, None)
 
-        null_track.refresh_from_db()
-        empty_track.refresh_from_db()
-        self.assertIsNone(null_track.active_version_id)
-        self.assertIsNone(empty_track.active_version_id)
-        self.assertFalse(
-            MusicAsset.objects.filter(
-                project=self.project,
-                origin=MusicAssetOrigin.LEGACY,
-            ).exists()
-        )
+        historical_asset.objects.create.assert_not_called()

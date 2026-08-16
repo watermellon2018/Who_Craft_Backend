@@ -80,7 +80,7 @@ MAX_VARIANT_LIMIT = 50
 
 def _load_project(project_id: int) -> Project:
     try:
-        return Project.objects.select_related("owner", "user").get(pk=project_id)
+        return Project.objects.select_related("owner").get(pk=project_id)
     except Project.DoesNotExist as exc:
         raise ProjectNotFound("project not found") from exc
 
@@ -212,9 +212,14 @@ def _raise_persistence_failure(job, exc: Exception) -> None:
     ) from exc
 
 
-def _complete_provider_result(job, images: list[bytes], provider_key: str) -> None:
+def _complete_provider_result(
+    job,
+    images: list[bytes],
+    provider_key: str,
+    provider=None,
+) -> None:
     try:
-        complete_generation(job, images)
+        complete_generation(job, images, provider=provider)
     except InvalidProviderImage:
         invalid_output = ImageProviderError(
             code="IMAGE_PROVIDER_BAD_RESPONSE",
@@ -323,6 +328,7 @@ def generate_poster(
     reference_image_url: str = "",
     reference_image_asset_id: Optional[int] = None,
     image_model: str | None = None,
+    routing_mode: str = "manual",
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -379,6 +385,7 @@ def generate_poster(
             "reference_asset_id": reference_image_asset_id,
             "reference_mime_type": reference_mime_type,
             "image_model": image_model,
+            "routing_mode": routing_mode,
         },
         reference_image_bytes,
     )
@@ -393,9 +400,11 @@ def generate_poster(
             idempotency_key=key,
             request_hash=fingerprint,
             requested_model=image_model or "",
+            routing_mode=routing_mode,
             reference_storage_key=reference_storage_key,
             reference_mime_type=reference_mime_type if reference_storage_key else "",
             reference_asset=reference_asset,
+            use_mock=run_mock,
         )
     except Exception:
         if reference_storage_key:
@@ -485,7 +494,7 @@ def generate_poster(
             )
             _provider_failure(claimed, provider_key, mapped)
         else:
-            _complete_provider_result(claimed, images, provider_key)
+            _complete_provider_result(claimed, images, provider_key, provider)
 
     job.refresh_from_db()
     poster.refresh_from_db()
@@ -508,6 +517,7 @@ def edit_poster(
     instruction: str,
     idempotency_key: str = "",
     image_model: str | None = None,
+    routing_mode: str = "manual",
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -539,6 +549,7 @@ def edit_poster(
             "source_variant_id": source.id,
             "instruction": instruction,
             "image_model": image_model,
+            "routing_mode": routing_mode,
         }
     )
     try:
@@ -555,6 +566,8 @@ def edit_poster(
             reference_mime_type=source_mime_type,
             source_variant=source,
             requested_model=image_model or "",
+            routing_mode=routing_mode,
+            use_mock=run_mock,
         )
     except Exception:
         default_storage.delete(source_storage_key)
@@ -610,7 +623,7 @@ def edit_poster(
             )
             _provider_failure(claimed, provider_key, mapped)
         else:
-            _complete_provider_result(claimed, [edited], provider_key)
+            _complete_provider_result(claimed, [edited], provider_key, provider)
 
     job.refresh_from_db()
     poster.refresh_from_db()

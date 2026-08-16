@@ -1,4 +1,3 @@
-from w_craft_back.movie.properties.utils import translit
 import logging
 
 from rest_framework.permissions import AllowAny

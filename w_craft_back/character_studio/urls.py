@@ -1,8 +1,23 @@
 from django.urls import path
 
-from w_craft_back.character_studio import views
+from w_craft_back.character_studio import tree_views, views
 
 urlpatterns = [
+    path(
+        "projects/<int:project_id>/character-tree/",
+        tree_views.character_tree,
+        name="character-tree",
+    ),
+    path(
+        "projects/<int:project_id>/character-tree/nodes/",
+        tree_views.character_tree_nodes,
+        name="character-tree-nodes",
+    ),
+    path(
+        "projects/<int:project_id>/character-tree/nodes/<uuid:node_id>/",
+        tree_views.character_tree_node_detail,
+        name="character-tree-node-detail",
+    ),
     path("projects/<int:project_id>/characters", views.characters_collection),
     path("projects/<int:project_id>/characters/", views.characters_collection),
     path(
@@ -37,6 +52,28 @@ urlpatterns = [
         "projects/<int:project_id>/characters/<uuid:character_id>"
         "/generate-edit-variants",
         views.generate_edit_variants,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/secondary-assets/quote",
+        views.quote_secondary_assets,
+        name="character-secondary-assets-quote",
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/secondary-assets/quote/",
+        views.quote_secondary_assets,
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/secondary-assets/generate",
+        views.generate_secondary_assets,
+        name="character-secondary-assets-generate",
+    ),
+    path(
+        "projects/<int:project_id>/characters/<uuid:character_id>"
+        "/secondary-assets/generate/",
+        views.generate_secondary_assets,
     ),
     path(
         "projects/<int:project_id>/characters/<uuid:character_id>/zone-edit",

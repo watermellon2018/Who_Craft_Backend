@@ -1,13 +1,12 @@
 """Project dashboard API views.
 
-DRF resolves the ``X-User-Token`` access token before these handlers run. The
-temporary body-token fallback is implemented centrally; query credentials are
-never accepted. We never trust a request-body user id for access control.
+DRF resolves the ``X-User-Token`` access token before these handlers run.
+Body and query credentials are never accepted. We never trust a request-body
+user id for access control.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Optional
 
@@ -22,7 +21,6 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.project import (
     policy,
     project_mutations,
@@ -46,7 +44,6 @@ from w_craft_back.movie.project.permissions import (
 from w_craft_back.movie.project.serializers import (
     CharacterCreateSerializer,
     LocationCreateSerializer,
-    MusicTrackCreateSerializer,
     ProjectCreateSerializer,
     ProjectUpdateSerializer,
 )
@@ -64,9 +61,6 @@ from w_craft_back.movie.project.script_workspace import (
 from w_craft_back.storage_gateway import signed_url_for_file
 
 from w_craft_back.movie.properties.models import Audience, Genre
-
-logger = logging.getLogger(__name__)
-
 
 # --------------------------------------------------------------------------- #
 # Auth helper
@@ -109,7 +103,7 @@ def _mutation_error_response(exc):
 
 def _get_project_or_404(project_id) -> Project:
     return get_object_or_404(
-        Project.objects.select_related("owner", "user", "progress"),
+        Project.objects.select_related("owner", "progress"),
         pk=project_id,
     )
 
@@ -265,8 +259,7 @@ def _normalize_audience_values(values) -> list[str]:
 
 def _resolve_audiences(values) -> list[Audience]:
     """Return Audience rows for the editor values, creating canonical rows
-    on the fly so the legacy M2M storage stays in sync with the frontend
-    value vocabulary."""
+    on the fly so Project storage stays in sync with the frontend vocabulary."""
     normalized = _normalize_audience_values(values)
     if not normalized:
         return []
@@ -302,22 +295,11 @@ def _apply_poster(project: Project, data: dict, owner_id) -> None:
             title=project.title,
         )
         if decoded is not None:
-            old = project.image
-            if old:
-                try:
-                    old.delete(save=False)
-                except Exception:  # pragma: no cover - filesystem race
-                    logger.warning("Failed to delete old poster", exc_info=True)
-            project.image.save(decoded.name, decoded, save=False)
+            project.cover_image.save(decoded.name, decoded, save=False)
         return
 
     if "poster_url" in data and data["poster_url"] in (None, ""):
-        if project.image:
-            try:
-                project.image.delete(save=False)
-            except Exception:  # pragma: no cover
-                logger.warning("Failed to delete poster on clear", exc_info=True)
-        project.image = ""
+        project.cover_image = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -340,7 +322,7 @@ class ProjectListCreateView(APIView):
         # projects list endpoint).
         projects = (
             Project.objects.filter(owner_q | member_q)
-            .select_related("progress", "owner", "user", "poster__selected_variant")
+            .select_related("progress", "owner", "poster__selected_variant")
             .prefetch_related(
                 Prefetch(
                     "tags",
@@ -378,21 +360,19 @@ class ProjectListCreateView(APIView):
             project = Project.objects.create(
                 owner=user,
                 title=data["title"],
-                description=data.get("description", "") or synopsis,
+                summary=data.get("description", "") or "",
                 status=data.get("status", ProjectStatus.DRAFT),
                 is_favorite=data.get("is_favorite", False),
                 generation_settings=data.get("generation_settings", {}),
-                # legacy required fields
-                user_id=_legacy_userkey_id(user),
                 format=data.get("format", "") or "",
-                annot=data.get("annotation", "") or "",
-                desc=synopsis or data.get("description", "") or "",
+                annotation=data.get("annotation", "") or "",
+                synopsis=synopsis,
             )
             _replace_tags(project, data.get("tags", []))
             if "genre" in data:
-                project.genre.set(_resolve_genres(data["genre"]))
+                project.genres.set(_resolve_genres(data["genre"]))
             if "audience" in data:
-                project.audience.set(_resolve_audiences(data["audience"]))
+                project.audiences.set(_resolve_audiences(data["audience"]))
             _apply_poster(project, data, owner_id=user.id)
             project.save()
 
@@ -414,15 +394,6 @@ class ProjectListCreateView(APIView):
             build_project_edit_payload(project, request),
             status=status.HTTP_201_CREATED,
         )
-
-
-def _legacy_userkey_id(user: User) -> Optional[int]:
-    """Return/create legacy creator attribution for compatibility."""
-    uk = UserKey.objects.filter(user=user).first()
-    if uk is None:
-        uk = UserKey.objects.create(user=user)
-    return uk.id
-
 
 # --------------------------------------------------------------------------- #
 # Project detail / update / delete
@@ -649,36 +620,6 @@ class ProjectScenesView(_ProjectScopedView):
             return _mutation_error_response(exc)
 
         return Response(scene_payload(scene, request), status=status.HTTP_201_CREATED)
-
-
-class ProjectMusicView(_ProjectScopedView):
-    def post(self, request, project_id: int):
-        user, project, err = self._editable_project(request, project_id)
-        if err:
-            return err
-
-        serializer = MusicTrackCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return _validation_error(serializer.errors)
-        data = serializer.validated_data
-
-        try:
-            track = project_mutations.create_music_track(
-                actor=user,
-                action=policy.Action.EDIT_CONTENT,
-                project_id=project.id,
-                data=data,
-            )
-        except (
-            Project.DoesNotExist,
-            project_mutations.ProjectMutationForbidden,
-            ValidationError,
-        ) as exc:
-            return _mutation_error_response(exc)
-
-        return Response(
-            {"id": track.id, "title": track.title}, status=status.HTTP_201_CREATED
-        )
 
 
 class ProjectLocationsView(_ProjectScopedView):

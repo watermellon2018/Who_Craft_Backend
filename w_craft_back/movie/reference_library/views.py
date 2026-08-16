@@ -74,8 +74,6 @@ def _validated(serializer_class, data):
 
 
 class ReferenceAuthedView(APIView):
-    allow_legacy_body_auth = False
-
     @staticmethod
     def actor(request):
         user = getattr(request, "user", None)

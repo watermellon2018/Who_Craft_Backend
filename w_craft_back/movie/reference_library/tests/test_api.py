@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import tempfile
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -12,6 +13,7 @@ from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import StudioCharacter
+from w_craft_back.credits.models import CreditAccount
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     ProjectMember,
@@ -40,11 +42,10 @@ def make_user(username: str) -> tuple[User, str]:
 def make_project(owner: User) -> Project:
     project = Project.objects.create(
         owner=owner,
-        user=UserKey.objects.get(user=owner),
         title="Reference film",
-        format="full-movie",
-        annot="",
-        desc="",
+        format="feature_film",
+        annotation="",
+        synopsis="",
     )
     ProjectMember.objects.create(
         project=project,
@@ -136,7 +137,7 @@ class ReferenceApiTests(TestCase):
     def test_link_options_and_reference_settings_are_project_scoped(self):
         anna = StudioCharacter.objects.create(
             project=self.project,
-            user=self.project.user,
+            user=UserKey.objects.get(user=self.owner),
             name="Anna",
         )
         apartment = Location.objects.create(
@@ -146,7 +147,7 @@ class ReferenceApiTests(TestCase):
         other_project = make_project(self.outsider)
         StudioCharacter.objects.create(
             project=other_project,
-            user=other_project.user,
+            user=UserKey.objects.get(user=self.outsider),
             name="Outsider",
         )
         Location.objects.create(project=other_project, name="Foreign location")
@@ -289,6 +290,10 @@ class ReferenceApiTests(TestCase):
 
     @override_settings(REFERENCE_IMAGE_PROVIDER="registry")
     def test_registry_generation_persists_generated_image_version(self):
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1.00"),
+        )
         created = self.create_reference()
         jobs_url = f"{self.collection_url}{created['id']}/generation-jobs/"
         provider = RegistryReferenceStubProvider()
@@ -381,6 +386,43 @@ class ReferenceApiTests(TestCase):
             HTTP_X_USER_TOKEN=self.owner_token,
         )
         self.assertFalse(detail.json()["canRetry"])
+
+    def test_processing_job_cannot_be_cancelled(self):
+        created = self.create_reference()
+        jobs_url = f"{self.collection_url}{created['id']}/generation-jobs/"
+        enqueued = self.client.post(
+            jobs_url,
+            {
+                "expectedReferenceVersion": 1,
+                "operation": "generate",
+                "variantCount": 1,
+                "brief": {
+                    "schemaVersion": "reference_brief.v1",
+                    "description": "A paid reference",
+                },
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="processing-cancel-blocked",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        job_id = enqueued.json()["id"]
+        ReferenceGenerationJob.objects.filter(pk=job_id).update(
+            status=ReferenceJobStatus.PROCESSING,
+        )
+
+        detail = self.client.get(
+            f"{jobs_url}{job_id}/",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        cancelled = self.client.post(
+            f"{jobs_url}{job_id}/cancellation-request/",
+            format="json",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+
+        self.assertFalse(detail.json()["canCancel"])
+        self.assertEqual(cancelled.status_code, 409, cancelled.content)
+        self.assertEqual(cancelled.json()["code"], "REFERENCE_JOB_NOT_CANCELLABLE")
 
     def test_upload_requires_rights_and_creates_active_immutable_version(self):
         created = self.create_reference()

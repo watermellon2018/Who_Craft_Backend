@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, List
 
 import requests
+from django.conf import settings
 from requests import HTTPError
 
 from w_craft_back.storage_gateway import (
@@ -163,50 +164,108 @@ class MockProvider(AIImageProvider):
         return variants
 
 
-def get_image_provider(name="mock"):
+def get_image_provider(name="mock", provider_snapshot=None):
     """Pick a character-studio provider by name.
 
-    Legacy keys (``mock``/``gemini``/``google``/``imagen``) keep their existing
-    behavior. Any key registered in :data:`MODEL_REGISTRY`
-    (e.g. ``gemini-flash-image``, ``openrouter-flash-image``) is dispatched to
-    :class:`LiteLLMCharacterProvider`, which uses the unified LiteLLM client.
+    Legacy keys keep their existing behavior. Registry and dynamic catalog
+    models are reconstructed from the persisted snapshot when available.
     """
-    from w_craft_back.services.image_generation import MODEL_REGISTRY
+    from w_craft_back.services.image_generation import (
+        ImageProviderError,
+        deserialize_model_spec,
+        resolve_model,
+    )
 
     raw = (name or "mock").strip()
     lower = raw.lower()
     if lower == "mock":
         return MockProvider()
     if lower in {"gemini", "google", "imagen"}:
+        snapshot_spec = (
+            provider_snapshot.get("spec")
+            if isinstance(provider_snapshot, dict)
+            else None
+        )
+        if snapshot_spec:
+            if (
+                not isinstance(snapshot_spec, dict)
+                or snapshot_spec.get("key") != "gemini"
+                or snapshot_spec.get("backend") != "gemini-legacy"
+                or not isinstance(snapshot_spec.get("model_id"), str)
+            ):
+                raise ProviderUserFacingError(
+                    "The saved image model snapshot does not match the "
+                    "job provider.",
+                    error_code="PROVIDER_CONFIGURATION_ERROR",
+                )
+            return GeminiProvider(model_version=snapshot_spec["model_id"])
         return GeminiProvider()
-    if raw in MODEL_REGISTRY:
-        return LiteLLMCharacterProvider(raw)
-    raise ProviderUserFacingError(
-        f"Unknown image generation provider: {raw}.",
-        error_code="PROVIDER_CONFIGURATION_ERROR",
+    if isinstance(provider_snapshot, dict) and provider_snapshot.get("candidates"):
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        try:
+            routed = provider_from_route_snapshot(provider_snapshot)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderUserFacingError(
+                "The saved provider route is invalid.",
+                error_code="PROVIDER_CONFIGURATION_ERROR",
+            ) from exc
+        if routed.spec.key != raw:
+            raise ProviderUserFacingError(
+                "The saved provider route does not match the job provider.",
+                error_code="PROVIDER_CONFIGURATION_ERROR",
+            )
+        adapter = RegistryCharacterProvider(spec=routed.spec)
+        adapter.provider = routed
+        return adapter
+    try:
+        if provider_snapshot and provider_snapshot.get("spec"):
+            spec = deserialize_model_spec(provider_snapshot["spec"])
+        else:
+            spec = resolve_model(raw)
+    except ImageProviderError as exc:
+        raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderUserFacingError(
+            "The saved image model snapshot is invalid.",
+            error_code="PROVIDER_CONFIGURATION_ERROR",
+        ) from exc
+    if spec.key != raw:
+        raise ProviderUserFacingError(
+            "The saved image model snapshot does not match the job provider.",
+            error_code="PROVIDER_CONFIGURATION_ERROR",
+        )
+    if spec.backend == "mock":
+        return MockProvider()
+    if spec.backend == "gemini-legacy":
+        return GeminiProvider()
+    return RegistryCharacterProvider(spec=spec)
+
+
+class RegistryCharacterProvider(AIImageProvider):
+    """Character Studio adapter over the unified model registry."""
+
+    _STRING_PARAMETERS = (
+        "aspect_ratio",
+        "resolution",
+        "size",
+        "quality",
+        "output_format",
+        "background",
     )
 
-
-class LiteLLMCharacterProvider(AIImageProvider):
-    """LiteLLM-backed character-studio provider.
-
-    Reuses the same image bytes-to-disk save pattern as :class:`GeminiProvider`
-    so the rest of the pipeline (asset persistence, URL building) keeps working
-    unchanged.
-    """
-
-    model_name = "litellm"
-
-    def __init__(self, registry_key: str) -> None:
+    def __init__(self, registry_key: str | None = None, *, spec=None) -> None:
         from w_craft_back.services.image_generation import (
-            LiteLLMProvider,
+            provider_from_spec,
             resolve_model,
         )
 
-        self.spec = resolve_model(registry_key)
-        self.provider = LiteLLMProvider(self.spec)
+        self.spec = spec or resolve_model(registry_key)
+        self.provider = provider_from_spec(self.spec)
+        self.model_name = self.spec.backend
         self.model_version = self.spec.model_id
-        self.aspect_ratio = os.getenv("GEMINI_IMAGE_ASPECT_RATIO", "3:4")
         self.logger = logging.getLogger(__name__)
 
     # -------- AIImageProvider interface -----------------------------------
@@ -223,6 +282,9 @@ class LiteLLMCharacterProvider(AIImageProvider):
         )
 
     def edit_character_region(self, job, compiled_prompt, variant_count):
+        # Character Studio's current "edit" job carries no source pixels. It is
+        # intentionally text-to-image, so supports_generate (not supports_edit)
+        # is the relevant registry capability until a real source image exists.
         prompt = compiled_prompt["positive_prompt"]
         image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
         return self._generate(
@@ -251,26 +313,23 @@ class LiteLLMCharacterProvider(AIImageProvider):
             ImageProviderError,
             map_to_provider_error,
         )
+        from w_craft_back.services.image_generation.errors import (
+            CODE_BAD_RESPONSE,
+            CODE_IMAGE_INPUT_NOT_SUPPORTED,
+        )
+
+        if not self.spec.supports_reference:
+            raise ProviderUserFacingError(
+                f"Image model '{self.spec.label}' does not support reference images.",
+                error_code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+            )
 
         prompt = compiled_prompt["positive_prompt"]
         image_type = compiled_prompt.get("metadata", {}).get("image_type", "portrait")
         count = max(1, min(int(variant_count or 4), 4))
-        try:
-            images = self.provider.generate_with_reference(
-                prompt,
-                reference_image_bytes,
-                mime_type=mime_type or "image/png",
-                variant_count=count,
-                timeout=_provider_timeout(job),
-            )
-            _provider_heartbeat(job)
-        except ImageProviderError as exc:
-            raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
-        except Exception as exc:  # noqa: BLE001
-            mapped = map_to_provider_error(exc)
-            raise ProviderUserFacingError(mapped.message, error_code=mapped.code) from exc
-
-        # Top-up if the model returned fewer variants than asked (same pattern as _generate).
+        images: list[bytes] = []
+        parameters = self._provider_parameters(job)
+        per_call_max = self._per_call_max(count)
         while len(images) < count:
             try:
                 _provider_heartbeat(job)
@@ -278,16 +337,32 @@ class LiteLLMCharacterProvider(AIImageProvider):
                     prompt,
                     reference_image_bytes,
                     mime_type=mime_type or "image/png",
-                    variant_count=1,
+                    variant_count=min(count - len(images), per_call_max),
                     timeout=_provider_timeout(job),
+                    **parameters,
                 )
+                self._sync_active_provider()
                 _provider_heartbeat(job)
-            except Exception:  # noqa: BLE001
-                break
+            except ImageProviderError as exc:
+                raise ProviderUserFacingError(
+                    exc.message,
+                    error_code=exc.code,
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                mapped = map_to_provider_error(exc)
+                raise ProviderUserFacingError(
+                    mapped.message,
+                    error_code=mapped.code,
+                ) from exc
             if not extra:
                 break
             images.extend(extra)
         images = images[:count]
+        if len(images) != count:
+            raise ProviderUserFacingError(
+                "Image provider returned fewer variants than requested.",
+                error_code=CODE_BAD_RESPONSE,
+            )
 
         return self._persist_variants(
             job, images, prompt=prompt, prefix="reference", image_type=image_type
@@ -300,44 +375,109 @@ class LiteLLMCharacterProvider(AIImageProvider):
             ImageProviderError,
             map_to_provider_error,
         )
+        from w_craft_back.services.image_generation.errors import CODE_BAD_RESPONSE
 
         count = max(1, min(int(variant_count or 4), 4))
-        try:
-            images = self.provider.generate(
-                prompt,
-                aspect_ratio=self.aspect_ratio,
-                variant_count=count,
-                timeout=_provider_timeout(job),
-            )
-            _provider_heartbeat(job)
-        except ImageProviderError as exc:
-            raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
-        except Exception as exc:  # noqa: BLE001
-            mapped = map_to_provider_error(exc)
-            raise ProviderUserFacingError(mapped.message, error_code=mapped.code) from exc
-
-        # If the chat-image model returned fewer variants than requested, top up
-        # by repeating extra generations (cheaper than failing).
+        images: list[bytes] = []
+        parameters = self._provider_parameters(job)
+        per_call_max = self._per_call_max(count)
         while len(images) < count:
             try:
                 _provider_heartbeat(job)
                 extra = self.provider.generate(
                     prompt,
-                    aspect_ratio=self.aspect_ratio,
-                    variant_count=1,
+                    variant_count=min(count - len(images), per_call_max),
                     timeout=_provider_timeout(job),
+                    **parameters,
                 )
+                self._sync_active_provider()
                 _provider_heartbeat(job)
-            except Exception:  # noqa: BLE001
-                break
+            except ImageProviderError as exc:
+                raise ProviderUserFacingError(
+                    exc.message,
+                    error_code=exc.code,
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                mapped = map_to_provider_error(exc)
+                raise ProviderUserFacingError(
+                    mapped.message,
+                    error_code=mapped.code,
+                ) from exc
             if not extra:
                 break
             images.extend(extra)
         images = images[:count]
+        if len(images) != count:
+            raise ProviderUserFacingError(
+                "Image provider returned fewer variants than requested.",
+                error_code=CODE_BAD_RESPONSE,
+            )
 
         return self._persist_variants(
             job, images, prompt=prompt, prefix=prefix, image_type=image_type
         )
+
+    def _per_call_max(self, requested_count: int) -> int:
+        descriptor = (self.spec.supported_parameters or {}).get("n") or {}
+        raw_maximum = descriptor.get("max")
+        if not isinstance(raw_maximum, (int, float)) or isinstance(
+            raw_maximum,
+            bool,
+        ):
+            return 1
+        maximum = int(raw_maximum)
+        try:
+            configured_maximum = int(
+                getattr(settings, "IMAGE_PROVIDER_MAX_OUTPUT_IMAGES", 4)
+            )
+        except (TypeError, ValueError):
+            configured_maximum = 4
+        if configured_maximum <= 0:
+            configured_maximum = 4
+        return max(
+            1,
+            min(requested_count, maximum, configured_maximum, 10),
+        )
+
+    def _sync_active_provider(self) -> None:
+        active_spec = getattr(self.provider, "spec", None)
+        if active_spec is None:
+            return
+        self.spec = active_spec
+        self.model_name = active_spec.backend
+        self.model_version = active_spec.model_id
+
+    def _provider_parameters(self, job) -> dict[str, object]:
+        payload = job.request_payload if isinstance(job.request_payload, dict) else {}
+        supported = self.spec.supported_parameters or {}
+        parameters: dict[str, object] = {}
+        for key in self._STRING_PARAMETERS:
+            value = payload.get(key)
+            if key in supported and isinstance(value, str) and value.strip():
+                parameters[key] = value.strip()
+
+        compression = payload.get("output_compression")
+        if (
+            "output_compression" in supported
+            and isinstance(compression, int)
+            and not isinstance(compression, bool)
+            and 0 <= compression <= 100
+        ):
+            parameters["output_compression"] = compression
+
+        seed = payload.get("seed")
+        if (
+            "seed" in supported
+            and isinstance(seed, int)
+            and not isinstance(seed, bool)
+        ):
+            parameters["seed"] = seed
+
+        if "aspect_ratio" in supported and "aspect_ratio" not in parameters:
+            default_ratio = os.getenv("GEMINI_IMAGE_ASPECT_RATIO", "").strip()
+            if default_ratio:
+                parameters["aspect_ratio"] = default_ratio
+        return parameters
 
     def _persist_variants(self, job, images, *, prompt, prefix, image_type):
         variants: List[Dict[str, Any]] = []
@@ -363,7 +503,7 @@ class LiteLLMCharacterProvider(AIImageProvider):
                     "prompt": prompt,
                     "negative_prompt": "",
                     "metadata": {
-                        "provider": "litellm",
+                        "provider": self.spec.backend,
                         "registry_key": self.spec.key,
                         "model_id": self.spec.model_id,
                         "mode": self.spec.mode,
@@ -375,6 +515,10 @@ class LiteLLMCharacterProvider(AIImageProvider):
                 }
             )
         return variants
+
+
+# Import compatibility for callers/tests that still use the previous name.
+LiteLLMCharacterProvider = RegistryCharacterProvider
 
 
 class GeminiProvider(AIImageProvider):
@@ -389,9 +533,12 @@ class GeminiProvider(AIImageProvider):
     # Imagen 3 has been shut down; default to Imagen 4.
     model_version = "imagen-4.0-generate-001"
 
-    def __init__(self):
+    def __init__(self, *, model_version: str | None = None):
         self.api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        self.model_version = os.getenv("GEMINI_IMAGE_MODEL", self.model_version)
+        self.model_version = model_version or os.getenv(
+            "GEMINI_IMAGE_MODEL",
+            self.model_version,
+        )
         self.endpoint_base = os.getenv(
             "GEMINI_API_BASE_URL",
             "https://generativelanguage.googleapis.com",

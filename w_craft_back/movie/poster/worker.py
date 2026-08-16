@@ -88,11 +88,18 @@ def execute_poster_job(job_id: int) -> PosterGenerationJob:
         return job
 
     try:
-        provider = resolve_provider_for_user(
-            claimed.user,
-            override=claimed.requested_model or None,
-            require_edit=claimed.operation == PosterJobOperation.EDIT,
-        )
+        if claimed.provider_snapshot:
+            from w_craft_back.services.image_generation.routing import (
+                provider_from_route_snapshot,
+            )
+
+            provider = provider_from_route_snapshot(claimed.provider_snapshot)
+        else:
+            provider = resolve_provider_for_user(
+                claimed.user,
+                override=claimed.requested_model or None,
+                require_edit=claimed.operation == PosterJobOperation.EDIT,
+            )
 
         try:
             if claimed.operation == PosterJobOperation.EDIT:
@@ -198,6 +205,7 @@ def execute_poster_job(job_id: int) -> PosterGenerationJob:
                 claimed,
                 images,
                 prepared_images=prepared_images,
+                provider=provider,
             )
         except Exception:
             logger.exception(

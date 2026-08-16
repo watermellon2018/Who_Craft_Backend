@@ -1,34 +1,38 @@
-"""Registry of supported image-generation models.
-
-A user picks a model by ``key`` (stored on ``UserProfile.image_generation_model``).
-The resolver translates the key into a concrete provider instance using the
-:class:`ModelSpec` recorded here.
-
-Adding a new model: insert a new entry into :data:`MODEL_REGISTRY` and make sure
-the required env vars are documented in ``.env.example``.
-"""
+"""Static and dynamically discovered image-generation models."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from typing import Any, Mapping
 
 from .errors import CODE_EDIT_NOT_SUPPORTED, CODE_MODEL_UNKNOWN, ImageProviderError
 
 logger = logging.getLogger(__name__)
 
+OPENROUTER_IMAGES_KEY_PREFIX = "openrouter-images:"
+
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """Serializable description of one image model and its capabilities."""
+
     key: str
     label: str
-    backend: str               # "litellm" | "gemini-native"
-    model_id: str              # what we pass to litellm or the native client
-    mode: str                  # "image" (dedicated image API) | "chat" (chat-completions)
+    backend: str
+    model_id: str
+    mode: str
     supports_generate: bool
     supports_edit: bool
+    supports_reference: bool = False
+    description: str = ""
+    supported_parameters: dict[str, Any] = field(default_factory=dict)
+    input_modalities: tuple[str, ...] = field(default_factory=tuple)
+    output_modalities: tuple[str, ...] = field(default_factory=tuple)
     requires_env: tuple[str, ...] = field(default_factory=tuple)
+    provider_pricing: dict[str, Any] = field(default_factory=dict)
     default: bool = False
 
 
@@ -41,7 +45,22 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         mode="image",
         supports_generate=True,
         supports_edit=False,
+        supports_reference=False,
+        supported_parameters={
+            "aspect_ratio": {
+                "type": "enum",
+                "values": ["1:1", "3:4", "4:3", "16:9", "9:16"],
+            },
+            "n": {"type": "range", "min": 1, "max": 4},
+        },
+        input_modalities=("text",),
+        output_modalities=("image",),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "output_image": "0.040000",
+        },
     ),
     "gemini-flash-image": ModelSpec(
         key="gemini-flash-image",
@@ -51,19 +70,73 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         mode="chat",
         supports_generate=True,
         supports_edit=True,
+        supports_reference=True,
+        supported_parameters={
+            "input_references": {"type": "range", "min": 0, "max": 1},
+            "n": {"type": "range", "min": 1, "max": 4},
+        },
+        input_modalities=("text", "image"),
+        output_modalities=("image", "text"),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "input_text_token": "0.000000300",
+            "output_image": "0.039000",
+        },
         default=True,
     ),
     "openrouter-flash-image": ModelSpec(
         key="openrouter-flash-image",
-        label="Gemini Flash Image via OpenRouter",
-        backend="litellm",
-        # OpenRouter moved Nano Banana to 3.1; the old 2.5 slug now returns 404.
-        model_id="openrouter/google/gemini-3.1-flash-image-preview",
-        mode="chat",
+        label="Gemini 3.1 Flash Image via OpenRouter",
+        backend="openrouter-images",
+        model_id="google/gemini-3.1-flash-image-preview",
+        mode="images",
         supports_generate=True,
         supports_edit=True,
+        supports_reference=True,
+        description="Gemini image generation through the dedicated OpenRouter Images API.",
+        supported_parameters={
+            "resolution": {
+                "type": "enum",
+                "values": ["512", "1K", "2K", "4K"],
+            },
+            "aspect_ratio": {
+                "type": "enum",
+                "values": [
+                    "1:1",
+                    "1:4",
+                    "1:8",
+                    "2:3",
+                    "3:2",
+                    "3:4",
+                    "4:1",
+                    "4:3",
+                    "4:5",
+                    "5:4",
+                    "8:1",
+                    "9:16",
+                    "16:9",
+                    "21:9",
+                ],
+            },
+            "input_references": {"type": "range", "min": 0, "max": 14},
+            "n": {"type": "range", "min": 1, "max": 1},
+        },
+        input_modalities=("text", "image"),
+        output_modalities=("image",),
         requires_env=("OPENROUTER_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "openrouter",
+            "input_text_token": "0.000000500",
+            "output_image_by_resolution": {
+                "512": "0.045000",
+                "1K": "0.067000",
+                "2K": "0.101000",
+                "4K": "0.151000",
+            },
+        },
     ),
     "gemini-native": ModelSpec(
         key="gemini-native",
@@ -73,35 +146,73 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         mode="image",
         supports_generate=True,
         supports_edit=True,
+        supports_reference=False,
+        supported_parameters={
+            "aspect_ratio": {
+                "type": "enum",
+                "values": ["1:1", "3:4", "16:9", "square", "vertical", "horizontal"],
+            },
+            "n": {"type": "range", "min": 1, "max": 4},
+        },
+        input_modalities=("text", "image"),
+        output_modalities=("image",),
         requires_env=("GEMINI_API_KEY",),
+        provider_pricing={
+            "currency": "USD",
+            "source": "google",
+            "generate_output_image": "0.040000",
+            "edit_input_text_token": "0.000000300",
+            "edit_output_image": "0.039000",
+        },
     ),
 }
 
 
-def get_default_key() -> str:
-    """The default registry key when the user hasn't picked anything.
-
-    Priority: ``DEFAULT_IMAGE_MODEL`` env var > the ``default=True`` entry in
-    the registry > a hard-coded ``"gemini-flash-image"`` fallback.
-    """
-    env_default = (os.getenv("DEFAULT_IMAGE_MODEL") or "").strip()
-    if env_default and env_default in MODEL_REGISTRY:
-        return env_default
+def _static_default_key() -> str:
     for spec in MODEL_REGISTRY.values():
         if spec.default:
             return spec.key
     return "gemini-flash-image"
 
 
-def resolve_model(key: str | None, *, require_edit: bool = False) -> ModelSpec:
-    """Validate the given key and return its :class:`ModelSpec`.
+def _dynamic_specs(*, force_refresh: bool = False) -> list[ModelSpec]:
+    # Lazy import avoids a registry/provider import cycle and, importantly,
+    # performs no network access while Django imports modules.
+    from .openrouter_images import discover_openrouter_image_models
 
-    Raises :class:`ImageProviderError` with ``IMAGE_MODEL_UNKNOWN`` for unknown
-    keys, and ``IMAGE_PROVIDER_EDIT_NOT_SUPPORTED`` when ``require_edit`` is
-    set but the model can't edit.
-    """
+    return discover_openrouter_image_models(force_refresh=force_refresh)
+
+
+def get_default_key() -> str:
+    """Return the configured default when it is a known static/dynamic key."""
+
+    env_default = (os.getenv("DEFAULT_IMAGE_MODEL") or "").strip()
+    if env_default in MODEL_REGISTRY:
+        return env_default
+    if env_default.startswith(OPENROUTER_IMAGES_KEY_PREFIX):
+        try:
+            if any(spec.key == env_default for spec in _dynamic_specs()):
+                return env_default
+        except ImageProviderError:
+            # Settings/catalog pages must remain usable during an upstream
+            # outage. Actual provider resolution remains fail-closed.
+            logger.warning("OpenRouter image default could not be validated")
+    return _static_default_key()
+
+
+def _find_dynamic_model(key: str) -> ModelSpec | None:
+    return next((spec for spec in _dynamic_specs() if spec.key == key), None)
+
+
+def resolve_model(key: str | None, *, require_edit: bool = False) -> ModelSpec:
+    """Validate a static or catalog-backed model key."""
+
     effective = (key or "").strip() or get_default_key()
     spec = MODEL_REGISTRY.get(effective)
+    if spec is None and effective.startswith(OPENROUTER_IMAGES_KEY_PREFIX):
+        # Never turn an arbitrary slug into a billable provider request. A
+        # dynamic key is valid only if it was returned by the catalog.
+        spec = _find_dynamic_model(effective)
     if spec is None:
         raise ImageProviderError(
             code=CODE_MODEL_UNKNOWN,
@@ -121,22 +232,170 @@ def resolve_model(key: str | None, *, require_edit: bool = False) -> ModelSpec:
 
 
 def is_configured(spec: ModelSpec) -> bool:
-    """``True`` when every env var the model needs is set."""
-    return all(bool(os.getenv(var)) for var in spec.requires_env)
+    """Return whether all environment variables required by ``spec`` are set."""
+
+    return all(bool((os.getenv(var) or "").strip()) for var in spec.requires_env)
 
 
-def list_available_models() -> list[dict]:
-    """Public list for the GET endpoint — safe to send to the FE."""
-    default_key = get_default_key()
-    return [
-        {
-            "key": spec.key,
-            "label": spec.label,
-            "supports_generate": spec.supports_generate,
-            "supports_edit": spec.supports_edit,
-            "default": spec.key == default_key,
-            "configured": is_configured(spec),
-            "requires_env": list(spec.requires_env),
-        }
-        for spec in MODEL_REGISTRY.values()
-    ]
+def model_catalog_row(spec: ModelSpec, *, default_key: str | None = None) -> dict:
+    """Render the stable public model-catalog schema."""
+
+    effective_default = default_key if default_key is not None else get_default_key()
+    return {
+        "key": spec.key,
+        "label": spec.label,
+        "description": spec.description,
+        "backend": spec.backend,
+        "model_id": spec.model_id,
+        "mode": spec.mode,
+        "supports_generate": spec.supports_generate,
+        "supports_edit": spec.supports_edit,
+        "supports_reference": spec.supports_reference,
+        "supported_parameters": json.loads(
+            json.dumps(spec.supported_parameters, ensure_ascii=False)
+        ),
+        "input_modalities": list(spec.input_modalities),
+        "output_modalities": list(spec.output_modalities),
+        "default": spec.key == effective_default,
+        "configured": is_configured(spec),
+        "requires_env": list(spec.requires_env),
+    }
+
+
+def list_available_models(*, include_dynamic: bool = True) -> list[dict]:
+    """List static models plus OpenRouter's current image catalog.
+
+    Discovery failures degrade to the static registry. The discovery layer
+    itself serves its last-known-good catalog after cache expiry.
+    """
+
+    specs = list(MODEL_REGISTRY.values())
+    if include_dynamic:
+        try:
+            dynamic = _dynamic_specs()
+        except ImageProviderError:
+            logger.warning("OpenRouter image catalog unavailable; using static models")
+        else:
+            known_keys = {spec.key for spec in specs}
+            specs.extend(spec for spec in dynamic if spec.key not in known_keys)
+    env_default = (os.getenv("DEFAULT_IMAGE_MODEL") or "").strip()
+    available_keys = {spec.key for spec in specs}
+    default_key = (
+        env_default if env_default in available_keys else _static_default_key()
+    )
+    return [model_catalog_row(spec, default_key=default_key) for spec in specs]
+
+
+def serialize_model_spec(spec: ModelSpec) -> dict[str, Any]:
+    """Create a JSON-safe model snapshot suitable for a queued job JSONField."""
+
+    payload = asdict(spec)
+    payload["input_modalities"] = list(spec.input_modalities)
+    payload["output_modalities"] = list(spec.output_modalities)
+    payload["requires_env"] = list(spec.requires_env)
+    # Round-tripping rejects accidental non-JSON values in future fields.
+    return json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+
+
+def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise ValueError(f"Model snapshot field '{field_name}' must be a string list")
+    return tuple(value)
+
+
+def deserialize_model_spec(snapshot: Mapping[str, Any] | str) -> ModelSpec:
+    """Restore a trusted provider spec without consulting the live catalog."""
+
+    if isinstance(snapshot, str):
+        try:
+            raw = json.loads(snapshot)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Model snapshot is not valid JSON") from exc
+    elif isinstance(snapshot, Mapping):
+        raw = dict(snapshot)
+    else:
+        raise ValueError("Model snapshot must be a JSON object")
+    if not isinstance(raw, dict):
+        raise ValueError("Model snapshot must be a JSON object")
+
+    required_strings = ("key", "label", "backend", "model_id", "mode")
+    for name in required_strings:
+        if not isinstance(raw.get(name), str) or not raw[name].strip():
+            raise ValueError(f"Model snapshot field '{name}' must be a string")
+    supported_parameters = raw.get("supported_parameters", {})
+    if not isinstance(supported_parameters, dict):
+        raise ValueError("Model snapshot supported_parameters must be an object")
+    try:
+        safe_parameters = json.loads(json.dumps(
+            supported_parameters,
+            ensure_ascii=False,
+            allow_nan=False,
+        ))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Model snapshot parameters are not JSON-safe") from exc
+
+    boolean_fields = (
+        "supports_generate",
+        "supports_edit",
+        "supports_reference",
+        "default",
+    )
+    if any(
+        name in raw and not isinstance(raw[name], bool) for name in boolean_fields
+    ):
+        raise ValueError("Model snapshot capability fields must be booleans")
+    description = raw.get("description", "")
+    if not isinstance(description, str):
+        raise ValueError("Model snapshot description must be a string")
+    provider_pricing = raw.get("provider_pricing", {})
+    if not isinstance(provider_pricing, dict):
+        raise ValueError("Model snapshot provider_pricing must be an object")
+    try:
+        safe_pricing = json.loads(json.dumps(
+            provider_pricing,
+            ensure_ascii=False,
+            allow_nan=False,
+        ))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Model snapshot pricing is not JSON-safe") from exc
+
+    spec = ModelSpec(
+        key=raw["key"],
+        label=raw["label"],
+        backend=raw["backend"],
+        model_id=raw["model_id"],
+        mode=raw["mode"],
+        supports_generate=raw.get("supports_generate", False),
+        supports_edit=raw.get("supports_edit", False),
+        supports_reference=raw.get("supports_reference", False),
+        description=description,
+        supported_parameters=safe_parameters,
+        input_modalities=_string_tuple(
+            raw.get("input_modalities", []), "input_modalities"
+        ),
+        output_modalities=_string_tuple(
+            raw.get("output_modalities", []), "output_modalities"
+        ),
+        requires_env=_string_tuple(raw.get("requires_env", []), "requires_env"),
+        provider_pricing=safe_pricing,
+        default=raw.get("default", False),
+    )
+    if (
+        spec.key == "openrouter-flash-image"
+        and spec.backend == "litellm"
+        and spec.mode == "chat"
+        and spec.model_id
+        == "openrouter/google/gemini-3.1-flash-image-preview"
+    ):
+        # This legacy alias used OpenRouter chat-completions, which can return
+        # a text-only ModelResponse for image models. Route persisted jobs to
+        # the dedicated Images API without requiring live catalog discovery.
+        return MODEL_REGISTRY["openrouter-flash-image"]
+    return spec
+
+
+# Explicit aliases read naturally at job enqueue/consume call sites.
+model_spec_to_snapshot = serialize_model_spec
+model_spec_from_snapshot = deserialize_model_spec

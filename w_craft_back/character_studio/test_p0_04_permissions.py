@@ -80,12 +80,11 @@ class CharacterStudioPermissionMatrixTests(TestCase):
 
         owner = self.users["owner"]
         self.project = Project.objects.create(
-            user=self.principals["owner"],
             owner=owner,
             title="P0-04 permissions",
             format="series",
-            annot="",
-            desc="",
+            annotation="",
+            synopsis="",
         )
         for role in ("owner", "admin", "editor", "viewer"):
             ProjectMember.objects.create(

@@ -77,12 +77,11 @@ class CharacterStudioTestCase(TestCase):
         user = User.objects.create_user(username="owner", password="x")
         self.user_key = UserKey.objects.create(user=user)
         self.project = Project.objects.create(
-            user=self.user_key,
             owner=user,
             title="Film",
             format="series",
-            annot="Short",
-            desc="Long",
+            annotation="Short",
+            synopsis="Long",
         )
         self.service = CharacterService()
         self.previous_provider = os.environ.get("CHARACTER_STUDIO_IMAGE_PROVIDER")
@@ -90,6 +89,9 @@ class CharacterStudioTestCase(TestCase):
 
     def generation_headers(self):
         return {"HTTP_IDEMPOTENCY_KEY": f"test-{uuid4()}"}
+
+    def execute_generation_job(self, job_id):
+        return CharacterGenerationService().execute_queued_job(job_id)
 
     def tearDown(self):
         if self.previous_provider is None:
@@ -235,6 +237,28 @@ class PromptCompilerTests(CharacterStudioTestCase):
         )
         self.assertIn("Modify only outfit", result["edit_instruction"])
         self.assertIn("keep face", result["edit_instruction"])
+
+    def test_identity_anchored_age_change_does_not_preserve_old_age(self):
+        character = self.create_character()
+        character.age = 35
+        result = CharacterPromptCompiler().compile_identity_anchored(
+            character=character,
+            appearance=character.active_appearance,
+            outfit=None,
+            image_type="portrait",
+            params={
+                "controls": {"age": 35},
+                "changed_fields": ["age"],
+                "previous_values": {"age": 17},
+                "new_values": {"age": 35},
+            },
+        )
+
+        self.assertIn("Change age from 17 to 35", result["positive_prompt"])
+        self.assertIn("35-year-old", result["positive_prompt"])
+        self.assertNotIn(
+            "Preserve the same age presentation", result["positive_prompt"],
+        )
 
     def test_identity_lock_forces_preserve_identity(self):
         character = self.create_character()
@@ -670,12 +694,12 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
 
     def test_api_flow(self):
         create = self.client.post(
             f"/api/projects/{self.project.id}/characters",
             {
-                "token_user": self.token,
                 "name": "Mira",
                 "age": 17,
                 "visual_style": "anime",
@@ -688,12 +712,14 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         job_response = self.client.post(
             f"/api/projects/{self.project.id}/characters/{character_id}"
             "/generate-initial-variants",
-            {"token_user": self.token, "variant_count": 4},
+            {"variant_count": 4},
             format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(job_response.status_code, 200)
+        self.assertEqual(job_response.status_code, 202)
         job_id = job_response.json()["job_id"]
+        completed = self.execute_generation_job(job_id)
+        self.assertEqual(completed.status, "completed")
         job = self.client.get(
             f"/api/generation-jobs/{job_id}", HTTP_X_USER_TOKEN=self.token,
         )
@@ -704,7 +730,6 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         apply = self.client.post(
             f"/api/projects/{self.project.id}/characters/{character_id}/apply-variant",
             {
-                "token_user": self.token,
                 "variant_id": variant_id,
                 "apply_as": "current_reference",
             },
@@ -714,17 +739,15 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
 
         lock = self.client.post(
             f"/api/projects/{self.project.id}/characters/{character_id}/lock-identity",
-            {"token_user": self.token, "confirm": True},
+            {"confirm": True},
             format="json",
         )
         self.assertEqual(lock.status_code, 200)
 
     def test_permission_rejected(self):
         other = UserKey.objects.create(user=User.objects.create_user(username="other"))
-        response = self.client.get(
-            f"/api/projects/{self.project.id}/characters",
-            HTTP_X_USER_TOKEN=str(other.key),
-        )
+        self.client.credentials(HTTP_X_USER_TOKEN=str(other.key))
+        response = self.client.get(f"/api/projects/{self.project.id}/characters")
         self.assertEqual(response.status_code, 403)
 
     def test_empty_character_list_returns_json_array(self):
@@ -742,7 +765,7 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         response = self.client.patch(
             f"/api/projects/{self.project.id}/characters/"
             f"{character.character_id}/outfits/{uuid4()}",
-            {"token_user": self.token, "name": "Missing"},
+            {"name": "Missing"},
             format="json",
         )
 
@@ -826,6 +849,54 @@ class PortraitSelectionTests(CharacterStudioTestCase):
             jobs_before,
             "apply_variant must not create new generation jobs",
         )
+
+    def test_secondary_variants_do_not_replace_canonical_portrait(self):
+        character = self.create_character()
+        portrait_job = CharacterGenerationService().create_initial_variants(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            {"variant_count": 1, "image_type": "portrait"},
+        )
+        portrait_asset = portrait_job.variants.first().asset
+        CharacterService().apply_variant(
+            self.user_key,
+            self.project.id,
+            character.character_id,
+            portrait_job.variants.first().variant_id,
+            {"apply_as": "current_reference", "image_type": "portrait"},
+        )
+
+        for image_type, region in (("full_body", "body"), ("scene", "style")):
+            secondary_job = CharacterGenerationService().generate_edit_variants(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                {
+                    "region": region,
+                    "image_type": image_type,
+                    "variant_count": 1,
+                    "preserve": {"identity": True},
+                    "controls": {},
+                },
+            )
+            secondary_variant = secondary_job.variants.first()
+            CharacterService().apply_variant(
+                self.user_key,
+                self.project.id,
+                character.character_id,
+                secondary_variant.variant_id,
+                {"image_type": image_type},
+            )
+            secondary_variant.asset.refresh_from_db()
+            self.assertFalse(secondary_variant.asset.is_primary)
+            self.assertFalse(secondary_variant.asset.is_canonical)
+
+        character.refresh_from_db()
+        portrait_asset.refresh_from_db()
+        self.assertEqual(character.canonical_reference_image_id, portrait_asset.asset_id)
+        self.assertTrue(portrait_asset.is_primary)
+        self.assertTrue(portrait_asset.is_canonical)
 
 
 # ---------------------------------------------------------------------------
@@ -1147,6 +1218,30 @@ class CharacterListingTests(CharacterStudioTestCase):
         ids = [c["character_id"] for c in result]
         self.assertIn(str(character.character_id), ids)
 
+    def test_api_can_include_drafts_for_creation_recovery(self):
+        character = self.create_character()
+
+        default_response = APIClient().get(
+            f"/api/projects/{self.project.id}/characters",
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+        recovery_response = APIClient().get(
+            f"/api/projects/{self.project.id}/characters",
+            {"include_drafts": "true"},
+            HTTP_X_USER_TOKEN=str(self.user_key.key),
+        )
+
+        self.assertEqual(default_response.status_code, 200)
+        self.assertEqual(recovery_response.status_code, 200)
+        self.assertNotIn(
+            str(character.character_id),
+            [item["character_id"] for item in default_response.json()],
+        )
+        self.assertIn(
+            str(character.character_id),
+            [item["character_id"] for item in recovery_response.json()],
+        )
+
     def test_applying_a_variant_promotes_draft_to_active(self):
         # Generating + applying a portrait variant is the user's confirmation
         # that this is the character they want — the row should then show up
@@ -1222,6 +1317,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
         self.character = self.create_character()
         self.character_id = self.character.character_id
 
@@ -1234,16 +1330,24 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def _generate(self, reference_type, **extra):
         return self.client.post(
             self._url("/generate"),
-            {"token_user": self.token, "reference_type": reference_type, **extra},
+            {"reference_type": reference_type, **extra},
             format="json",
             **self.generation_headers(),
         )
+
+    def _generate_and_complete(self, reference_type, **extra):
+        response = self._generate(reference_type, **extra)
+        self.assertEqual(response.status_code, 202, response.content)
+        job = self.execute_generation_job(response.json()["job_id"])
+        self.assertEqual(job.status, "completed", job.error_message)
+        board = self.client.get(self._url())
+        self.assertEqual(board.status_code, 200, board.content)
+        return response, board.json()
 
     def _confirm_quality(self):
         response = self.client.patch(
             self._url("/checklist"),
             {
-                "token_user": self.token,
                 "appearance_stable": True,
                 "face_matches_base": True,
                 "outfit_readable": True,
@@ -1303,20 +1407,17 @@ class ReferencesStageTests(CharacterStudioTestCase):
         self.assertIn("missing_profile_or_three_quarter", body["proceed_blockers"])
 
     def test_generate_creates_ready_asset_with_versioning(self):
-        response = self._generate("portrait")
-        self.assertEqual(response.status_code, 200, response.content)
-        body = response.json()
+        response, body = self._generate_and_complete("portrait")
         portrait = next(
-            r for r in body["references"]["references"]
+            r for r in body["references"]
             if r["reference_type"] == "portrait"
         )
         self.assertEqual(portrait["status"], "ready")
         self.assertEqual(portrait["version"], 1)
         # Regenerate => new version, old asset still exists.
-        response2 = self._generate("portrait")
-        self.assertEqual(response2.status_code, 200, response2.content)
+        response2, body2 = self._generate_and_complete("portrait")
         portrait2 = next(
-            r for r in response2.json()["references"]["references"]
+            r for r in body2["references"]
             if r["reference_type"] == "portrait"
         )
         self.assertEqual(portrait2["status"], "ready")
@@ -1337,22 +1438,23 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_correct_creates_new_version_keeping_old(self):
         # Identity-anchored generation requires an existing identity asset
         # (portrait), so seed one before generating the profile view.
-        self._generate("portrait")
-        self._generate("profile")
+        self._generate_and_complete("portrait")
+        self._generate_and_complete("profile")
         original = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.PROFILE,
         ).first()
         response = self.client.post(
             self._url(f"/{original.asset_id}/correct"),
             {
-                "token_user": self.token,
                 "correction_prompt": "fix the side profile, keep identity",
                 "preserve_identity": True,
             },
             format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 202, response.content)
+        job = self.execute_generation_job(response.json()["job_id"])
+        self.assertEqual(job.status, "completed", job.error_message)
         rows = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.PROFILE,
         ).order_by("version")
@@ -1376,7 +1478,6 @@ class ReferencesStageTests(CharacterStudioTestCase):
             response = self.client.post(
                 self._url("/upload"),
                 {
-                    "token_user": self.token,
                     "reference_type": "outfit_details",
                     "file": upload,
                 },
@@ -1394,15 +1495,15 @@ class ReferencesStageTests(CharacterStudioTestCase):
         bad = SimpleUploadedFile("evil.gif", b"GIF89a", content_type="image/gif")
         response = self.client.post(
             self._url("/upload"),
-            {"token_user": self.token, "reference_type": "portrait", "file": bad},
+            {"reference_type": "portrait", "file": bad},
             format="multipart",
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error_code"], "VALIDATION_ERROR")
 
     def test_make_primary_resets_others(self):
-        self._generate("portrait")
-        self._generate("full_body")
+        self._generate_and_complete("portrait")
+        self._generate_and_complete("full_body")
         portrait = CharacterAsset.objects.get(
             character=self.character, asset_type=CharacterAssetType.PORTRAIT,
         )
@@ -1412,7 +1513,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         # Make portrait primary first.
         response = self.client.post(
             self._url(f"/{portrait.asset_id}/make-primary"),
-            {"token_user": self.token},
+            {},
             format="json",
         )
         self.assertEqual(response.status_code, 200, response.content)
@@ -1421,7 +1522,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         # Switch to full_body — portrait should be unset.
         response = self.client.post(
             self._url(f"/{full_body.asset_id}/make-primary"),
-            {"token_user": self.token},
+            {},
             format="json",
         )
         self.assertEqual(response.status_code, 200, response.content)
@@ -1432,7 +1533,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
 
     def test_proceed_to_3d_blocked_without_required_references(self):
         response = self.client.post(
-            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            self._url("/proceed-to-3d"), {}, format="json",
             **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400)
@@ -1443,7 +1544,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_proceed_to_3d_blocked_until_quality_is_confirmed(self):
         self._seed_ready_references()
         response = self.client.post(
-            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            self._url("/proceed-to-3d"), {}, format="json",
             **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 400, response.content)
@@ -1460,7 +1561,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         self._seed_ready_references()
         self._confirm_quality()
         response = self.client.post(
-            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            self._url("/proceed-to-3d"), {}, format="json",
             **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 202, response.content)
@@ -1479,7 +1580,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
         )
         self._confirm_quality()
         response = self.client.post(
-            self._url("/proceed-to-3d"), {"token_user": self.token}, format="json",
+            self._url("/proceed-to-3d"), {}, format="json",
             **self.generation_headers(),
         )
         self.assertEqual(response.status_code, 202, response.content)
@@ -1488,7 +1589,6 @@ class ReferencesStageTests(CharacterStudioTestCase):
         response = self.client.patch(
             self._url("/checklist"),
             {
-                "token_user": self.token,
                 "appearance_stable": True,
                 "outfit_readable": True,
             },
@@ -1523,7 +1623,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
 
     def test_generate_missing_creates_jobs_only_for_absent_required(self):
         # Pre-create one ready portrait so the batch endpoint must skip it.
-        self._generate("portrait")
+        self._generate_and_complete("portrait")
         portrait_count_before = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.PORTRAIT,
         ).count()
@@ -1531,7 +1631,6 @@ class ReferencesStageTests(CharacterStudioTestCase):
         response = self.client.post(
             self._url("/generate-missing"),
             {
-                "token_user": self.token,
                 "reference_types": [
                     "portrait", "full_body", "three_quarter", "profile", "back_view",
                 ],
@@ -1541,7 +1640,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
             format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 202, response.content)
         body = response.json()
         created_types = {job["reference_type"] for job in body["created_jobs"]}
         skipped_types = {item["reference_type"] for item in body["skipped"]}
@@ -1558,33 +1657,61 @@ class ReferencesStageTests(CharacterStudioTestCase):
         )
 
     def test_generate_missing_is_idempotent(self):
-        # First call creates jobs for everything.
+        # First call queues the identity portrait and defers dependent angles.
         first = self.client.post(
             self._url("/generate-missing"),
             {
-                "token_user": self.token,
                 "reference_types": ["portrait", "full_body", "profile", "back_view"],
                 "only_missing": True,
             },
             format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(first.status_code, 200, first.content)
-        # All 4 jobs created the first time. The mock provider runs the job
-        # synchronously inside _run_job, so the assets are already `ready`
-        # by the time the response returns — the second call must skip them.
+        self.assertEqual(first.status_code, 202, first.content)
+        first_body = first.json()
+        self.assertEqual(
+            {job["reference_type"] for job in first_body["created_jobs"]},
+            {"portrait"},
+        )
+        self.assertEqual(
+            {item["reference_type"] for item in first_body["skipped"]},
+            {"full_body", "profile", "back_view"},
+        )
+        for job in first_body["created_jobs"]:
+            completed = self.execute_generation_job(job["job_id"])
+            self.assertEqual(completed.status, "completed", completed.error_message)
+
+        # Once identity is ready, the next request queues the dependent angles.
         second = self.client.post(
             self._url("/generate-missing"),
             {
-                "token_user": self.token,
                 "reference_types": ["portrait", "full_body", "profile", "back_view"],
                 "only_missing": True,
             },
             format="json",
             **self.generation_headers(),
         )
-        self.assertEqual(second.status_code, 200, second.content)
-        body = second.json()
+        self.assertEqual(second.status_code, 202, second.content)
+        second_body = second.json()
+        self.assertEqual(
+            {job["reference_type"] for job in second_body["created_jobs"]},
+            {"full_body", "profile", "back_view"},
+        )
+        for job in second_body["created_jobs"]:
+            completed = self.execute_generation_job(job["job_id"])
+            self.assertEqual(completed.status, "completed", completed.error_message)
+
+        third = self.client.post(
+            self._url("/generate-missing"),
+            {
+                "reference_types": ["portrait", "full_body", "profile", "back_view"],
+                "only_missing": True,
+            },
+            format="json",
+            **self.generation_headers(),
+        )
+        self.assertEqual(third.status_code, 202, third.content)
+        body = third.json()
         self.assertEqual(body["created_jobs"], [])
         skipped_types = {item["reference_type"] for item in body["skipped"]}
         self.assertEqual(
@@ -1607,7 +1734,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_generate_missing_rejects_unknown_reference_type(self):
         response = self.client.post(
             self._url("/generate-missing"),
-            {"token_user": self.token, "reference_types": ["portrait", "moonwalk"]},
+            {"reference_types": ["portrait", "moonwalk"]},
             format="json",
             **self.generation_headers(),
         )
@@ -1617,7 +1744,7 @@ class ReferencesStageTests(CharacterStudioTestCase):
     def test_generate_missing_rejects_empty_reference_types(self):
         response = self.client.post(
             self._url("/generate-missing"),
-            {"token_user": self.token, "reference_types": []},
+            {"reference_types": []},
             format="json",
             **self.generation_headers(),
         )
@@ -1653,6 +1780,7 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
 
     def _url(self):
         return f"/api/projects/{self.project.id}/characters/from-reference"
@@ -1669,7 +1797,6 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
             response = self.client.post(
                 self._url(),
                 {
-                    "token_user": self.token,
                     "name": "Энгри дог",
                     "character_type": "human",
                     "role": "main",
@@ -1682,8 +1809,10 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 format="multipart",
                 **self.generation_headers(),
             )
-        self.assertEqual(response.status_code, 201, response.content)
-        body = response.json()
+            self.assertEqual(response.status_code, 202, response.content)
+            body = response.json()
+            job = self.execute_generation_job(body["generation_job"]["job_id"])
+        self.assertEqual(job.status, "completed", job.error_message)
         self.assertIn("character", body)
         self.assertIn("reference", body)
         self.assertIn("generation_job", body)
@@ -1692,15 +1821,13 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
             body["reference"]["asset_type"], CharacterAssetType.UPLOADED_REFERENCE,
         )
         self.assertEqual(body["reference"]["source"], "uploaded")
-        # MockProvider always succeeds.
-        self.assertEqual(body["generation_job"]["status"], "completed")
+        self.assertEqual(body["generation_job"]["status"], "queued")
         self.assertEqual(body["generation_job"]["job_type"], "reference_variants")
 
     def test_missing_file_returns_400(self):
         response = self.client.post(
             self._url(),
             {
-                "token_user": self.token,
                 "name": "Sasha",
                 "character_type": "human",
             },
@@ -1717,7 +1844,6 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         response = self.client.post(
             self._url(),
             {
-                "token_user": self.token,
                 "name": "Sasha",
                 "character_type": "human",
                 "reference_image": bad,
@@ -1730,20 +1856,18 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
 
     def test_foreign_project_returns_403(self):
         other_user = User.objects.create_user(username="intruder", password="x")
-        other_key = UserKey.objects.create(user=other_user)
+        UserKey.objects.create(user=other_user)
         other_project = Project.objects.create(
-            user=other_key,
             owner=other_user,
             title="Other",
             format="series",
-            annot="x",
-            desc="y",
+            annotation="x",
+            synopsis="y",
         )
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             response = self.client.post(
                 f"/api/projects/{other_project.id}/characters/from-reference",
                 {
-                    "token_user": self.token,
                     "name": "Sasha",
                     "character_type": "human",
                     "reference_image": self._png(),
@@ -1754,13 +1878,13 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error_code"], "PERMISSION_DENIED")
 
-    def test_provider_without_image_input_marks_job_failed(self):
+    def test_provider_without_image_input_is_failed_by_worker(self):
         # GeminiProvider (mode="image", supports_edit=False) doesn't accept image-in.
         from w_craft_back.character_studio.services import providers as providers_module
 
         original = providers_module.get_image_provider
 
-        def force_gemini(_name="mock"):
+        def force_gemini(_name="mock", provider_snapshot=None):
             return providers_module.GeminiProvider()
 
         providers_module.get_image_provider = force_gemini
@@ -1774,7 +1898,6 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                 response = self.client.post(
                     self._url(),
                     {
-                        "token_user": self.token,
                         "name": "Sasha",
                         "character_type": "human",
                         "variants_count": "1",
@@ -1783,21 +1906,87 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
                     format="multipart",
                     **self.generation_headers(),
                 )
+                self.assertEqual(response.status_code, 202, response.content)
+                job = self.execute_generation_job(
+                    response.json()["generation_job"]["job_id"]
+                )
         finally:
             providers_module.get_image_provider = original
             gs.get_image_provider = original_gs
 
-        # When generation fails, the whole create flow is rolled back: 400 + the
-        # provider's error_code surfaced in the body, and no orphaned character
-        # left behind to clutter the user's character list.
-        self.assertEqual(response.status_code, 400, response.content)
-        body = response.json()
-        self.assertEqual(body["error_code"], "MODEL_DOES_NOT_SUPPORT_IMAGE_INPUT")
-        # No character should have been persisted for this project.
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error_code, "MODEL_DOES_NOT_SUPPORT_IMAGE_INPUT")
+        # The accepted character remains available so the failed job can be
+        # inspected/retried by the durable worker flow.
         from w_craft_back.character_studio.models import StudioCharacter
 
-        self.assertFalse(
+        self.assertTrue(
             StudioCharacter.objects.filter(project=self.project).exists()
+        )
+
+    def test_failed_reference_job_replay_keeps_accepted_character(self):
+        from w_craft_back.character_studio.models import StudioCharacter
+        from w_craft_back.character_studio.services import (
+            generation_service as generation_module,
+        )
+        from w_craft_back.character_studio.services import (
+            providers as providers_module,
+        )
+
+        def force_gemini(_name="mock", provider_snapshot=None):
+            return providers_module.GeminiProvider()
+
+        idempotency_key = "failed-reference-replay"
+        request_data = {
+            "name": "Sasha",
+            "character_type": "human",
+            "variants_count": "1",
+        }
+        original_provider = providers_module.get_image_provider
+        original_generation_provider = generation_module.get_image_provider
+        providers_module.get_image_provider = force_gemini
+        generation_module.get_image_provider = force_gemini
+        try:
+            with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+                first_response = self.client.post(
+                    self._url(),
+                    {**request_data, "reference_image": self._png()},
+                    format="multipart",
+                    HTTP_IDEMPOTENCY_KEY=idempotency_key,
+                )
+                self.assertEqual(first_response.status_code, 202)
+                first_body = first_response.json()
+                job = self.execute_generation_job(
+                    first_body["generation_job"]["job_id"]
+                )
+                replay_response = self.client.post(
+                    self._url(),
+                    {**request_data, "reference_image": self._png()},
+                    format="multipart",
+                    HTTP_IDEMPOTENCY_KEY=idempotency_key,
+                )
+        finally:
+            providers_module.get_image_provider = original_provider
+            generation_module.get_image_provider = original_generation_provider
+
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(replay_response.status_code, 400)
+        self.assertEqual(
+            replay_response.json()["error_code"],
+            "MODEL_DOES_NOT_SUPPORT_IMAGE_INPUT",
+        )
+        self.assertTrue(
+            StudioCharacter.objects.filter(
+                character_id=first_body["character"]["character_id"],
+                project=self.project,
+            ).exists()
+        )
+        self.assertEqual(
+            CharacterGenerationJob.objects.filter(
+                character__project=self.project,
+                idempotency_key=idempotency_key,
+            ).count(),
+            1,
         )
 
 
@@ -1806,6 +1995,7 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
         self.character = self.create_character()
 
     def _references_url(self, suffix=""):
@@ -1817,10 +2007,17 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
     def _generate(self, reference_type):
         return self.client.post(
             self._references_url("/generate"),
-            {"token_user": self.token, "reference_type": reference_type},
+            {"reference_type": reference_type},
             format="json",
             **self.generation_headers(),
         )
+
+    def _generate_and_complete(self, reference_type):
+        response = self._generate(reference_type)
+        self.assertEqual(response.status_code, 202, response.content)
+        job = self.execute_generation_job(response.json()["job_id"])
+        self.assertEqual(job.status, "completed", job.error_message)
+        return response
 
     def test_full_body_requires_identity_asset(self):
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
@@ -1836,17 +2033,13 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
 
     def test_full_body_uses_existing_portrait_as_identity(self):
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
-            portrait_response = self._generate("portrait")
-            self.assertEqual(
-                portrait_response.status_code, 200, portrait_response.content,
-            )
+            portrait_response = self._generate_and_complete("portrait")
             portrait = CharacterAsset.objects.filter(
                 character=self.character, asset_type=CharacterAssetType.PORTRAIT,
             ).first()
             self.assertIsNotNone(portrait)
 
-            response = self._generate("full_body")
-        self.assertEqual(response.status_code, 200, response.content)
+            response = self._generate_and_complete("full_body")
         full_body = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.FULL_BODY,
         ).first()
@@ -1861,8 +2054,8 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
     def test_canonical_reference_image_wins_over_other_portraits(self):
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             # Generate two portraits; the older one will be promoted to canonical.
-            self._generate("portrait")
-            self._generate("portrait")
+            self._generate_and_complete("portrait")
+            self._generate_and_complete("portrait")
             older_portrait, newer_portrait = list(
                 CharacterAsset.objects.filter(
                     character=self.character, asset_type=CharacterAssetType.PORTRAIT,
@@ -1905,8 +2098,7 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
                 status=CharacterAssetStatus.READY,
             )
 
-            response = self._generate("full_body")
-        self.assertEqual(response.status_code, 200, response.content)
+            response = self._generate_and_complete("full_body")
         full_body = CharacterAsset.objects.filter(
             character=self.character, asset_type=CharacterAssetType.FULL_BODY,
         ).first()
@@ -1919,8 +2111,7 @@ class IdentityAnchoredReferenceGenerationTests(CharacterStudioTestCase):
         # Portrait IS the identity source — must not require one to already exist
         # and must go through the text-only pipeline (job_type=initial_variants).
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
-            response = self._generate("portrait")
-        self.assertEqual(response.status_code, 200, response.content)
+            response = self._generate_and_complete("portrait")
         from w_craft_back.character_studio.models import CharacterGenerationJob
 
         job = CharacterGenerationJob.objects.filter(
@@ -2025,6 +2216,48 @@ class IdentityAnchoredEditTests(CharacterStudioTestCase):
         # IS the identity source.
         self.assertIsNone(portrait.metadata.get("source_identity_asset_id"))
 
+    def test_portrait_edit_forwards_updated_age_to_identity_prompt(self):
+        with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            initial_job = self._edit("portrait", "face")
+            variant = initial_job.variants.first()
+            CharacterService().apply_variant(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                variant.variant_id,
+                {"apply_as": "current_reference", "image_type": "portrait"},
+            )
+            CharacterService().update_character(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                {"age": 35},
+            )
+            job = CharacterGenerationService().generate_edit_variants(
+                self.user_key,
+                self.project.id,
+                self.character.character_id,
+                {
+                    "region": "face",
+                    "image_type": "portrait",
+                    "variant_count": 1,
+                    "preserve": {"identity": True},
+                    "controls": {
+                        "age": 35,
+                        "changed_fields": ["age"],
+                        "previous_values": {"age": 17},
+                        "new_values": {"age": 35},
+                    },
+                    "changed_fields": ["age"],
+                    "previous_values": {"age": 17},
+                    "new_values": {"age": 35},
+                },
+            )
+
+        self.assertEqual(job.status, "completed")
+        self.assertIn("Change age from 17 to 35", job.compiled_prompt)
+        self.assertNotIn("Preserve the same age presentation", job.compiled_prompt)
+
 
 # ---------------------------------------------------------------------------
 # 3D model stage — parametric editor state (GET/PUT /model3d)
@@ -2036,6 +2269,7 @@ class Model3DStageTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
         self.character = self.create_character()
 
     def _url(self):
@@ -2047,8 +2281,9 @@ class Model3DStageTests(CharacterStudioTestCase):
     def _put(self, params, token=None):
         return self.client.put(
             self._url(),
-            {"token_user": token or self.token, "params": params},
+            {"params": params},
             format="json",
+            HTTP_X_USER_TOKEN=token or self.token,
         )
 
     def test_get_returns_empty_params_by_default(self):
@@ -2155,9 +2390,8 @@ class Model3DStageTests(CharacterStudioTestCase):
     def test_foreign_user_cannot_read_or_write(self):
         intruder = User.objects.create_user(username="intruder", password="x")
         intruder_key = UserKey.objects.create(user=intruder)
-        get_response = self.client.get(
-            self._url(), HTTP_X_USER_TOKEN=str(intruder_key.key),
-        )
+        self.client.credentials(HTTP_X_USER_TOKEN=str(intruder_key.key))
+        get_response = self.client.get(self._url())
         self.assertGreaterEqual(get_response.status_code, 400)
         put_response = self._put(
             {"torso": {"chestWidth": 1}}, token=str(intruder_key.key),
@@ -2175,6 +2409,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
         super().setUp()
         self.client = APIClient()
         self.token = str(self.user_key.key)
+        self.client.credentials(HTTP_X_USER_TOKEN=self.token)
         self.character = self.create_character()
 
     def _url(self):
@@ -2185,7 +2420,8 @@ class Model3DAutofitTests(CharacterStudioTestCase):
 
     def _post(self, token=None):
         return self.client.post(
-            self._url(), {"token_user": token or self.token}, format="json",
+            self._url(), {}, format="json",
+            HTTP_X_USER_TOKEN=token or self.token,
         )
 
     def _create_portrait(self, media_root, size=64):
@@ -2912,6 +3148,7 @@ class Model3DAutofitTests(CharacterStudioTestCase):
     def test_foreign_user_token_rejected(self):
         intruder = User.objects.create_user(username="intruder", password="x")
         intruder_key = UserKey.objects.create(user=intruder)
+        self.client.credentials(HTTP_X_USER_TOKEN=str(intruder_key.key))
         response = self._post(token=str(intruder_key.key))
         self.assertGreaterEqual(response.status_code, 400)
 

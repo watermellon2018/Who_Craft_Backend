@@ -296,20 +296,16 @@ def _character_authored_params(character):
 
     hair_length = str(getattr(appearance, "hair_length", "") or "").lower()
     if not hair_length:
-        lengths = ("bald", "very_long", "long", "medium", "short")
+        lengths = ("bald", "long", "medium", "short")
         hair_length = next(
             (value for value in lengths if value.replace("_", " ") in text),
             "",
         )
     length_profile = {
         "bald": ("none", 0.0),
-        "buzz": ("default", 0.05),
         "short": ("default", 0.2),
-        "bob": ("bob", 0.45),
         "medium": ("bob", 0.6),
-        "shoulder_length": ("long", 0.72),
         "long": ("long", 0.9),
-        "very_long": ("long", 1.0),
     }.get(hair_length)
     if length_profile:
         hair = params.setdefault("hair", {})

@@ -1,7 +1,7 @@
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 
-from w_craft_back.auth.models import UserKey
 from w_craft_back.movie.properties.models import Genre, Audience
 
 
@@ -12,21 +12,22 @@ class ProjectStatus(models.TextChoices):
     ARCHIVED = "archived", "В архиве"
 
 
+class ProjectFormat(models.TextChoices):
+    SHORT_FILM = "short_film", "Короткометражный фильм"
+    FEATURE_FILM = "feature_film", "Полнометражный фильм"
+    SERIES = "series", "Сериал"
+    CLIP = "clip", "Клип"
+    COMMERCIAL = "commercial", "Реклама"
+    OTHER = "other", "Другое"
+
+
 class Project(models.Model):
-    # Legacy creator attribution. It is intentionally NOT an ownership signal.
-    user = models.ForeignKey(
-        UserKey,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
     title = models.CharField(max_length=255)
-    image = models.ImageField(upload_to='project/poster/', blank=True, default='')
-    genre = models.ManyToManyField(Genre)
-    format = models.CharField(max_length=255)
-    audience = models.ManyToManyField(Audience)
-    annot = models.TextField()
-    desc = models.TextField()
+    genres = models.ManyToManyField(Genre)
+    format = models.CharField(max_length=32, choices=ProjectFormat.choices)
+    audiences = models.ManyToManyField(Audience)
+    annotation = models.TextField()
+    synopsis = models.TextField()
 
     # Dashboard fields.
     owner = models.ForeignKey(
@@ -35,7 +36,7 @@ class Project(models.Model):
         related_name="owned_projects",
     )
     slug = models.SlugField(max_length=255, blank=True, default="")
-    description = models.TextField(blank=True, default="")
+    summary = models.TextField(blank=True, default="")
     cover_image = models.ImageField(
         upload_to="projects/covers/", null=True, blank=True
     )
@@ -46,6 +47,13 @@ class Project(models.Model):
     )
     is_favorite = models.BooleanField(default=False)
     generation_settings = models.JSONField(default=dict, blank=True)
+    credit_budget_limit = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
     archived_at = models.DateTimeField(null=True, blank=True)
@@ -57,6 +65,19 @@ class Project(models.Model):
             models.Index(fields=["owner", "updated_at"]),
             models.Index(fields=["status"]),
             models.Index(fields=["slug"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(format__in=ProjectFormat.values),
+                name="chk_project_format_canonical",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(credit_budget_limit__isnull=True)
+                    | models.Q(credit_budget_limit__gte=0)
+                ),
+                name="project_credit_budget_nonnegative",
+            ),
         ]
 
     def __str__(self):

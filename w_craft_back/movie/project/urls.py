@@ -78,7 +78,7 @@ urlpatterns = [
     path('<int:project_id>/team/invitations/', ProjectInvitationsView.as_view(), name='project-team-invitations'),
     path('<int:project_id>/team/invitations/<int:invitation_id>/', ProjectInvitationCancelView.as_view(), name='project-team-invitation-cancel'),
 
-    # Poster generation page (/create-project/gen-poster).
+    # Poster generation page (/projects/:projectId/poster).
     path('<int:project_id>/poster/', ProjectPosterView.as_view(), name='project-poster'),
     path('<int:project_id>/poster/generate/', ProjectPosterGenerateView.as_view(), name='project-poster-generate'),
     path(

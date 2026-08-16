@@ -62,26 +62,22 @@ class Command(BaseCommand):
             if deleted:
                 self.stdout.write(f"Deleted {deleted} existing demo records.")
 
-        legacy_userkey, _ = UserKey.objects.get_or_create(user=user)
+        user_key, _ = UserKey.objects.get_or_create(user=user)
 
         project = Project.objects.filter(title=PROJECT_TITLE, owner=user).first()
         if project is None:
             project = Project.objects.create(
-                user=legacy_userkey,
                 owner=user,
                 title=PROJECT_TITLE,
-                description=(
-                    "Детектив в мире будущего раскрывает заговор, способный изменить"
-                    " судьбу всего человечества. Неон, дождь и тени корпораций."
-                ),
-                desc=(
+                summary="Детективный киберпанк о заговоре в городе будущего.",
+                synopsis=(
                     "Детектив в мире будущего раскрывает заговор, способный изменить"
                     " судьбу всего человечества. Неон, дождь и тени корпораций."
                 ),
                 status=ProjectStatus.IN_PROGRESS,
                 is_favorite=True,
-                format="full-movie",
-                annot="Demo project for dashboard.",
+                format="feature_film",
+                annotation="Demo project for dashboard.",
             )
             self.stdout.write(f"Created project #{project.id} '{project.title}'.")
         else:
@@ -120,7 +116,7 @@ class Command(BaseCommand):
             for name, role, desc in char_specs:
                 StudioCharacter.objects.create(
                     project=project,
-                    user=legacy_userkey,
+                    user=user_key,
                     name=name,
                     role=role,
                     short_description=desc,

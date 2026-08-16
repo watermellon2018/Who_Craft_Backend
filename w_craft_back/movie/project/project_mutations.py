@@ -7,7 +7,6 @@ lookups for writes.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -39,9 +38,6 @@ from w_craft_back.storage_gateway import (
     store_project_upload,
 )
 
-logger = logging.getLogger(__name__)
-
-
 class ProjectMutationForbidden(Exception):
     """The actor lacks the requested project action."""
 
@@ -62,7 +58,7 @@ def get_project_for_action(
     lock: bool = False,
 ) -> Project:
     """Return a project only when ``actor`` may perform ``action``."""
-    queryset = Project.objects.select_related("owner", "user")
+    queryset = Project.objects.select_related("owner")
     if lock:
         queryset = queryset.select_for_update(of=("self",))
     project = queryset.get(pk=project_id)
@@ -96,21 +92,6 @@ def _replace_tags(project: Project, names: Sequence[str]) -> None:
     )
 
 
-def _delete_file_after_commit(file_field) -> None:
-    name = getattr(file_field, "name", "")
-    storage = getattr(file_field, "storage", None)
-    if not name or storage is None:
-        return
-
-    def delete_old_file() -> None:
-        try:
-            storage.delete(name)
-        except Exception:  # pragma: no cover - storage race/failure
-            logger.warning("Failed to delete replaced project poster", exc_info=True)
-
-    transaction.on_commit(delete_old_file)
-
-
 @transaction.atomic
 def update_project_settings(
     *,
@@ -135,7 +116,6 @@ def update_project_settings(
 
     for field in (
         "title",
-        "description",
         "status",
         "is_favorite",
         "generation_settings",
@@ -143,13 +123,13 @@ def update_project_settings(
         if field in data:
             setattr(project, field, data[field])
     if "description" in data:
-        project.desc = data["description"]
+        project.summary = data["description"]
     if "format" in data:
         project.format = data["format"] or ""
     if "annotation" in data:
-        project.annot = data["annotation"] or ""
+        project.annotation = data["annotation"] or ""
     if "synopsis" in data:
-        project.desc = data["synopsis"] or ""
+        project.synopsis = data["synopsis"] or ""
 
     if "status" in data:
         from django.utils import timezone
@@ -163,21 +143,19 @@ def update_project_settings(
             project.archived_at = None
 
     if poster_supplied:
-        old_poster = project.image
         if poster_file is None:
-            project.image = ""
+            project.cover_image = ""
         else:
-            project.image.save(poster_file.name, poster_file, save=False)
-        _delete_file_after_commit(old_poster)
+            project.cover_image.save(poster_file.name, poster_file, save=False)
 
     project.save()
 
     if "tags" in data:
         _replace_tags(project, data["tags"])
     if "genre" in data:
-        project.genre.set(genres or [])
+        project.genres.set(genres or [])
     if "audience" in data:
-        project.audience.set(audiences or [])
+        project.audiences.set(audiences or [])
 
     new_status = data.get("status")
     status_changed = new_status is not None and new_status != previous_status

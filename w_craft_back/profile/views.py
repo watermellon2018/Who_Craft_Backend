@@ -252,15 +252,107 @@ class ImageModelView(APIView):
     parser_classes = [JSONParser, FormParser]
 
     def get(self, request):
+        from types import SimpleNamespace
+
+        from w_craft_back.auth.models import UserKey
+        from w_craft_back.character_studio.services.errors import (
+            CharacterStudioError,
+        )
+        from w_craft_back.character_studio.services.generation_lifecycle import (
+            _legacy_model_spec,
+            _provider_preference,
+            resolve_character_provider,
+        )
+        from w_craft_back.movie.project import policy
+        from w_craft_back.movie.project.models import Project
+        from w_craft_back.services.image_generation import (
+            deserialize_model_spec,
+            list_available_models,
+            model_catalog_row,
+            resolve_model,
+        )
+        from w_craft_back.services.image_generation.errors import (
+            CODE_NOT_CONFIGURED,
+        )
+
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         profile = _get_or_create_profile(user)
-        return Response(self._serialize(profile))
+        raw_project_id = request.query_params.get('project_id')
+        if raw_project_id is None:
+            return Response(self._serialize(profile))
+
+        try:
+            project_id = int(str(raw_project_id).strip())
+        except (TypeError, ValueError):
+            project_id = 0
+        if project_id <= 0:
+            return Response(
+                {
+                    'detail': 'validation error',
+                    'errors': {'project_id': ['must be a positive integer']},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        project = Project.objects.filter(pk=project_id).first()
+        if project is None:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        if not policy.can_view(user, project):
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        actor = UserKey.objects.filter(user=user).first()
+        if actor is None:
+            actor = SimpleNamespace(user=user)
+        requested_key, requested_source = _provider_preference(
+            project,
+            actor,
+            {},
+        )
+        try:
+            selection = resolve_character_provider(
+                project=project,
+                actor=actor,
+                request_payload={},
+                provider_operation='generate',
+            )
+        except CharacterStudioError as exc:
+            if exc.error_code != CODE_NOT_CONFIGURED:
+                return Response(
+                    {'detail': exc.message, 'code': exc.error_code},
+                    status=exc.status_code,
+                )
+            normalized = (requested_key or '').lower()
+            if normalized in {'mock', 'gemini', 'google', 'imagen'}:
+                current = 'mock' if normalized == 'mock' else 'gemini'
+                spec = _legacy_model_spec(current)
+            else:
+                spec = resolve_model(requested_key)
+                current = spec.key
+            source = requested_source
+            configured = False
+        else:
+            spec = deserialize_model_spec(selection.snapshot['spec'])
+            current = selection.key
+            source = selection.source
+            configured = True
+
+        available = list_available_models()
+        if not any(row['key'] == current for row in available):
+            selected_row = model_catalog_row(spec)
+            selected_row['configured'] = configured
+            available.append(selected_row)
+        return Response({
+            'current': current,
+            'source': source,
+            'configured': configured,
+            'stored': profile.image_generation_model or None,
+            'available': available,
+        })
 
     def patch(self, request):
-        from w_craft_back.services.image_generation import MODEL_REGISTRY
-        from w_craft_back.services.image_generation.errors import CODE_MODEL_UNKNOWN
+        from w_craft_back.services.image_generation import resolve_model
+        from w_craft_back.services.image_generation.errors import ImageProviderError
 
         user = _get_user_from_request(request)
         if user is None:
@@ -284,12 +376,38 @@ class ImageModelView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             key = raw.strip()
-            if key not in MODEL_REGISTRY:
+            try:
+                spec = resolve_model(key)
+            except ImageProviderError as exc:
                 return Response(
                     {
-                        'detail': 'unknown image model',
-                        'code': CODE_MODEL_UNKNOWN,
+                        'detail': exc.message,
+                        'code': exc.code,
                         'field': 'image_generation_model',
+                    },
+                    status=exc.http_status,
+                )
+            if not spec.supports_generate:
+                return Response(
+                    {
+                        'detail': 'image model cannot generate supported images',
+                        'code': 'IMAGE_PROVIDER_GENERATE_NOT_SUPPORTED',
+                        'field': 'image_generation_model',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            max_length = UserProfile._meta.get_field(
+                'image_generation_model'
+            ).max_length
+            if max_length and len(key) > max_length:
+                return Response(
+                    {
+                        'detail': 'image model key is too long',
+                        'errors': {
+                            'image_generation_model': [
+                                f'must be at most {max_length} characters'
+                            ]
+                        },
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )

@@ -90,7 +90,8 @@ def generate_image_via_gemini(
     *,
     poster_format: Optional[str] = None,
     timeout_seconds: float = 120,
-) -> bytes:
+    return_usage: bool = False,
+) -> bytes | tuple[bytes, dict[str, Any]]:
     """Call Gemini/Imagen and return PNG bytes for one generated image.
 
     Raises ``GeminiImageError`` on any provider failure; the caller in
@@ -191,7 +192,11 @@ def generate_image_via_gemini(
             kind="bad_response",
         )
 
-    return _decode_provider_image(b64)
+    image = _decode_provider_image(b64)
+    if return_usage:
+        usage = data.get("usageMetadata") or data.get("usage_metadata") or {}
+        return image, usage if isinstance(usage, dict) else {}
+    return image
 
 
 def edit_image_via_gemini(
@@ -200,7 +205,8 @@ def edit_image_via_gemini(
     *,
     mime_type: str = "image/png",
     timeout_seconds: float = 120,
-) -> bytes:
+    return_usage: bool = False,
+) -> bytes | tuple[bytes, dict[str, Any]]:
     """Edit ``image_bytes`` according to ``instruction`` and return new PNG bytes.
 
     Imagen's ``:predict`` endpoint is text-to-image only. For image-in /
@@ -300,7 +306,11 @@ def edit_image_via_gemini(
         for part in parts:
             inline = part.get("inlineData") or part.get("inline_data")
             if inline and inline.get("data"):
-                return _decode_provider_image(inline["data"])
+                image = _decode_provider_image(inline["data"])
+                if return_usage:
+                    usage = data.get("usageMetadata") or data.get("usage_metadata") or {}
+                    return image, usage if isinstance(usage, dict) else {}
+                return image
 
     # No inline image in any candidate — likely a safety filter or the model
     # only returned text describing what it would do.

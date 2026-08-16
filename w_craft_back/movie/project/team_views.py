@@ -69,7 +69,7 @@ def _validation_error(serializer_errors):
 
 def _get_project_or_404(project_id) -> Project:
     return get_object_or_404(
-        Project.objects.select_related("owner", "user"), pk=project_id
+        Project.objects.select_related("owner"), pk=project_id
     )
 
 

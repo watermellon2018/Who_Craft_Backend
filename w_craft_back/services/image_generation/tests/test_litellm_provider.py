@@ -150,7 +150,11 @@ class GenerateTest(TestCase):
 
         def fake_image_generation(**kwargs):
             captured.update(kwargs)
-            return {"data": [{"b64_json": PNG_B64}]}
+            return {
+                "data": [{"b64_json": PNG_B64}],
+                "_hidden_params": {"response_cost": 0.04},
+                "usage": {"prompt_tokens": 12},
+            }
 
         _install_litellm_stub(image_generation=fake_image_generation)
 
@@ -163,6 +167,8 @@ class GenerateTest(TestCase):
         self.assertEqual(captured["n"], 1)
         self.assertEqual(captured["size"], "1024x1024")
         self.assertEqual(captured["response_format"], "b64_json")
+        self.assertEqual(provider.usage_snapshot()["costUsd"], "0.04")
+        self.assertEqual(provider.usage_snapshot()["promptTokens"], 12)
 
     def test_chat_mode_invokes_completion(self):
         captured: dict = {}

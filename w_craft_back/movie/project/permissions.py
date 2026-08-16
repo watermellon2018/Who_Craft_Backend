@@ -9,16 +9,10 @@ code.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from django.contrib.auth.models import User
 
 from w_craft_back.movie.project import policy
 from w_craft_back.movie.project.models import Project
-
-
-def user_is_project_owner(user: User, project: Project) -> bool:
-    return policy.is_owner(user, project)
 
 
 def user_has_project_access(user: User, project: Project) -> bool:
@@ -28,7 +22,3 @@ def user_has_project_access(user: User, project: Project) -> bool:
 def user_can_edit_project(user: User, project: Project) -> bool:
     """True for owner/admin/editor (anyone who may edit project content)."""
     return policy.can_edit(user, project)
-
-
-def user_role(user: Optional[User], project: Project) -> Optional[str]:
-    return policy.get_role(user, project)

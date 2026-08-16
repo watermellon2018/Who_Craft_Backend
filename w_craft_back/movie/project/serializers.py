@@ -11,14 +11,10 @@ from rest_framework import serializers
 
 from w_craft_back.character_studio.models import CharacterRole, StudioCharacter
 from w_craft_back.movie.project.dashboard_models import (
-    Location,
-    MusicTrack,
-    ProjectTag,
-    Scene,
     SceneStatus,
     SceneType,
 )
-from w_craft_back.movie.project.models import Project, ProjectStatus
+from w_craft_back.movie.project.models import ProjectFormat, ProjectStatus
 
 PROJECT_ANNOTATION_MAX_LENGTH = 800
 PROJECT_SYNOPSIS_MAX_LENGTH = 2000
@@ -27,21 +23,9 @@ PROJECT_SYNOPSIS_MAX_LENGTH = 2000
 # Project create / update
 # --------------------------------------------------------------------------- #
 
-# Format choices accepted on write paths. Stored as plain strings on Project.format
-# (the legacy column is a CharField), but validated here so the editor cannot push
-# arbitrary values.
-PROJECT_FORMAT_CHOICES = (
-    ("short_film", "Короткометражный фильм"),
-    ("feature_film", "Полнометражный фильм"),
-    ("series", "Сериал"),
-    ("clip", "Клип"),
-    ("commercial", "Реклама"),
-    ("other", "Другое"),
-    # Legacy values still present in some rows / older frontend builds.
-    ("full-movie", "Полнометражный фильм (legacy)"),
-    ("short-movie", "Короткометражка (legacy)"),
-    ("marketing", "Реклама (legacy)"),
-)
+# Format choices accepted on write paths. Stored as a plain string on
+# ``Project.format``, but validated here so the editor cannot push arbitrary values.
+PROJECT_FORMAT_CHOICES = ProjectFormat.choices
 
 PROJECT_TARGET_AUDIENCE_CHOICES = (
     ("all", "Все"),
@@ -71,22 +55,28 @@ def _audience_field():
 
 class ProjectGenerationSettingsSerializer(serializers.Serializer):
     image_generation_model = serializers.CharField(
-        max_length=100,
+        max_length=255,
         allow_blank=True,
         required=False,
     )
 
     def validate_image_generation_model(self, value):
-        from w_craft_back.services.image_generation import MODEL_REGISTRY
+        from w_craft_back.services.image_generation import (
+            ImageProviderError,
+            resolve_model,
+        )
 
         normalized = (value or "").strip()
         legacy = {"mock", "gemini", "google", "imagen"}
-        if (
-            normalized
-            and normalized not in MODEL_REGISTRY
-            and normalized.lower() not in legacy
-        ):
-            raise serializers.ValidationError("Unknown image generation model.")
+        if normalized and normalized.lower() not in legacy:
+            try:
+                spec = resolve_model(normalized)
+            except ImageProviderError as exc:
+                raise serializers.ValidationError(exc.message) from exc
+            if not spec.supports_generate:
+                raise serializers.ValidationError(
+                    "Selected image model does not support image generation."
+                )
         return normalized
 
 
@@ -110,7 +100,7 @@ class ProjectCreateSerializer(serializers.Serializer):
         default=dict,
     )
 
-    # Editor fields (legacy columns).
+    # Stable public editor fields mapped to canonical Project attributes.
     format = serializers.ChoiceField(
         choices=PROJECT_FORMAT_CHOICES, required=False, default="feature_film"
     )
@@ -286,32 +276,12 @@ class _SceneWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError("Character not found in this project")
 
 
-class SceneCreateSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=255)
-    description = serializers.CharField(allow_blank=True, required=False, default="")
-    script_text = serializers.CharField(allow_blank=True, required=False, default="")
-    location_id = serializers.IntegerField(required=False, allow_null=True)
-    order = serializers.IntegerField(required=False, min_value=0)
-
-
 class SceneWorkspaceCreateSerializer(_SceneWriteSerializer):
     title = serializers.CharField(max_length=255)
 
 
 class SceneWorkspaceUpdateSerializer(_SceneWriteSerializer):
     version = serializers.IntegerField(min_value=1, required=True)
-
-
-class MusicTrackCreateSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=255)
-    author = serializers.CharField(max_length=255, allow_blank=True, required=False, default="")
-    duration_seconds = serializers.IntegerField(required=False, min_value=0, default=0)
-    tags = serializers.ListField(
-        child=serializers.CharField(max_length=50),
-        required=False,
-        allow_empty=True,
-        default=list,
-    )
 
 
 class LocationCreateSerializer(serializers.Serializer):

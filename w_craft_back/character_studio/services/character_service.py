@@ -13,6 +13,7 @@ from w_craft_back.character_studio.models import (
     CharacterAssetStatus,
     CharacterAssetType,
     CharacterImageType,
+    HairLength,
     CharacterRole,
     CharacterStatus,
     CharacterType,
@@ -425,11 +426,45 @@ class CharacterService:
             variant = self.variants.get_for_character(character, variant_id)
         except Exception as exc:
             raise NotFoundError("Variant not found for character.") from exc
-        before = character_dict(character, include_related=True)
         asset = variant.asset
+        image_type = self._image_type_from_payload(payload, variant)
+        apply_as = payload.get("apply_as")
+        existing_revision = character.revisions.filter(
+            change_type=RevisionChangeType.APPLY_VARIANT,
+            source_variant=variant,
+        ).order_by("-revision_number").first()
+        active_image_matches = bool(
+            asset
+            and character.images.filter(
+                image_type=image_type,
+                is_active=True,
+                asset=asset,
+                generation_params__applied_variant_id=str(variant.variant_id),
+            ).exists()
+        )
+        if apply_as in ("current_reference", "canonical_reference"):
+            reference_matches = bool(
+                asset
+                and character.canonical_reference_image_id == asset.asset_id
+                and asset.is_canonical
+                and (
+                    asset.is_primary
+                    if apply_as == "current_reference"
+                    else not asset.is_primary
+                )
+            )
+        else:
+            reference_matches = bool(asset and not asset.is_primary)
+        if (
+            variant.applied
+            and existing_revision is not None
+            and active_image_matches
+            and reference_matches
+        ):
+            return existing_revision
+
+        before = character_dict(character, include_related=True)
         if asset:
-            image_type = self._image_type_from_payload(payload, variant)
-            apply_as = payload.get("apply_as")
             if apply_as == "current_reference":
                 asset.__class__.objects.filter(character=character).update(is_primary=False, is_canonical=False)
                 asset.is_primary = True
@@ -548,6 +583,11 @@ class CharacterService:
             value = payload[source]
             if value in (None, "") and source not in empty_ok:
                 continue
+            if source == "hair_length" and value not in HairLength.values:
+                raise ValidationError(
+                    "hair_length is invalid. Allowed values: "
+                    f"{', '.join(HairLength.values)}."
+                )
             if target == "height_cm":
                 # Coerce + clamp to a sane range; PositiveSmallIntegerField accepts 0–32767.
                 try:

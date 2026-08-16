@@ -20,12 +20,11 @@ class MusicAssetRole(models.TextChoices):
 class MusicAssetOrigin(models.TextChoices):
     GENERATED = "generated", "Generated"
     UPLOAD = "upload", "Uploaded"
-    LEGACY = "legacy", "Legacy track"
 
 
 class MusicAssetVerificationStatus(models.TextChoices):
     VERIFIED = "verified", "Verified"
-    LEGACY_UNVERIFIED = "legacy_unverified", "Legacy unverified"
+    PENDING = "pending", "Pending verification"
     MISSING = "missing", "Missing"
 
 
@@ -129,6 +128,16 @@ class MusicAsset(models.Model):
             models.Index(fields=["verification_status"]),
         ]
         constraints = [
+            models.CheckConstraint(
+                check=models.Q(origin__in=MusicAssetOrigin.values),
+                name="chk_music_asset_origin_canonical",
+            ),
+            models.CheckConstraint(
+                check=models.Q(
+                    verification_status__in=MusicAssetVerificationStatus.values
+                ),
+                name="chk_music_asset_verification_canonical",
+            ),
             models.CheckConstraint(
                 check=(
                     ~models.Q(
@@ -436,7 +445,7 @@ class MusicTrackVersion(models.Model):
             if self.track.project_id != self.asset.project_id:
                 errors["asset"] = "Version asset must belong to the track project."
             if self.asset.asset_role != MusicAssetRole.GENERATED:
-                errors["asset"] = "Track versions require generated/legacy audio."
+                errors["asset"] = "Track versions require generated audio."
         if self.reference_asset_id and self.track_id:
             if self.reference_asset.project_id != self.track.project_id:
                 errors["reference_asset"] = (

@@ -50,6 +50,7 @@ local_settings.py
 *.backup
 *.dump
 *.sql
+!scripts/feature_36_image_model_flexibility.sql
 *db*.json
 
 # PyCharm
@@ -67,4 +68,3 @@ local_settings.py
 
 # Windows
 Thumbs.db
-/w_craft_back/migrations/__init__.py

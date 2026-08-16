@@ -17,7 +17,6 @@ from w_craft_back.movie.poster.errors import (
     ProjectNotFound,
 )
 from w_craft_back.movie.poster.models import (
-    PosterGenerationJob,
     PosterJobStatus,
     PosterVariant,
 )
@@ -35,20 +34,14 @@ def _make_user(username: str) -> User:
 
 
 def _make_project(owner: User, title: str = 'My movie') -> Project:
-    """Create a project with the right legacy + new ownership wiring.
-
-    ``ProjectMember`` with role OWNER is what ``user_can_edit_project`` checks
-    when the legacy ``Project.user`` FK is null.
-    """
-    uk = UserKey.objects.get(user=owner)
+    """Create a project with its canonical owner membership."""
     project = Project.objects.create(
         owner=owner,
-        user=uk,
         title=title,
-        description='',
-        format='',
-        annot='',
-        desc='',
+        summary='',
+        format='other',
+        annotation='',
+        synopsis='',
     )
     ProjectMember.objects.create(
         project=project, user=owner, role=ProjectMemberRole.OWNER

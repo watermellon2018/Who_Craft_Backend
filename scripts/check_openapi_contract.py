@@ -21,16 +21,24 @@ def _integer_expression(node: ast.expr) -> int:
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
         return _integer_expression(node.left) * _integer_expression(node.right)
-    raise AssertionError("Contract constants must be integer literals or multiplications")
+    raise AssertionError(
+        "Contract constants must be integer literals or multiplications"
+    )
 
 
 def _integer_constant(relative_path: str, name: str) -> int:
     module_path = ROOT / relative_path
-    module = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+    module = ast.parse(
+        module_path.read_text(encoding="utf-8"),
+        filename=str(module_path),
+    )
     for statement in module.body:
         if not isinstance(statement, ast.Assign):
             continue
-        if any(isinstance(target, ast.Name) and target.id == name for target in statement.targets):
+        if any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in statement.targets
+        ):
             return _integer_expression(statement.value)
     raise AssertionError(f"Missing backend contract constant: {relative_path}:{name}")
 
@@ -59,24 +67,55 @@ def check_contract() -> None:
 
     tree_create = _schema(document, "CharacterTreeCreateRequest")
     assert "token_user" not in tree_create["properties"]
-    assert {"projectId", "name", "type"}.issubset(tree_create["required"])
+    assert {"id", "name", "type"}.issubset(tree_create["required"])
+    assert "projectId" not in tree_create["properties"]
+    assert set(tree_create["properties"]["type"]["enum"]) == {
+        "folder",
+        "character",
+    }
+    tree_node = _schema(document, "CharacterTreeNode")
+    assert "legacy_hero_id" not in tree_node["properties"]
 
     poster_prompt = _schema(document, "PosterGenerateRequest")["properties"]["prompt"]
     project = _schema(document, "ProjectMutationRequest")["properties"]
     assert poster_prompt["maxLength"] == constraints["posterPromptMaxLength"]
-    assert project["annotation"]["maxLength"] == constraints["projectAnnotationMaxLength"]
+    assert (
+        project["annotation"]["maxLength"]
+        == constraints["projectAnnotationMaxLength"]
+    )
     assert project["synopsis"]["maxLength"] == constraints["projectSynopsisMaxLength"]
 
     error = _schema(document, "ApiErrorEnvelope")
     assert {"error", "code", "detail"}.issubset(error["properties"])
 
     required_paths = {
-        "/api/character/create/",
+        "/api/projects/{projectId}/character-tree/",
+        "/api/projects/{projectId}/character-tree/nodes/",
+        "/api/projects/{projectId}/character-tree/nodes/{nodeId}/",
         "/api/projects/{projectId}/poster/generate/",
         "/api/projects/{projectId}/team/invitations/",
+        "/api/credits/project-budgets/",
+        "/api/credits/project-budgets/{projectId}/",
     }
     assert required_paths.issubset(document["paths"])
-    assert document["paths"]["/api/projects/{projectId}/"]["get"]["operationId"] == "getProject"
+    assert not any(path.startswith("/api/character/") for path in document["paths"])
+    assert (
+        document["paths"]["/api/projects/{projectId}/"]["get"]["operationId"]
+        == "getProject"
+    )
+    admin_operation = _schema(document, "CreditAdminOperationRequest")
+    assert set(admin_operation["properties"]) == {"action", "reason"}
+    assert set(admin_operation["properties"]["action"]["enum"]) == {
+        "freeze",
+        "unfreeze",
+    }
+    transfer = _schema(document, "CreditTransferRequest")
+    assert set(transfer["required"]) == {
+        "senderUsername",
+        "recipientUsername",
+        "amount",
+        "reason",
+    }
 
 
 if __name__ == "__main__":
