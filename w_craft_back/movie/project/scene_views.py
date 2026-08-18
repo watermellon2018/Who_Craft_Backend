@@ -28,7 +28,10 @@ from w_craft_back.movie.project.script_workspace import (
     scene_payload,
     scenes_queryset,
 )
-from w_craft_back.movie.project.serializers import SceneWorkspaceUpdateSerializer
+from w_craft_back.movie.project.serializers import (
+    SceneReorderSerializer,
+    SceneWorkspaceUpdateSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +238,56 @@ class SceneDetailView(_VersionedEntityView):
         ) as exc:
             return _mutation_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SceneReorderView(APIView):
+    """Atomically update the complete scene order and act placement."""
+
+    def patch(self, request, project_id):
+        user = _resolve_user(request)
+        if user is None:
+            return Response(
+                {"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        serializer = SceneReorderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "validation error", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            scenes = project_mutations.reorder_scenes(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project_id,
+                placements=serializer.validated_data["scenes"],
+            )
+        except (
+            ObjectDoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            project_mutations.VersionConflict,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
+
+        return Response(
+            {
+                "scenes": [
+                    {
+                        "id": scene.pk,
+                        "order": scene.order,
+                        "act": scene.act,
+                        "version": scene.version,
+                        "updatedAt": (
+                            scene.updated_at.isoformat() if scene.updated_at else ""
+                        ),
+                    }
+                    for scene in scenes
+                ]
+            }
+        )
 
 
 class LocationDetailView(_VersionedEntityView):

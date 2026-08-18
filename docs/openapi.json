@@ -1001,6 +1001,73 @@
         }
       }
     },
+    "/api/projects/{projectId}/scenes/reorder/": {
+      "patch": {
+        "operationId": "reorderProjectScenes",
+        "summary": "Atomically reorder all screenplay scenes",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["scenes"],
+                "properties": {
+                  "scenes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "order", "act", "version"],
+                      "properties": {
+                        "id": {"type": "integer", "minimum": 1},
+                        "order": {"type": "integer", "minimum": 1},
+                        "act": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "version": {"type": "integer", "minimum": 1}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The complete normalized scene order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["scenes"],
+                  "properties": {
+                    "scenes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "order", "act", "version", "updatedAt"],
+                        "properties": {
+                          "id": {"type": "integer"},
+                          "order": {"type": "integer"},
+                          "act": {"type": "integer"},
+                          "version": {"type": "integer"},
+                          "updatedAt": {"type": "string", "format": "date-time"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/api/projects/{projectId}/scenes/{sceneId}/references/": {
       "get": {
         "operationId": "getSceneReferences",
