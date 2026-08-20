@@ -21,6 +21,18 @@ def _openrouter_lyria_provider(*, model_name: str) -> AudioProvider:
     return OpenRouterLyriaProvider(model_name=model_name)
 
 
+def _elevenlabs_music_provider(*, model_name: str) -> AudioProvider:
+    from .elevenlabs_music import ElevenLabsMusicProvider
+
+    return ElevenLabsMusicProvider(model_name=model_name)
+
+
+def _minimax_music_provider(*, model_name: str) -> AudioProvider:
+    from .minimax_music import MiniMaxMusicProvider
+
+    return MiniMaxMusicProvider(model_name=model_name)
+
+
 def get_music_provider(
     provider_name: str | None = None,
     *,
@@ -41,7 +53,18 @@ def get_music_provider(
         return _google_lyria_provider(model_name=model_name)
     if name == "openrouter-lyria":
         return _openrouter_lyria_provider(model_name=model_name)
-    if name not in {"mock", "stability", "google-lyria", "openrouter-lyria"}:
+    if name == "elevenlabs-music-v2":
+        return _elevenlabs_music_provider(model_name=model_name)
+    if name == "minimax-music-3":
+        return _minimax_music_provider(model_name=model_name)
+    if name not in {
+        "mock",
+        "stability",
+        "google-lyria",
+        "openrouter-lyria",
+        "elevenlabs-music-v2",
+        "minimax-music-3",
+    }:
         raise MusicProviderError(
             "The selected music provider is not configured.",
             code="MUSIC_PROVIDER_NOT_CONFIGURED",

@@ -311,11 +311,27 @@ def _validate_intent(
             code="MUSIC_CAPABILITY_UNSUPPORTED",
             http_status=400,
         )
+    if "seed" in normalized_brief and not capabilities.supports_seed:
+        raise MusicLifecycleError(
+            "The selected provider does not support an explicit seed.",
+            code="MUSIC_CAPABILITY_UNSUPPORTED",
+            http_status=400,
+        )
     if mode == "song":
         language = normalized_brief["content"].get("lyricsLanguage")
         if language not in capabilities.lyrics_languages:
             raise MusicLifecycleError(
                 "The selected provider does not support this lyrics language.",
+                code="MUSIC_LYRICS_UNSUPPORTED",
+                http_status=400,
+            )
+        lyrics_chars = sum(
+            len(str(section.get("text") or ""))
+            for section in normalized_brief["content"].get("sections", [])
+        )
+        if lyrics_chars > capabilities.max_lyrics_chars:
+            raise MusicLifecycleError(
+                "Lyrics exceed the selected provider limit.",
                 code="MUSIC_LYRICS_UNSUPPORTED",
                 http_status=400,
             )
@@ -438,8 +454,14 @@ def enqueue_music_job(
             model_name=effective_model,
         )
         capabilities = resolved.model.capabilities
-        pricing = resolved.pricing(int(variant_count))
-        persisted_snapshot = resolved.snapshot(int(variant_count))
+        pricing = resolved.pricing(
+            int(variant_count),
+            duration_seconds=int(normalized["durationSeconds"]),
+        )
+        persisted_snapshot = resolved.snapshot(
+            int(variant_count),
+            duration_seconds=int(normalized["durationSeconds"]),
+        )
         # Preserve dependency-injected providers used by existing integrations/tests.
         if provider.name != effective_provider:
             pricing = provider.pricing(int(variant_count))

@@ -29,7 +29,14 @@ class CreditTransferSerializer(serializers.Serializer):
 
 class GenerationEstimateSerializer(serializers.Serializer):
     domain = serializers.ChoiceField(
-        choices=("character", "poster", "reference", "music", "model3d")
+        choices=(
+            "character",
+            "poster",
+            "reference",
+            "music",
+            "sound_effect",
+            "model3d",
+        )
     )
     operation = serializers.ChoiceField(
         choices=("generate", "edit", "reference"),
@@ -43,6 +50,13 @@ class GenerationEstimateSerializer(serializers.Serializer):
     )
     variantCount = serializers.IntegerField(min_value=1, max_value=100, default=1)
     promptLength = serializers.IntegerField(min_value=0, max_value=100000, default=0)
+    durationSeconds = serializers.FloatField(
+        min_value=0.5,
+        max_value=600,
+        required=False,
+        allow_null=True,
+        default=None,
+    )
     resolution = serializers.ChoiceField(
         choices=("512", "1K", "2K", "4K"),
         default="1K",

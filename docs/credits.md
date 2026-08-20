@@ -118,6 +118,16 @@ and failures after a provider result was received retain the fixed charge. Keep
 `MUSIC_STABILITY_COST_USD_PER_VARIANT` aligned with the provider tariff because
 an invalid or zero price blocks paid generation.
 
+ElevenLabs Music reserves `duration / 60 ×
+MUSIC_ELEVENLABS_COST_USD_PER_MINUTE` for one result. MiniMax Music uses its
+configured fixed per-generation amount and remains unavailable without explicit
+legacy paid-access confirmation. Sound Effects uses the independent
+`sound_effect` billing domain: fixed durations reserve the configured
+ElevenLabs per-minute rate, while Auto duration fails closed unless an operator
+sets a verified `SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD`. Synchronous paid audio
+providers do not expose idempotency or provider-side cancellation; an ambiguous
+POST outcome therefore captures the estimate and cannot be blindly retried.
+
 Google Lyria model definitions can expose a direct Google route and an
 OpenRouter route as separate price snapshots. At the documented launch prices,
 direct Google reserves `$0.08` for Lyria 3 Pro and `$0.04` for Lyria 3 Clip;

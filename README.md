@@ -26,7 +26,8 @@ Start generation in a separate process:
 python manage.py run_generation_worker --queue all
 ```
 
-Supported queue names are `character`, `poster`, `music`, and `reference`.
+Supported queue names are `character`, `poster`, `music`, `sound_effect`, and
+`reference`.
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
 
@@ -128,6 +129,17 @@ Music Studio has pluggable provider modes:
   direct route is unavailable before submission. Adapters never retry a
   possibly paid request through the other route after a timeout or malformed
   response.
+- `elevenlabs-music-v2` calls ElevenLabs Music v2 directly. It supports one
+  instrumental or structured-lyrics result, uses the current five-minute Craft
+  product limit, and reserves the configured per-minute price. Configure
+  `ELEVENLABS_API_KEY`; no account secret is required at build time.
+- `minimax-music-3` is prepared for grandfathered MiniMax accounts only. It is
+  unavailable unless both `MINIMAX_API_KEY` and
+  `MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED=true` are present. New MiniMax
+  accounts cannot currently enable the Music API, and Craft never substitutes
+  a free or unofficial model. MiniMax has no dedicated duration parameter, so
+  Craft sends the selected duration as an approximate prompt instruction; the
+  provider controls the final duration.
 
 Set `MUSIC_DEFAULT_AUDIO_MODEL` to the catalog key used when the client does not
 choose a model. `MUSIC_GEMINI_API_BASE_URL` and
@@ -159,6 +171,18 @@ also charged if local validation or storage later fails.
 never enqueues an unpriced call. The compiled musical brief and bounded scene
 summary are sent to Stability AI; raw scripts and API keys are not written to
 provider or billing metadata.
+
+Sound Effects is a separate project domain at
+`/api/projects/{projectId}/sound-effects/`; generated effects are never stored as
+`MusicTrack` rows. ElevenLabs Sound Effects v2 accepts a text description up to
+450 characters, optional 0.5-30 second duration, loop mode and prompt influence.
+Its durable jobs run on the `sound_effect` queue and store verified MP3 files in
+private project media. Explicit duration uses the configured `$0.12/minute`
+rate. Auto duration is disabled until
+`SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD` is set to an account-verified estimate,
+because ElevenLabs publishes plan credits for Auto without a public USD
+conversion. Before production use, disable third-party SFX sublicensing in the
+ElevenLabs account and perform a credentialed smoke test.
 
 The credits wallet and generation settlement flow are described in
 [`docs/credits.md`](docs/credits.md). Paid generation first reserves the

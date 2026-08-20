@@ -98,3 +98,14 @@ class AudioModelRegistryTests(SimpleTestCase):
 
         self.assertEqual(restored.model.key, "lyria-3-clip")
         self.assertEqual(restored.route.backend_name, "openrouter-lyria")
+
+    @override_settings(ELEVENLABS_API_KEY="key")
+    def test_elevenlabs_uses_duration_based_immutable_pricing(self):
+        resolved = resolve_audio_model("elevenlabs-music-v2")
+
+        pricing = resolved.pricing(1, duration_seconds=30)
+        snapshot = resolved.snapshot(1, duration_seconds=30)
+
+        self.assertEqual(pricing.estimated_cost, Decimal("0.075"))
+        self.assertEqual(pricing.snapshot["billingUnit"], "minute")
+        self.assertEqual(snapshot["pricing"]["durationSeconds"], 30)

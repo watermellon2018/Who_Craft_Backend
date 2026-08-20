@@ -150,6 +150,36 @@ class MusicLifecycleTests(TestCase):
             )
         self.assertEqual(conflict.exception.code, "MUSIC_IDEMPOTENCY_CONFLICT")
 
+    @override_settings(ELEVENLABS_API_KEY="test-elevenlabs-key")
+    def test_elevenlabs_enqueue_snapshots_duration_based_price(self):
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        brief = instrumental_brief("ElevenLabs cue")
+        brief["durationSeconds"] = 30
+
+        job, replay = enqueue_music_job(
+            project=self.project,
+            actor=self.owner,
+            brief=brief,
+            variant_count=1,
+            idempotency_key="music:elevenlabs-price",
+            model_key="elevenlabs-music-v2",
+        )
+
+        self.assertFalse(replay)
+        self.assertEqual(job.provider, "elevenlabs-music-v2")
+        self.assertEqual(job.provider_snapshot["estimatedCostUsd"], "0.075")
+        self.assertEqual(
+            job.provider_snapshot["pricing"]["durationSeconds"],
+            30,
+        )
+        self.assertEqual(
+            job.provider_snapshot["pricing"]["billingUnit"],
+            "minute",
+        )
+
     @override_settings(
         GEMINI_API_KEY="test-google-key",
         OPENROUTER_API_KEY="test-openrouter-key",

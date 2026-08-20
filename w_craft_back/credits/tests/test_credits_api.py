@@ -482,6 +482,76 @@ class CreditsApiTest(TestCase):
         self.assertEqual(response.json()["estimatedCost"], "0.0844")
 
     @override_settings(
+        ELEVENLABS_API_KEY="eleven-key",
+        MUSIC_ELEVENLABS_COST_USD_PER_MINUTE="0.15",
+    )
+    def test_music_estimate_prices_elevenlabs_by_requested_duration(self):
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "music",
+                "modelKey": "elevenlabs-music-v2",
+                "variantCount": 1,
+                "durationSeconds": 90,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()["provider"], "elevenlabs-music-v2")
+        self.assertEqual(response.json()["estimatedCost"], "0.225")
+
+    @override_settings(
+        ELEVENLABS_API_KEY="eleven-key",
+        SOUND_EFFECTS_ELEVENLABS_COST_USD_PER_MINUTE="0.12",
+    )
+    def test_sound_effect_estimate_uses_explicit_duration_rate(self):
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "sound_effect",
+                "modelKey": "elevenlabs-sound-effects-v2",
+                "durationSeconds": 15,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()["provider"], "elevenlabs-sfx")
+        self.assertEqual(response.json()["estimatedCost"], "0.03")
+
+    @override_settings(
+        ELEVENLABS_API_KEY="eleven-key",
+        SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD="",
+    )
+    def test_sound_effect_auto_duration_fails_closed_without_usd_estimate(self):
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "sound_effect",
+                "modelKey": "elevenlabs-sound-effects-v2",
+                "durationSeconds": None,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 503, response.json())
+        self.assertEqual(response.json()["code"], "SOUND_EFFECT_PRICE_UNAVAILABLE")
+
+    @override_settings(
         CREDITS_DEMO_TOP_UP_ENABLED=True,
         CREDITS_TRANSFER_MAX_AMOUNT="10.00",
         CREDITS_TRANSFER_DAILY_LIMIT="15.00",

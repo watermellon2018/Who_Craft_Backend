@@ -57,6 +57,10 @@ urlpatterns = [
         '<int:project_id>/music/',
         include('w_craft_back.movie.music.urls'),
     ),
+    path(
+        '<int:project_id>/sound-effects/',
+        include('w_craft_back.movie.sound_effects.urls'),
+    ),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
     path(

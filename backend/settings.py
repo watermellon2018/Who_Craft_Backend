@@ -334,6 +334,8 @@ MUSIC_DEFAULT_AUDIO_MODEL = os.getenv(
 ).strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "").strip()
 MUSIC_GEMINI_API_BASE_URL = os.getenv(
     "MUSIC_GEMINI_API_BASE_URL",
     "https://generativelanguage.googleapis.com",
@@ -361,6 +363,42 @@ MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS = min(
         float(os.getenv("MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS", "300")),
     ),
 )
+MUSIC_ELEVENLABS_API_BASE_URL = os.getenv(
+    "MUSIC_ELEVENLABS_API_BASE_URL", "https://api.elevenlabs.io"
+).rstrip("/")
+MUSIC_ELEVENLABS_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_ELEVENLABS_TIMEOUT_SECONDS", "180")
+)
+MUSIC_ELEVENLABS_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_ELEVENLABS_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_ELEVENLABS_COST_USD_PER_MINUTE = os.getenv(
+    "MUSIC_ELEVENLABS_COST_USD_PER_MINUTE", "0.15"
+).strip()
+MUSIC_MINIMAX_API_BASE_URL = os.getenv(
+    "MUSIC_MINIMAX_API_BASE_URL", "https://api.minimax.io"
+).rstrip("/")
+MUSIC_MINIMAX_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_MINIMAX_TIMEOUT_SECONDS", "180")
+)
+MUSIC_MINIMAX_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_MINIMAX_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_MINIMAX_COST_USD_PER_GENERATION = os.getenv(
+    "MUSIC_MINIMAX_COST_USD_PER_GENERATION", "0.15"
+).strip()
+MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED = (
+    os.getenv("MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
 MUSIC_JOB_LEASE_SECONDS = max(
     300,
     int(os.getenv("MUSIC_JOB_LEASE_SECONDS", "300")),
@@ -368,6 +406,8 @@ MUSIC_JOB_LEASE_SECONDS = max(
         max(
             MUSIC_GEMINI_TIMEOUT_SECONDS,
             MUSIC_OPENROUTER_TIMEOUT_SECONDS,
+            MUSIC_ELEVENLABS_TIMEOUT_SECONDS,
+            MUSIC_MINIMAX_TIMEOUT_SECONDS,
         )
         + 120
     ),
@@ -396,6 +436,40 @@ MUSIC_STABILITY_MAX_POLL_SECONDS = float(
 MUSIC_STABILITY_COST_USD_PER_VARIANT = os.getenv(
     "MUSIC_STABILITY_COST_USD_PER_VARIANT", "0.26"
 ).strip()
+
+# Sound Effects is a separate project domain even though it shares the same
+# ElevenLabs credential and private audio storage primitives with Music Studio.
+SOUND_EFFECTS_ELEVENLABS_API_BASE_URL = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_API_BASE_URL", "https://api.elevenlabs.io"
+).rstrip("/")
+SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS = float(
+    os.getenv("SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS", "90")
+)
+SOUND_EFFECTS_ELEVENLABS_RESPONSE_DEADLINE_SECONDS = min(
+    300.0,
+    max(
+        1.0,
+        float(
+            os.getenv(
+                "SOUND_EFFECTS_ELEVENLABS_RESPONSE_DEADLINE_SECONDS", "120"
+            )
+        ),
+    ),
+)
+SOUND_EFFECTS_ELEVENLABS_COST_USD_PER_MINUTE = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_COST_USD_PER_MINUTE", "0.12"
+).strip()
+SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD", ""
+).strip()
+SOUND_EFFECTS_ELEVENLABS_OUTPUT_FORMAT = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128"
+).strip().lower()
+SOUND_EFFECTS_JOB_LEASE_SECONDS = max(
+    120,
+    int(os.getenv("SOUND_EFFECTS_JOB_LEASE_SECONDS", "240")),
+    int(SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS + 120),
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 

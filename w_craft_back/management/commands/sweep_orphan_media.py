@@ -18,6 +18,7 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.movie.poster.models import PosterVariant
 from w_craft_back.movie.music.models import MusicAsset
+from w_craft_back.movie.sound_effects.models import SoundEffectAsset
 from w_craft_back.movie.project.dashboard_models import (
     Location,
     MusicTrack,
@@ -74,6 +75,7 @@ def referenced_storage_keys(cutoff) -> set[str]:
     keys |= _file_names(Scene.objects.all(), "preview_image")
     keys |= _file_names(MusicTrack.objects.all(), "audio_file", "cover_image")
     keys |= _file_names(MusicAsset.objects.all(), "file")
+    keys |= _file_names(SoundEffectAsset.objects.all(), "file")
     keys |= _file_names(UserProfile.objects.all(), "avatar", "cover")
     for model in (CharacterAsset, CharacterImage):
         for value in model.objects.exclude(storage_path="").values_list(

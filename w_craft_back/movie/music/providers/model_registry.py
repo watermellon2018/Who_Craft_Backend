@@ -26,6 +26,7 @@ class AudioRouteSpec:
     unit_cost_usd: Decimal
     pricing_source: str
     cost_setting_name: str = ""
+    billing_unit: str = "generation"
     provider_list_unit_cost_usd: Decimal | None = None
     credit_purchase_fee_rate: Decimal | None = None
 
@@ -36,10 +37,16 @@ class AudioRouteSpec:
             getattr(settings, "MUSIC_ALLOW_MOCK", False)
         ):
             return False
-        return all(
-            bool(str(getattr(settings, setting_name, "") or "").strip())
-            for setting_name in self.required_settings
-        )
+        for setting_name in self.required_settings:
+            value = getattr(settings, setting_name, "")
+            configured = (
+                value
+                if isinstance(value, bool)
+                else bool(str(value or "").strip())
+            )
+            if not configured:
+                return False
+        return True
 
     def effective_unit_cost(self) -> Decimal:
         """Return a positive configured price, or the immutable catalog price."""
@@ -79,11 +86,27 @@ class ResolvedAudioModel:
     model: AudioModelSpec
     route: AudioRouteSpec
 
-    def pricing(self, variant_count: int) -> AudioProviderPricing:
+    def pricing(
+        self,
+        variant_count: int,
+        *,
+        duration_seconds: int | None = None,
+    ) -> AudioProviderPricing:
         """Build the authoritative enqueue-time price for this route."""
 
         count = int(variant_count)
         unit_cost = self.route.effective_unit_cost()
+        if self.route.billing_unit == "minute":
+            if duration_seconds is None or int(duration_seconds) <= 0:
+                raise MusicProviderError(
+                    "Duration is required to price the selected audio route.",
+                    code="GENERATION_PRICE_UNAVAILABLE",
+                    http_status=503,
+                    retryable=False,
+                )
+            quantity = Decimal(int(duration_seconds)) / Decimal(60)
+        else:
+            quantity = Decimal(1)
         snapshot = {
             "currency": "USD",
             "source": self.route.pricing_source,
@@ -92,9 +115,12 @@ class ResolvedAudioModel:
             "routeKey": self.route.key,
             "variantCount": count,
             "unitCostUsd": str(unit_cost),
+            "billingUnit": self.route.billing_unit,
             "markup": "0",
             "creditUsdRate": "1",
         }
+        if duration_seconds is not None:
+            snapshot["durationSeconds"] = int(duration_seconds)
         if self.route.provider_list_unit_cost_usd is not None:
             snapshot["providerListUnitCostUsd"] = str(
                 self.route.provider_list_unit_cost_usd
@@ -104,14 +130,22 @@ class ResolvedAudioModel:
                 self.route.credit_purchase_fee_rate
             )
         return AudioProviderPricing(
-            estimated_cost=unit_cost * count,
+            estimated_cost=unit_cost * quantity * count,
             snapshot=snapshot,
         )
 
-    def snapshot(self, variant_count: int) -> dict[str, Any]:
+    def snapshot(
+        self,
+        variant_count: int,
+        *,
+        duration_seconds: int | None = None,
+    ) -> dict[str, Any]:
         """Serialize the immutable execution, capability, and pricing decision."""
 
-        pricing = self.pricing(variant_count)
+        pricing = self.pricing(
+            variant_count,
+            duration_seconds=duration_seconds,
+        )
         return {
             "version": SNAPSHOT_VERSION,
             "modelKey": self.model.key,
@@ -137,6 +171,7 @@ def _capabilities(
     max_duration_seconds: int = 180,
     output_formats: tuple[str, ...] = ("mp3",),
     lyrics_languages: tuple[str, ...] = ("ru", "en"),
+    max_lyrics_chars: int = 12000,
     supports_audio_reference: bool = False,
     supports_seed: bool = False,
     supports_external_async: bool = False,
@@ -152,7 +187,7 @@ def _capabilities(
         output_formats=output_formats,
         lyrics_languages=lyrics_languages,
         lyrics_section_types=("verse", "chorus", "bridge", "outro"),
-        max_lyrics_chars=12000 if "song" in content_modes else 0,
+        max_lyrics_chars=max_lyrics_chars if "song" in content_modes else 0,
         supports_audio_reference=supports_audio_reference,
         reference_formats=("mp3", "wav", "ogg") if supports_audio_reference else (),
         max_reference_bytes=(50 * 1024 * 1024 if supports_audio_reference else 0),
@@ -165,6 +200,10 @@ def _capabilities(
 
 
 def _catalog() -> tuple[AudioModelSpec, ...]:
+    application_maximum = max(
+        3,
+        int(getattr(settings, "MUSIC_MAX_DURATION_SECONDS", 300)),
+    )
     stable_minimum = max(1, int(getattr(settings, "MUSIC_MIN_DURATION_SECONDS", 3)))
     stable_maximum = max(
         stable_minimum,
@@ -224,6 +263,55 @@ def _catalog() -> tuple[AudioModelSpec, ...]:
                     unit_cost_usd=Decimal("0.26"),
                     pricing_source="stability-ai",
                     cost_setting_name="MUSIC_STABILITY_COST_USD_PER_VARIANT",
+                ),
+            ),
+        ),
+        AudioModelSpec(
+            key="elevenlabs-music-v2",
+            display_name="ElevenLabs Music v2",
+            capabilities=_capabilities(
+                provider_name="elevenlabs-music-v2",
+                provider_display_name="ElevenLabs Music v2",
+                model_name="music_v2",
+                max_duration_seconds=min(600, application_maximum),
+            ),
+            routes=(
+                AudioRouteSpec(
+                    key="elevenlabs-direct",
+                    backend_name="elevenlabs-music-v2",
+                    provider_display_name="ElevenLabs",
+                    model_id="music_v2",
+                    required_settings=("ELEVENLABS_API_KEY",),
+                    unit_cost_usd=Decimal("0.15"),
+                    pricing_source="elevenlabs",
+                    cost_setting_name="MUSIC_ELEVENLABS_COST_USD_PER_MINUTE",
+                    billing_unit="minute",
+                ),
+            ),
+        ),
+        AudioModelSpec(
+            key="minimax-music-3",
+            display_name="MiniMax Music 3.0",
+            capabilities=_capabilities(
+                provider_name="minimax-music-3",
+                provider_display_name="MiniMax Music 3.0",
+                model_name="music-3.0",
+                max_duration_seconds=min(300, application_maximum),
+                max_lyrics_chars=3500,
+            ),
+            routes=(
+                AudioRouteSpec(
+                    key="minimax-direct",
+                    backend_name="minimax-music-3",
+                    provider_display_name="MiniMax",
+                    model_id="music-3.0",
+                    required_settings=(
+                        "MINIMAX_API_KEY",
+                        "MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED",
+                    ),
+                    unit_cost_usd=Decimal("0.15"),
+                    pricing_source="minimax",
+                    cost_setting_name="MUSIC_MINIMAX_COST_USD_PER_GENERATION",
                 ),
             ),
         ),
@@ -334,6 +422,8 @@ def default_audio_model_key() -> str:
         "stability": "stable-audio-3",
         "google-lyria": "lyria-3-pro",
         "openrouter-lyria": "lyria-3-pro",
+        "elevenlabs-music-v2": "elevenlabs-music-v2",
+        "minimax-music-3": "minimax-music-3",
     }.get(legacy, "mock")
 
 
@@ -376,6 +466,8 @@ def resolve_legacy_audio_route(
             "stability": "stable-audio-3",
             "google-lyria": "lyria-3-pro",
             "openrouter-lyria": "lyria-3-pro",
+            "elevenlabs-music-v2": "elevenlabs-music-v2",
+            "minimax-music-3": "minimax-music-3",
         }.get(backend, "")
     spec = get_audio_model_spec(model_key)
     candidates = [route for route in spec.routes if route.backend_name == backend]
@@ -445,6 +537,7 @@ def resolved_from_snapshot(snapshot: Mapping[str, Any]) -> ResolvedAudioModel:
         required_settings=(),
         unit_cost_usd=unit_cost,
         pricing_source=str(pricing.get("source") or backend),
+        billing_unit=str(pricing.get("billingUnit") or "generation"),
     )
     model = AudioModelSpec(
         key=model_key,
@@ -546,6 +639,7 @@ def public_audio_model_catalog() -> list[dict[str, Any]]:
                             route.configured() and _route_has_valid_price(route)
                         ),
                         "unitCostUsd": str(route_cost(route)),
+                        "billingUnit": route.billing_unit,
                     }
                     for route in routes
                 ],
