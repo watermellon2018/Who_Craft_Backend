@@ -109,15 +109,42 @@ application refuses to start without `DJANGO_SECRET_KEY` and PostgreSQL user/
 password. Mock providers are suitable for local Character/Reference generation;
 review provider-specific defaults before making external calls.
 
-Music Studio has two provider modes:
+Music Studio has pluggable provider modes:
 
 - `MUSIC_GENERATION_PROVIDER=mock` produces deterministic local WAV files and
-  is the safe development default.
+  is the safe development default. Set `MUSIC_ALLOW_MOCK=false` outside local
+  development so users cannot select the zero-cost mock route.
 - `MUSIC_GENERATION_PROVIDER=stability` sends paid instrumental requests to
   Stability AI Stable Audio 3.0. Set `STABILITY_API_KEY` in both the web and
   worker environments. The adapter submits asynchronously, stores only the
   provider generation ID, polls from the durable music queue, validates the
   returned MP3/WAV, and moves it into private media storage.
+- Google Lyria 3 models can use either the direct Google Interactions API with
+  `GEMINI_API_KEY` or OpenRouter with `OPENROUTER_API_KEY`. Direct Google is the
+  cheaper preferred route. OpenRouter passes through the same `$0.08`/`$0.04`
+  inference tariff but its 5.5% pay-as-you-go credit-purchase fee makes the
+  effective funding cost about `$0.0844`/`$0.0422`. The resolver chooses the direct
+  route when both credentials are configured and uses OpenRouter only when the
+  direct route is unavailable before submission. Adapters never retry a
+  possibly paid request through the other route after a timeout or malformed
+  response.
+
+Set `MUSIC_DEFAULT_AUDIO_MODEL` to the catalog key used when the client does not
+choose a model. `MUSIC_GEMINI_API_BASE_URL` and
+`MUSIC_OPENROUTER_API_BASE_URL` must retain their official HTTPS origins in
+production. Optional `OPENROUTER_HTTP_REFERER` and `OPENROUTER_APP_TITLE`
+values provide OpenRouter attribution. Lyria 3 Pro and Clip are preview models;
+verify availability, regional terms, and current provider prices before each
+deployment. OpenRouter's generic audio guide and Lyria-specific model page do
+not currently publish one fully consistent request schema, so run a
+credentialed audio smoke test before enabling that route. Keep
+`MUSIC_JOB_LEASE_SECONDS` at least `300`, above the 180-second
+synchronous Lyria request timeout with enough margin to stop another worker
+from claiming the same paid job while the first request is still in flight. The
+effective setting is also clamped to the larger Lyria timeout plus 120 seconds.
+`MUSIC_GEMINI_RESPONSE_DEADLINE_SECONDS` and
+`MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS` impose a bounded wall-clock stream
+deadline (300 seconds by default, capped at 900 seconds).
 
 The Stability adapter currently exposes one instrumental variant per request,
 durations up to the application limit (300 seconds by default), and no remote

@@ -322,3 +322,12 @@ class StabilityAudioProviderTests(SimpleTestCase):
             StabilityAudioProvider(api_key="test-key")
 
         self.assertEqual(raised.exception.code, "MUSIC_PROVIDER_NOT_CONFIGURED")
+
+    @override_settings(MUSIC_STABILITY_MODEL="future-default")
+    def test_explicit_snapshot_model_ignores_later_default_changes(self):
+        provider = StabilityAudioProvider(
+            api_key="test-key",
+            model_name="stable-audio-3",
+        )
+
+        self.assertEqual(provider.model_name, "stable-audio-3")

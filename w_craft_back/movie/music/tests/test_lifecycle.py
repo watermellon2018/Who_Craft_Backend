@@ -59,6 +59,11 @@ class PaidMockAudioProvider(MockAudioProvider):
         )
 
 
+@override_settings(
+    MUSIC_DEFAULT_AUDIO_MODEL="",
+    MUSIC_GENERATION_PROVIDER="mock",
+    MUSIC_ALLOW_MOCK=True,
+)
 class MusicLifecycleTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -108,6 +113,96 @@ class MusicLifecycleTests(TestCase):
                 idempotency_key="music:test",
             )
         self.assertEqual(raised.exception.code, "MUSIC_IDEMPOTENCY_CONFLICT")
+
+    @override_settings(
+        GEMINI_API_KEY="test-google-key",
+        OPENROUTER_API_KEY="test-openrouter-key",
+        STABILITY_API_KEY="test-stability-key",
+    )
+    def test_explicit_model_is_snapshotted_and_part_of_idempotency(self):
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        job, replay = enqueue_music_job(
+            project=self.project,
+            actor=self.owner,
+            brief=instrumental_brief("Explicit Lyria"),
+            variant_count=1,
+            idempotency_key="music:explicit-model",
+            model_key="lyria-3-pro",
+        )
+
+        self.assertFalse(replay)
+        self.assertEqual(job.provider, "google-lyria")
+        self.assertEqual(job.provider_snapshot["modelKey"], "lyria-3-pro")
+        self.assertEqual(job.provider_snapshot["routeKey"], "google-gemini-direct")
+        self.assertEqual(job.provider_snapshot["estimatedCostUsd"], "0.08")
+
+        with self.assertRaises(MusicLifecycleError) as conflict:
+            enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Explicit Lyria"),
+                variant_count=1,
+                idempotency_key="music:explicit-model",
+                model_key="stable-audio-3",
+            )
+        self.assertEqual(conflict.exception.code, "MUSIC_IDEMPOTENCY_CONFLICT")
+
+    @override_settings(
+        GEMINI_API_KEY="test-google-key",
+        OPENROUTER_API_KEY="test-openrouter-key",
+    )
+    def test_worker_and_retry_keep_snapshot_when_defaults_drift(self):
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        original, _ = enqueue_music_job(
+            project=self.project,
+            actor=self.owner,
+            brief=instrumental_brief("Snapshot route"),
+            variant_count=1,
+            idempotency_key="music:snapshot-route",
+            model_key="lyria-3-pro",
+        )
+        original.status = MusicJobStatus.FAILED
+        original.error_code = "MUSIC_PROVIDER_TIMEOUT"
+        original.save(update_fields=("status", "error_code", "updated_at"))
+
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            GEMINI_API_KEY="changed-but-present",
+        ), patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=MockAudioProvider(),
+        ):
+            retry = retry_music_job(original, actor=self.owner)
+
+        self.assertEqual(retry.provider_snapshot, original.provider_snapshot)
+        self.assertEqual(retry.provider, "google-lyria")
+        self.assertEqual(retry.model_name, "lyria-3-pro-preview")
+
+        with patch(
+            "w_craft_back.movie.music.worker.get_music_provider",
+            return_value=MockAudioProvider(),
+        ) as provider_factory:
+            completed = execute_music_job(retry.pk)
+
+        self.assertEqual(completed.status, MusicJobStatus.COMPLETED)
+        provider_factory.assert_called_once_with(
+            "google-lyria",
+            model_name="lyria-3-pro-preview",
+        )
+
+    def test_worker_supports_blank_legacy_provider_snapshot(self):
+        job = self.enqueue(key="music:legacy-snapshot")
+        MusicGenerationJob.objects.filter(pk=job.pk).update(provider_snapshot={})
+
+        completed = execute_music_job(job.pk)
+
+        self.assertEqual(completed.status, MusicJobStatus.COMPLETED)
 
     def test_mock_worker_finalizes_two_verified_variants(self):
         job = self.enqueue()
@@ -421,6 +516,34 @@ class MusicLifecycleTests(TestCase):
         with self.assertRaises(MusicLifecycleError) as raised:
             retry_music_job(unknown, actor=self.owner)
         self.assertEqual(raised.exception.code, "MUSIC_PROVIDER_OUTCOME_UNKNOWN")
+
+    def test_disabled_mock_blocks_snapshot_and_legacy_retries(self):
+        for blank_snapshot in (False, True):
+            with self.subTest(blank_snapshot=blank_snapshot):
+                job = self.enqueue(
+                    key=f"music:disabled-mock:{blank_snapshot}",
+                    title=f"Disabled mock {blank_snapshot}",
+                )
+                job.status = MusicJobStatus.FAILED
+                job.error_code = "MUSIC_PROVIDER_TIMEOUT"
+                if blank_snapshot:
+                    job.provider_snapshot = {}
+                job.save(
+                    update_fields=(
+                        "status",
+                        "error_code",
+                        "provider_snapshot",
+                        "updated_at",
+                    )
+                )
+
+                with override_settings(MUSIC_ALLOW_MOCK=False):
+                    with self.assertRaises(MusicProviderError) as raised:
+                        retry_music_job(job, actor=self.owner)
+                self.assertEqual(
+                    raised.exception.code,
+                    "MUSIC_MODEL_NOT_CONFIGURED",
+                )
 
     def test_expired_started_lease_fails_and_old_fence_cannot_heartbeat(self):
         job = self.enqueue()

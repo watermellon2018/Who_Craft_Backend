@@ -537,7 +537,8 @@
           "400": {"$ref": "#/components/responses/MusicError"},
           "401": {"$ref": "#/components/responses/MusicError"},
           "403": {"$ref": "#/components/responses/MusicError"},
-          "409": {"$ref": "#/components/responses/MusicError"}
+          "409": {"$ref": "#/components/responses/MusicError"},
+          "503": {"$ref": "#/components/responses/MusicError"}
         }
       }
     },
@@ -1673,7 +1674,7 @@
       },
       "MusicCapabilities": {
         "type": "object",
-        "required": ["contentModes", "variantCounts", "duration", "outputFormats", "briefFields", "lyrics", "audioReference", "providerDisplayName", "permissions"],
+        "required": ["contentModes", "variantCounts", "duration", "outputFormats", "briefFields", "lyrics", "audioReference", "providerDisplayName", "defaultModelKey", "models", "permissions"],
         "properties": {
           "contentModes": {"type": "array", "items": {"type": "string", "enum": ["instrumental", "song"]}},
           "variantCounts": {"type": "array", "items": {"type": "integer", "enum": [1, 2]}},
@@ -1685,7 +1686,37 @@
           "supportsSeed": {"type": "boolean"},
           "supportsCancellation": {"type": "boolean"},
           "providerDisplayName": {"type": "string"},
+          "defaultModelKey": {"$ref": "#/components/schemas/MusicAudioModelKey"},
+          "models": {"type": "array", "items": {"$ref": "#/components/schemas/MusicAudioModel"}},
           "permissions": {"$ref": "#/components/schemas/MusicPermissions"}
+        }
+      },
+      "MusicAudioModelKey": {
+        "type": "string",
+        "enum": ["mock", "stable-audio-3", "lyria-3-pro", "lyria-3-clip"]
+      },
+      "MusicAudioRoute": {
+        "type": "object",
+        "required": ["key", "provider", "providerDisplayName", "configured", "unitCostUsd"],
+        "properties": {
+          "key": {"type": "string"},
+          "provider": {"type": "string"},
+          "providerDisplayName": {"type": "string"},
+          "configured": {"type": "boolean"},
+          "unitCostUsd": {"$ref": "#/components/schemas/CreditAmount"}
+        }
+      },
+      "MusicAudioModel": {
+        "type": "object",
+        "required": ["key", "label", "configured", "default", "preview", "capabilities", "routes"],
+        "properties": {
+          "key": {"$ref": "#/components/schemas/MusicAudioModelKey"},
+          "label": {"type": "string"},
+          "configured": {"type": "boolean"},
+          "default": {"type": "boolean"},
+          "preview": {"type": "boolean"},
+          "capabilities": {"type": "object", "additionalProperties": true},
+          "routes": {"type": "array", "items": {"$ref": "#/components/schemas/MusicAudioRoute"}}
         }
       },
       "MusicSceneOption": {
@@ -1798,6 +1829,7 @@
         "additionalProperties": false,
         "required": ["brief"],
         "properties": {
+          "modelKey": {"$ref": "#/components/schemas/MusicAudioModelKey"},
           "targetTrackId": {"type": "integer", "nullable": true},
           "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
           "variantCount": {"type": "integer", "enum": [1, 2], "default": 2},
@@ -1806,9 +1838,10 @@
       },
       "MusicGenerationAccepted": {
         "type": "object",
-        "required": ["jobId", "status", "stage", "idempotentReplay", "pollAfterMs", "createdAt"],
+        "required": ["jobId", "modelKey", "status", "stage", "idempotentReplay", "pollAfterMs", "createdAt"],
         "properties": {
           "jobId": {"type": "string", "format": "uuid"},
+          "modelKey": {"$ref": "#/components/schemas/MusicAudioModelKey"},
           "status": {"type": "string"},
           "stage": {"type": "string"},
           "idempotentReplay": {"type": "boolean"},
@@ -1833,9 +1866,10 @@
       },
       "MusicGenerationJob": {
         "type": "object",
-        "required": ["jobId", "status", "stage", "variantCount", "brief", "targetTrackId", "attempts", "canCancel", "canRetry", "createdAt", "permissions", "variants"],
+        "required": ["jobId", "modelKey", "status", "stage", "variantCount", "brief", "targetTrackId", "attempts", "canCancel", "canRetry", "createdAt", "permissions", "variants"],
         "properties": {
           "jobId": {"type": "string", "format": "uuid"},
+          "modelKey": {"$ref": "#/components/schemas/MusicAudioModelKey"},
           "status": {"type": "string", "enum": ["queued", "processing", "cancellation_requested", "completed", "failed", "cancelled"]},
           "stage": {"type": "string"},
           "variantCount": {"type": "integer", "enum": [1, 2]},

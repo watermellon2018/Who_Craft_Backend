@@ -325,6 +325,55 @@ REFERENCE_PROVIDER_TIMEOUT_SECONDS = int(
 MUSIC_GENERATION_PROVIDER = os.getenv(
     "MUSIC_GENERATION_PROVIDER", "mock"
 ).strip().lower()
+MUSIC_ALLOW_MOCK = (
+    os.getenv("MUSIC_ALLOW_MOCK", "true" if DEBUG else "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+MUSIC_DEFAULT_AUDIO_MODEL = os.getenv(
+    "MUSIC_DEFAULT_AUDIO_MODEL", ""
+).strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+MUSIC_GEMINI_API_BASE_URL = os.getenv(
+    "MUSIC_GEMINI_API_BASE_URL",
+    "https://generativelanguage.googleapis.com",
+).rstrip("/")
+MUSIC_GEMINI_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_GEMINI_TIMEOUT_SECONDS", "180")
+)
+MUSIC_GEMINI_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_GEMINI_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_OPENROUTER_API_BASE_URL = os.getenv(
+    "MUSIC_OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1"
+).rstrip("/")
+MUSIC_OPENROUTER_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_OPENROUTER_TIMEOUT_SECONDS", "180")
+)
+MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_JOB_LEASE_SECONDS = max(
+    300,
+    int(os.getenv("MUSIC_JOB_LEASE_SECONDS", "300")),
+    int(
+        max(
+            MUSIC_GEMINI_TIMEOUT_SECONDS,
+            MUSIC_OPENROUTER_TIMEOUT_SECONDS,
+        )
+        + 120
+    ),
+)
+OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "").strip()
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "").strip()
 MUSIC_STABILITY_API_BASE_URL = os.getenv(
     "MUSIC_STABILITY_API_BASE_URL", "https://api.stability.ai"

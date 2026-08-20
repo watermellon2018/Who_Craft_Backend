@@ -38,7 +38,14 @@ from w_craft_back.movie.music.prompt_compiler import (
     compile_music_prompt,
     normalize_music_brief,
 )
-from w_craft_back.movie.music.providers import get_music_provider
+from w_craft_back.movie.music.providers import (
+    MusicProviderError,
+    get_music_provider,
+    pricing_from_snapshot,
+    resolve_audio_model,
+    resolve_legacy_audio_route,
+    resolved_from_snapshot,
+)
 from w_craft_back.movie.project.dashboard_models import MusicTrack, Scene
 from w_craft_back.movie.project.models import Project
 from w_craft_back.credits.services import (
@@ -185,9 +192,37 @@ def _fingerprint(
     variant_count: int,
     target_track: MusicTrack | None,
     reference_asset: MusicAsset | None,
+    model_key: str,
+) -> str:
+    intent = {
+        "projectId": project.pk,
+        "brief": normalized_brief,
+        "variantCount": variant_count,
+        "targetTrackId": target_track.pk if target_track else None,
+        "referenceAssetId": str(reference_asset.pk) if reference_asset else None,
+        "modelKey": model_key,
+    }
+    payload = json.dumps(
+        intent,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _legacy_provider_fingerprint(
+    *,
+    project: Project,
+    normalized_brief: Mapping[str, Any],
+    variant_count: int,
+    target_track: MusicTrack | None,
+    reference_asset: MusicAsset | None,
     provider_name: str,
     model_name: str,
 ) -> str:
+    """Reproduce the pre-catalog fingerprint for queued-job compatibility."""
+
     intent = {
         "projectId": project.pk,
         "brief": normalized_brief,
@@ -214,7 +249,7 @@ def _validate_intent(
     variant_count: int,
     target_track: MusicTrack | None,
     reference_asset: MusicAsset | None,
-    provider,
+    capabilities,
 ) -> None:
     if actor is None or not getattr(actor, "pk", None):
         raise MusicLifecycleError(
@@ -249,7 +284,6 @@ def _validate_intent(
                 code="MUSIC_REFERENCE_INVALID",
                 http_status=400,
             )
-    capabilities = provider.capabilities()
     mode = normalized_brief["content"]["mode"]
     duration = normalized_brief["durationSeconds"]
     if (
@@ -298,6 +332,8 @@ def enqueue_music_job(
     reference_asset: MusicAsset | None = None,
     provider_name: str | None = None,
     model_name: str = "",
+    model_key: str | None = None,
+    provider_snapshot: Mapping[str, Any] | None = None,
 ) -> tuple[MusicGenerationJob, bool]:
     """Create a durable queued job or return its idempotent replay.
 
@@ -318,8 +354,97 @@ def enqueue_music_job(
         raise MusicLifecycleError(
             str(exc), code=exc.code, http_status=exc.http_status
         ) from exc
-    provider = get_music_provider(provider_name)
-    effective_model = str(model_name or provider.model_name)
+    persisted_snapshot = dict(provider_snapshot or {})
+    if persisted_snapshot:
+        intent_model_key = str(persisted_snapshot.get("modelKey") or "").strip()
+    elif model_key:
+        intent_model_key = str(model_key).strip().lower()
+    elif provider_name:
+        intent_model_key = (
+            f"legacy:{str(provider_name).strip().lower()}:"
+            f"{str(model_name).strip().lower()}"
+        )
+    else:
+        # An omitted selector is part of the caller's intent. Keeping it empty
+        # makes a replay independent from later default-model configuration.
+        intent_model_key = ""
+    fingerprint = _fingerprint(
+        project=project,
+        normalized_brief=normalized,
+        variant_count=int(variant_count),
+        target_track=target_track,
+        reference_asset=reference_asset,
+        model_key=intent_model_key,
+    )
+    with transaction.atomic():
+        existing = (
+            MusicGenerationJob.objects.select_for_update()
+            .filter(project=project, actor=actor, idempotency_key=key)
+            .first()
+        )
+        if existing is not None:
+            matches = existing.request_fingerprint == fingerprint
+            if not matches and not model_key and not persisted_snapshot:
+                matches = existing.request_fingerprint == _legacy_provider_fingerprint(
+                    project=project,
+                    normalized_brief=normalized,
+                    variant_count=int(variant_count),
+                    target_track=target_track,
+                    reference_asset=reference_asset,
+                    provider_name=existing.provider,
+                    model_name=existing.model_name,
+                )
+            if not matches:
+                raise MusicLifecycleError(
+                    "Idempotency key was already used for another request.",
+                    code="MUSIC_IDEMPOTENCY_CONFLICT",
+                    http_status=409,
+                )
+            return existing, True
+    if persisted_snapshot:
+        restored = resolved_from_snapshot(persisted_snapshot)
+        if (
+            restored.route.backend_name == "mock"
+            and not restored.route.configured()
+        ):
+            raise MusicProviderError(
+                "The mock audio model is disabled.",
+                code="MUSIC_MODEL_NOT_CONFIGURED",
+                http_status=503,
+                retryable=False,
+            )
+        effective_provider = restored.route.backend_name
+        effective_model = restored.route.model_id
+        capabilities = restored.model.capabilities
+        pricing = pricing_from_snapshot(persisted_snapshot)
+        provider = get_music_provider(
+            effective_provider,
+            model_name=effective_model,
+        )
+    else:
+        resolved = (
+            resolve_audio_model(model_key)
+            if model_key or not provider_name
+            else resolve_legacy_audio_route(
+                provider_name,
+                model_name,
+                require_configured=True,
+            )
+        )
+        effective_provider = resolved.route.backend_name
+        effective_model = resolved.route.model_id
+        provider = get_music_provider(
+            effective_provider,
+            model_name=effective_model,
+        )
+        capabilities = resolved.model.capabilities
+        pricing = resolved.pricing(int(variant_count))
+        persisted_snapshot = resolved.snapshot(int(variant_count))
+        # Preserve dependency-injected providers used by existing integrations/tests.
+        if provider.name != effective_provider:
+            pricing = provider.pricing(int(variant_count))
+            persisted_snapshot["pricing"] = dict(pricing.snapshot)
+            persisted_snapshot["estimatedCostUsd"] = str(pricing.estimated_cost)
     _validate_intent(
         project=project,
         actor=actor,
@@ -327,16 +452,7 @@ def enqueue_music_job(
         variant_count=int(variant_count),
         target_track=target_track,
         reference_asset=reference_asset,
-        provider=provider,
-    )
-    fingerprint = _fingerprint(
-        project=project,
-        normalized_brief=normalized,
-        variant_count=int(variant_count),
-        target_track=target_track,
-        reference_asset=reference_asset,
-        provider_name=provider.name,
-        model_name=effective_model,
+        capabilities=capabilities,
     )
     scene_context = _scene_context(project, normalized)
     try:
@@ -367,7 +483,6 @@ def enqueue_music_job(
                     http_status=409,
                 )
             return existing, True
-        pricing = provider.pricing(int(variant_count))
         try:
             with transaction.atomic():
                 job = MusicGenerationJob.objects.create(
@@ -377,8 +492,9 @@ def enqueue_music_job(
                     reference_asset=reference_asset,
                     brief=normalized,
                     compiled_request=compiled,
-                    provider=provider.name,
+                    provider=effective_provider,
                     model_name=effective_model,
+                    provider_snapshot=persisted_snapshot,
                     variant_count=int(variant_count),
                     idempotency_key=key,
                     request_fingerprint=fingerprint,
@@ -387,7 +503,7 @@ def enqueue_music_job(
                     user=actor,
                     domain="music",
                     job_id=str(job.id),
-                    provider=provider.name,
+                    provider=effective_provider,
                     model_name=effective_model,
                     estimated_cost=pricing.estimated_cost,
                     reservation_amount=pricing.estimated_cost,
@@ -928,6 +1044,8 @@ def retry_music_job(
             reference_asset=locked.reference_asset,
             provider_name=locked.provider,
             model_name=locked.model_name,
+            model_key=str((locked.provider_snapshot or {}).get("modelKey") or ""),
+            provider_snapshot=locked.provider_snapshot,
         )
         retry.retry_of = locked
         retry.max_attempts = locked.max_attempts

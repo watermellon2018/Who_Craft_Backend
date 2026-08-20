@@ -118,6 +118,16 @@ and failures after a provider result was received retain the fixed charge. Keep
 `MUSIC_STABILITY_COST_USD_PER_VARIANT` aligned with the provider tariff because
 an invalid or zero price blocks paid generation.
 
+Google Lyria model definitions can expose a direct Google route and an
+OpenRouter route as separate price snapshots. At the documented launch prices,
+direct Google reserves `$0.08` for Lyria 3 Pro and `$0.04` for Lyria 3 Clip;
+OpenRouter reserves `$0.0844` and `$0.0422` respectively, including its 5.5%
+credit-purchase fee. Automatic selection may prefer the cheaper configured
+direct route before submission. It must not resend a timed-out, disconnected,
+or malformed paid request through the other route because neither integration
+provides an idempotency key that proves the first request was not charged.
+Both routes retain the reservation as an unknown outcome in that case.
+
 ## Demo configuration
 
 `CREDITS_DEMO_TOP_UP_ENABLED=true` enables the top-up stub. The default follows

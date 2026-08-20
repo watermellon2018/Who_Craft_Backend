@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 
 from w_craft_back.movie.music.providers import (
     MusicProviderError,
-    get_music_provider,
+    resolve_audio_model,
 )
 
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
@@ -213,8 +213,8 @@ class GenerationEstimateView(APIView):
         data = serializer.validated_data
         try:
             if data["domain"] == "music":
-                provider = get_music_provider()
-                capabilities = provider.capabilities()
+                resolved = resolve_audio_model(data.get("modelKey") or None)
+                capabilities = resolved.model.capabilities
                 if data["variantCount"] not in capabilities.variant_counts:
                     raise MusicProviderError(
                         "The selected music provider does not support "
@@ -223,23 +223,31 @@ class GenerationEstimateView(APIView):
                         http_status=400,
                         retryable=False,
                     )
-                pricing = provider.pricing(data["variantCount"])
+                pricing = resolved.pricing(data["variantCount"])
                 estimate = GenerationEstimate(
-                    provider=provider.name,
-                    model_key=provider.name,
-                    model_name=provider.model_name,
+                    provider=resolved.route.backend_name,
+                    model_key=resolved.model.key,
+                    model_name=resolved.route.model_id,
                     currency="USD",
                     estimated_cost=pricing.estimated_cost,
                     reservation_amount=pricing.estimated_cost,
                     pricing_source=str(
-                        pricing.snapshot.get("source") or provider.name
+                        pricing.snapshot.get("source")
+                        or resolved.route.backend_name
                     ),
                     prompt_tokens_estimate=0,
                     snapshot=dict(pricing.snapshot),
                 )
                 routing_mode = "manual"
-                routing_reason = "music-provider"
-                route_candidates = []
+                routing_reason = "cheapest-configured-audio-route"
+                route_candidates = [
+                    {
+                        "provider": resolved.route.backend_name,
+                        "modelKey": resolved.model.key,
+                        "modelName": resolved.route.model_id,
+                        "estimatedCost": _credit(pricing.estimated_cost),
+                    }
+                ]
             elif data["domain"] == "model3d":
                 estimate = GenerationEstimate(
                     provider="local",

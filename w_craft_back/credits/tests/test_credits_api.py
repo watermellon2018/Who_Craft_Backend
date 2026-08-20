@@ -419,6 +419,7 @@ class CreditsApiTest(TestCase):
         self.assertTrue(response.json()["sufficientBalance"])
 
     @override_settings(
+        MUSIC_DEFAULT_AUDIO_MODEL="",
         MUSIC_GENERATION_PROVIDER="stability",
         STABILITY_API_KEY="test-key",
         MUSIC_STABILITY_MODEL="stable-audio-3",
@@ -450,6 +451,35 @@ class CreditsApiTest(TestCase):
         self.assertEqual(response.json()["reservationAmount"], "0.26")
         self.assertEqual(response.json()["pricingSource"], "stability-ai")
         self.assertTrue(response.json()["sufficientBalance"])
+
+    @override_settings(
+        MUSIC_DEFAULT_AUDIO_MODEL="",
+        MUSIC_GENERATION_PROVIDER="mock",
+        GEMINI_API_KEY="",
+        OPENROUTER_API_KEY="router-key",
+    )
+    def test_music_estimate_resolves_canonical_model_and_route_price(self):
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "music",
+                "operation": "generate",
+                "modelKey": "lyria-3-pro",
+                "variantCount": 1,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()["modelKey"], "lyria-3-pro")
+        self.assertEqual(response.json()["provider"], "openrouter-lyria")
+        self.assertEqual(response.json()["estimatedCost"], "0.0844")
 
     @override_settings(
         CREDITS_DEMO_TOP_UP_ENABLED=True,

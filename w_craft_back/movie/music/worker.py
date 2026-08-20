@@ -34,6 +34,7 @@ from w_craft_back.movie.music.providers import (
     MusicProviderError,
     ProviderSubmission,
     get_music_provider,
+    resolved_from_snapshot,
 )
 from w_craft_back.storage_gateway import (
     InvalidAudio,
@@ -184,7 +185,20 @@ def execute_music_job(
     context = ExecutionContext(claimed.pk, claimed.lease_token)
 
     try:
-        provider = get_music_provider(claimed.provider)
+        snapshot = dict(claimed.provider_snapshot or {})
+        restored = resolved_from_snapshot(snapshot) if snapshot else None
+        provider = get_music_provider(
+            (
+                restored.route.backend_name
+                if restored is not None
+                else claimed.provider
+            ),
+            model_name=(
+                restored.route.model_id
+                if restored is not None
+                else claimed.model_name
+            ),
+        )
         if claimed.status == MusicJobStatus.CANCELLATION_REQUESTED:
             if (
                 claimed.provider_job_id

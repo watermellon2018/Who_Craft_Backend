@@ -51,6 +51,7 @@ class StabilityAudioProvider(AudioProvider):
         session: requests.Session | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.api_key = str(
@@ -105,7 +106,9 @@ class StabilityAudioProvider(AudioProvider):
             )
         self.base_url = configured_base_url
         self.model_name = str(
-            getattr(settings, "MUSIC_STABILITY_MODEL", "stable-audio-3")
+            model_name
+            if model_name is not None
+            else getattr(settings, "MUSIC_STABILITY_MODEL", "stable-audio-3")
         ).strip()
         if self.model_name != "stable-audio-3":
             raise MusicProviderError(
