@@ -19,6 +19,7 @@ from w_craft_back.movie.music.lifecycle import (
     finalize_music_job,
     mark_music_job_stage,
     mark_music_provider_started,
+    mark_music_provider_result_received,
     record_music_reference_handle,
     release_music_job_for_poll,
 )
@@ -117,12 +118,16 @@ def _store_outputs(
             stored_keys.append(stored.storage_key)
             if stored.mime_type != generated.mime_type:
                 raise InvalidAudio("Provider MIME declaration does not match bytes.")
-            duration_delta = abs(
-                float(stored.duration_seconds or 0) - generated.duration_seconds
-            )
-            tolerance = max(0.25, generated.duration_seconds * 0.02)
-            if duration_delta > tolerance:
-                raise InvalidAudio("Provider duration does not match audio bytes.")
+            if generated.duration_seconds is not None:
+                duration_delta = abs(
+                    float(stored.duration_seconds or 0)
+                    - generated.duration_seconds
+                )
+                tolerance = max(0.25, generated.duration_seconds * 0.02)
+                if duration_delta > tolerance:
+                    raise InvalidAudio(
+                        "Provider duration does not match audio bytes."
+                    )
             candidates.append(
                 PersistedAudioCandidate(
                     storage_key=stored.storage_key,
@@ -156,6 +161,8 @@ def _handle_submission(
             poll_after_seconds=submission.poll_after_seconds or 3.0,
             provider_metadata=submission.provider_metadata,
         )
+    if submission.outputs:
+        mark_music_provider_result_received(claimed)
     candidates, stored_keys = _store_outputs(claimed, submission, context)
     try:
         return finalize_music_job(claimed, candidates)
@@ -179,7 +186,10 @@ def execute_music_job(
     try:
         provider = get_music_provider(claimed.provider)
         if claimed.status == MusicJobStatus.CANCELLATION_REQUESTED:
-            if claimed.provider_job_id and provider.capabilities().supports_cancellation:
+            if (
+                claimed.provider_job_id
+                and provider.capabilities().supports_cancellation
+            ):
                 provider.cancel(
                     claimed.provider_job_id,
                     _CancellationContext(context),
@@ -188,7 +198,11 @@ def execute_music_job(
 
         if claimed.provider_job_id:
             context.checkpoint()
-            submission = provider.poll(claimed.provider_job_id, context)
+            submission = provider.poll(
+                claimed.provider_job_id,
+                context,
+                claimed.provider_metadata,
+            )
             return _handle_submission(claimed, submission, context)
 
         reference_handle = _prepare_reference(claimed, provider, context)
@@ -234,6 +248,7 @@ def execute_music_job(
             ),
             http_status=exc.http_status,
             retryable=exc.retryable and not exc.outcome_unknown,
+            cost_incurred=exc.cost_incurred,
         )
     except Exception:
         logger.exception("music_worker_failed", extra={"job_id": str(claimed.pk)})

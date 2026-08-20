@@ -456,7 +456,7 @@
         "operationId": "getMusicCapabilities",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
         "responses": {
-          "200": {"description": "Effective mock-provider and brief capabilities", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicCapabilities"}}}},
+          "200": {"description": "Effective provider and brief capabilities", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MusicCapabilities"}}}},
           "401": {"$ref": "#/components/responses/MusicError"},
           "403": {"$ref": "#/components/responses/MusicError"},
           "404": {"$ref": "#/components/responses/MusicError"}

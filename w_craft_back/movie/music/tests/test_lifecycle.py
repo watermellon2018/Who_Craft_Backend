@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import tempfile
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from w_craft_back.credits.models import CreditAccount, GenerationCharge
 from w_craft_back.movie.music.lifecycle import (
     MusicLifecycleError,
     claim_music_job,
@@ -14,15 +16,47 @@ from w_craft_back.movie.music.lifecycle import (
     fail_music_job,
     heartbeat_music_job,
     mark_music_provider_started,
+    mark_music_provider_result_received,
     recover_stale_music_jobs,
     request_music_cancellation,
     retry_music_job,
 )
 from w_craft_back.movie.music.models import MusicGenerationJob, MusicJobStatus
-from w_craft_back.movie.music.providers import MusicProviderError
+from w_craft_back.movie.music.providers import (
+    MusicProviderError,
+    ProviderSubmission,
+)
+from w_craft_back.movie.music.providers.base import AudioProviderPricing
+from w_craft_back.movie.music.providers.mock import MockAudioProvider
 from w_craft_back.movie.music.worker import execute_music_job
 
 from .helpers import instrumental_brief, make_project, make_user
+
+
+class PaidMockAudioProvider(MockAudioProvider):
+    name = "stability"
+    model_name = "stable-audio-3"
+
+    def capabilities(self):
+        capabilities = super().capabilities()
+        return capabilities.__class__(
+            provider_name=self.name,
+            provider_display_name="Stable Audio 3.0",
+            model_name=self.model_name,
+            content_modes=("instrumental",),
+            variant_counts=(1,),
+            supports_audio_reference=False,
+        )
+
+    def pricing(self, variant_count: int) -> AudioProviderPricing:
+        return AudioProviderPricing(
+            estimated_cost=Decimal("0.26") * variant_count,
+            snapshot={
+                "currency": "USD",
+                "source": "stability-ai",
+                "unitCostUsd": "0.26",
+            },
+        )
 
 
 class MusicLifecycleTests(TestCase):
@@ -82,6 +116,238 @@ class MusicLifecycleTests(TestCase):
         self.assertEqual(completed.variants.count(), 2)
         self.assertTrue(
             all(variant.asset.file.name for variant in completed.variants.all())
+        )
+
+    def test_paid_provider_reserves_and_captures_fixed_price(self):
+        provider = PaidMockAudioProvider()
+        account = CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        with patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=provider,
+        ):
+            job, replay = enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Paid"),
+                variant_count=1,
+                idempotency_key="music:paid",
+            )
+        self.assertFalse(replay)
+        account.refresh_from_db()
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0.26"))
+
+        with patch(
+            "w_craft_back.movie.music.worker.get_music_provider",
+            return_value=provider,
+        ):
+            completed = execute_music_job(job.pk)
+
+        self.assertEqual(completed.status, MusicJobStatus.COMPLETED)
+        account.refresh_from_db()
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0"))
+        charge = GenerationCharge.objects.get(domain="music", job_id=str(job.pk))
+        self.assertEqual(charge.actual_cost, Decimal("0.26"))
+        self.assertEqual(charge.charged_amount, Decimal("0.26"))
+
+    def test_async_paid_provider_polls_and_captures_exactly_once(self):
+        class AsyncPaidProvider(PaidMockAudioProvider):
+            submitted_request = None
+
+            def submit(self, request, context):
+                context.checkpoint()
+                self.submitted_request = dict(request)
+                return ProviderSubmission(
+                    external_job_id="provider-generation-id",
+                    poll_after_seconds=10,
+                    provider_metadata={"pollCount": 0, "seed": 123},
+                )
+
+            def poll(self, external_job_id, context, provider_metadata=None):
+                self.assertion = (
+                    external_job_id,
+                    dict(provider_metadata or {}),
+                )
+                return super().submit(self.submitted_request, context)
+
+        provider = AsyncPaidProvider()
+        account = CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        with patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=provider,
+        ):
+            job, _ = enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Async paid result"),
+                variant_count=1,
+                idempotency_key="music:paid-async",
+            )
+        with patch(
+            "w_craft_back.movie.music.worker.get_music_provider",
+            return_value=provider,
+        ):
+            processing = execute_music_job(job.pk)
+            self.assertEqual(processing.status, MusicJobStatus.PROCESSING)
+            self.assertEqual(processing.provider_job_id, "provider-generation-id")
+            MusicGenerationJob.objects.filter(pk=job.pk).update(
+                next_poll_at=timezone.now() - timedelta(seconds=1)
+            )
+            completed = execute_music_job(job.pk)
+
+        self.assertEqual(completed.status, MusicJobStatus.COMPLETED)
+        self.assertEqual(provider.assertion[0], "provider-generation-id")
+        self.assertEqual(provider.assertion[1]["pollCount"], 0)
+        self.assertTrue(completed.provider_metadata["resultReceived"])
+        account.refresh_from_db()
+        charge = GenerationCharge.objects.get(domain="music", job_id=str(job.pk))
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0"))
+        self.assertEqual(charge.charged_amount, Decimal("0.26"))
+        self.assertEqual(
+            GenerationCharge.objects.filter(domain="music", job_id=str(job.pk)).count(),
+            1,
+        )
+
+    def test_unknown_paid_outcome_captures_estimate_for_reconciliation(self):
+        provider = PaidMockAudioProvider()
+        account = CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        with patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=provider,
+        ):
+            job, _ = enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Unknown paid result"),
+                variant_count=1,
+                idempotency_key="music:paid-unknown",
+            )
+        claimed = claim_music_job(job.pk)
+        mark_music_provider_started(claimed)
+
+        fail_music_job(
+            claimed,
+            code="MUSIC_PROVIDER_OUTCOME_UNKNOWN",
+            detail="Provider outcome is unknown.",
+            http_status=502,
+            retryable=False,
+        )
+
+        account.refresh_from_db()
+        charge = GenerationCharge.objects.get(domain="music", job_id=str(job.pk))
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0"))
+        self.assertEqual(charge.charged_amount, Decimal("0.26"))
+        self.assertTrue(charge.cost_is_estimate)
+        self.assertEqual(
+            charge.provider_usage["costSource"],
+            "outcome-unknown-reservation",
+        )
+
+    def test_paid_result_read_failure_captures_provider_cost(self):
+        class OversizedAsyncProvider(PaidMockAudioProvider):
+            def submit(self, request, context):
+                del request
+                context.checkpoint()
+                return ProviderSubmission(
+                    external_job_id="oversized-generation-id",
+                    poll_after_seconds=10,
+                )
+
+            def poll(self, external_job_id, context, provider_metadata=None):
+                del external_job_id, provider_metadata
+                context.checkpoint()
+                raise MusicProviderError(
+                    "Provider result is oversized.",
+                    code="MUSIC_OUTPUT_TOO_LARGE",
+                    http_status=502,
+                    retryable=False,
+                    cost_incurred=True,
+                )
+
+        provider = OversizedAsyncProvider()
+        account = CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        with patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=provider,
+        ):
+            job, _ = enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Oversized paid result"),
+                variant_count=1,
+                idempotency_key="music:paid-oversized",
+            )
+        with patch(
+            "w_craft_back.movie.music.worker.get_music_provider",
+            return_value=provider,
+        ):
+            execute_music_job(job.pk)
+            MusicGenerationJob.objects.filter(pk=job.pk).update(
+                next_poll_at=timezone.now() - timedelta(seconds=1)
+            )
+            failed = execute_music_job(job.pk)
+
+        self.assertEqual(failed.status, MusicJobStatus.FAILED)
+        self.assertTrue(failed.provider_metadata["resultReceived"])
+        account.refresh_from_db()
+        charge = GenerationCharge.objects.get(domain="music", job_id=str(job.pk))
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0"))
+        self.assertEqual(charge.charged_amount, Decimal("0.26"))
+        self.assertFalse(charge.cost_is_estimate)
+
+    def test_confirmed_paid_result_is_charged_after_local_failure(self):
+        provider = PaidMockAudioProvider()
+        account = CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1"),
+        )
+        with patch(
+            "w_craft_back.movie.music.lifecycle.get_music_provider",
+            return_value=provider,
+        ):
+            job, _ = enqueue_music_job(
+                project=self.project,
+                actor=self.owner,
+                brief=instrumental_brief("Invalid local result"),
+                variant_count=1,
+                idempotency_key="music:paid-local-failure",
+            )
+        claimed = claim_music_job(job.pk)
+        mark_music_provider_result_received(claimed)
+
+        fail_music_job(
+            claimed,
+            code="MUSIC_OUTPUT_INVALID",
+            detail="Provider returned invalid audio.",
+            http_status=502,
+            retryable=True,
+        )
+
+        account.refresh_from_db()
+        charge = GenerationCharge.objects.get(domain="music", job_id=str(job.pk))
+        self.assertEqual(account.available_balance, Decimal("0.74"))
+        self.assertEqual(account.reserved_balance, Decimal("0"))
+        self.assertEqual(charge.charged_amount, Decimal("0.26"))
+        self.assertFalse(charge.cost_is_estimate)
+        self.assertEqual(
+            charge.provider_usage["costSource"],
+            "confirmed-provider-result",
         )
 
     def test_worker_redacts_raw_provider_error_message(self):

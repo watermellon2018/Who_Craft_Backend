@@ -109,10 +109,34 @@ application refuses to start without `DJANGO_SECRET_KEY` and PostgreSQL user/
 password. Mock providers are suitable for local Character/Reference generation;
 review provider-specific defaults before making external calls.
 
+Music Studio has two provider modes:
+
+- `MUSIC_GENERATION_PROVIDER=mock` produces deterministic local WAV files and
+  is the safe development default.
+- `MUSIC_GENERATION_PROVIDER=stability` sends paid instrumental requests to
+  Stability AI Stable Audio 3.0. Set `STABILITY_API_KEY` in both the web and
+  worker environments. The adapter submits asynchronously, stores only the
+  provider generation ID, polls from the durable music queue, validates the
+  returned MP3/WAV, and moves it into private media storage.
+
+The Stability adapter currently exposes one instrumental variant per request,
+durations up to the application limit (300 seconds by default), and no remote
+cancellation, structured lyrics, or audio-reference generation. A lost response
+to the initial paid submission is recorded as an unknown outcome and is not
+blindly retried. Polling stops after `MUSIC_STABILITY_MAX_POLL_SECONDS` (30
+minutes by default). Unknown outcomes conservatively capture the reserved
+estimate for provider-billing reconciliation; a confirmed provider result is
+also charged if local validation or storage later fails.
+`MUSIC_STABILITY_COST_USD_PER_VARIANT` defaults to the current provider price of
+`0.26`; verify it against the Stability pricing page during deployment so Craft
+never enqueues an unpriced call. The compiled musical brief and bounded scene
+summary are sent to Stability AI; raw scripts and API keys are not written to
+provider or billing metadata.
+
 The credits wallet and generation settlement flow are described in
 [`docs/credits.md`](docs/credits.md). Paid generation first reserves the
 provider-native estimate, captures the final provider cost on success, and
-releases the reservation on failure or cancellation. Set
+releases the reservation on confirmed pre-provider failure or cancellation. Set
 `CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal
 credits without a payment provider. The same reference documents automatic
 model routing, low-balance warnings, owner-managed project budgets,

@@ -8,6 +8,11 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from w_craft_back.movie.music.providers import (
+    MusicProviderError,
+    get_music_provider,
+)
+
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
 from .pricing import GenerationEstimate
 from .serializers import (
@@ -207,7 +212,35 @@ class GenerationEstimateView(APIView):
             return _validation_error(serializer)
         data = serializer.validated_data
         try:
-            if data["domain"] in {"music", "model3d"}:
+            if data["domain"] == "music":
+                provider = get_music_provider()
+                capabilities = provider.capabilities()
+                if data["variantCount"] not in capabilities.variant_counts:
+                    raise MusicProviderError(
+                        "The selected music provider does not support "
+                        "this variant count.",
+                        code="MUSIC_CAPABILITY_UNSUPPORTED",
+                        http_status=400,
+                        retryable=False,
+                    )
+                pricing = provider.pricing(data["variantCount"])
+                estimate = GenerationEstimate(
+                    provider=provider.name,
+                    model_key=provider.name,
+                    model_name=provider.model_name,
+                    currency="USD",
+                    estimated_cost=pricing.estimated_cost,
+                    reservation_amount=pricing.estimated_cost,
+                    pricing_source=str(
+                        pricing.snapshot.get("source") or provider.name
+                    ),
+                    prompt_tokens_estimate=0,
+                    snapshot=dict(pricing.snapshot),
+                )
+                routing_mode = "manual"
+                routing_reason = "music-provider"
+                route_candidates = []
+            elif data["domain"] == "model3d":
                 estimate = GenerationEstimate(
                     provider="local",
                     model_key="local",
@@ -229,7 +262,11 @@ class GenerationEstimateView(APIView):
                 route_candidates = []
             else:
                 model_key = data["modelKey"] or (
-                    getattr(getattr(request.user, "profile", None), "image_generation_model", "")
+                    getattr(
+                        getattr(request.user, "profile", None),
+                        "image_generation_model",
+                        "",
+                    )
                     or get_default_key()
                 )
                 decision = build_routing_decision(
@@ -247,6 +284,11 @@ class GenerationEstimateView(APIView):
         except CreditServiceError as error:
             return _error_response(error)
         except ImageProviderError as error:
+            return Response(
+                {"code": error.code, "detail": error.message},
+                status=error.http_status,
+            )
+        except MusicProviderError as error:
             return Response(
                 {"code": error.code, "detail": error.message},
                 status=error.http_status,

@@ -8,11 +8,13 @@ import json
 import math
 import struct
 import wave
+from decimal import Decimal
 from typing import Any, Mapping
 
 from .base import (
     AudioProvider,
     AudioProviderCapabilities,
+    AudioProviderPricing,
     ExecutionContextProtocol,
     GeneratedAudio,
     ProviderSubmission,
@@ -78,6 +80,19 @@ class MockAudioProvider(AudioProvider):
             provider_name=self.name,
             provider_display_name="Music generator",
             model_name=self.model_name,
+        )
+
+    def pricing(self, variant_count: int) -> AudioProviderPricing:
+        return AudioProviderPricing(
+            estimated_cost=Decimal("0"),
+            snapshot={
+                "currency": "USD",
+                "source": "local",
+                "variantCount": int(variant_count),
+                "unitCostUsd": "0",
+                "markup": "0",
+                "creditUsdRate": "1",
+            },
         )
 
     def prepare_reference(

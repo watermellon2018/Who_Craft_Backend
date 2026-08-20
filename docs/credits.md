@@ -110,9 +110,13 @@ returned. If a provider supplies no usable cost, settlement retains the enqueue
 estimate and marks it as estimated. Prompts and generated content are never
 stored in billing usage metadata.
 
-Mock image generation, the current local music provider, and local 3D jobs cost
-zero. Paid music providers remain blocked until their adapter exposes supported
-billing metadata.
+Mock image generation, mock music, and local 3D jobs cost zero. The Stability
+music adapter reserves and captures its configured fixed USD cost per successful
+result. Confirmed failures before provider acceptance release the reservation;
+unknown provider outcomes retain the configured estimate as an estimated charge,
+and failures after a provider result was received retain the fixed charge. Keep
+`MUSIC_STABILITY_COST_USD_PER_VARIANT` aligned with the provider tariff because
+an invalid or zero price blocks paid generation.
 
 ## Demo configuration
 

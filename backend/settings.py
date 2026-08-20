@@ -319,6 +319,34 @@ REFERENCE_ALLOW_MOCK = (
 REFERENCE_PROVIDER_TIMEOUT_SECONDS = int(
     os.getenv("REFERENCE_PROVIDER_TIMEOUT_SECONDS", "90")
 )
+# Music Studio uses the deterministic provider unless production explicitly
+# selects Stability AI. Paid generation requires the web and worker processes
+# to share these values.
+MUSIC_GENERATION_PROVIDER = os.getenv(
+    "MUSIC_GENERATION_PROVIDER", "mock"
+).strip().lower()
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "").strip()
+MUSIC_STABILITY_API_BASE_URL = os.getenv(
+    "MUSIC_STABILITY_API_BASE_URL", "https://api.stability.ai"
+).rstrip("/")
+MUSIC_STABILITY_MODEL = os.getenv(
+    "MUSIC_STABILITY_MODEL", "stable-audio-3"
+).strip()
+MUSIC_STABILITY_OUTPUT_FORMAT = os.getenv(
+    "MUSIC_STABILITY_OUTPUT_FORMAT", "mp3"
+).strip().lower()
+MUSIC_STABILITY_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_TIMEOUT_SECONDS", "30")
+)
+MUSIC_STABILITY_POLL_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_POLL_SECONDS", "10")
+)
+MUSIC_STABILITY_MAX_POLL_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_MAX_POLL_SECONDS", "1800")
+)
+MUSIC_STABILITY_COST_USD_PER_VARIANT = os.getenv(
+    "MUSIC_STABILITY_COST_USD_PER_VARIANT", "0.26"
+).strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 

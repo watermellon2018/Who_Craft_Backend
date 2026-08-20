@@ -13,6 +13,7 @@ _PUBLIC_PROVIDER_ERROR_DETAILS = {
     "MUSIC_PROVIDER_OUTCOME_UNKNOWN": "Music provider outcome is unknown.",
     "MUSIC_REFERENCE_REJECTED": "Music provider rejected the audio reference.",
     "MUSIC_CAPABILITY_UNSUPPORTED": "Music provider does not support this request.",
+    "MUSIC_OUTPUT_TOO_LARGE": "Generated audio exceeds the configured byte limit.",
 }
 
 

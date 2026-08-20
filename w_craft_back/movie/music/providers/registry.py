@@ -6,9 +6,13 @@ from django.conf import settings
 
 from .base import AudioProvider, MusicProviderError
 from .mock import MockAudioProvider
+from .stability import StabilityAudioProvider
 
 
-_PROVIDER_FACTORIES = {"mock": MockAudioProvider}
+_PROVIDER_FACTORIES = {
+    "mock": MockAudioProvider,
+    "stability": StabilityAudioProvider,
+}
 
 
 def get_music_provider(provider_name: str | None = None) -> AudioProvider:

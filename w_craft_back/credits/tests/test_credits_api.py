@@ -419,6 +419,39 @@ class CreditsApiTest(TestCase):
         self.assertTrue(response.json()["sufficientBalance"])
 
     @override_settings(
+        MUSIC_GENERATION_PROVIDER="stability",
+        STABILITY_API_KEY="test-key",
+        MUSIC_STABILITY_MODEL="stable-audio-3",
+        MUSIC_STABILITY_OUTPUT_FORMAT="mp3",
+        MUSIC_STABILITY_COST_USD_PER_VARIANT="0.26",
+    )
+    def test_generation_estimate_uses_stability_music_price(self):
+        CreditAccount.objects.create(
+            user=self.user,
+            available_balance=Decimal("1.000000"),
+        )
+
+        response = self.client.post(
+            reverse("credit-generation-estimate"),
+            {
+                "domain": "music",
+                "operation": "generate",
+                "variantCount": 1,
+                "promptLength": 120,
+            },
+            format="json",
+            **self.auth,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["provider"], "stability")
+        self.assertEqual(response.json()["modelName"], "stable-audio-3")
+        self.assertEqual(response.json()["estimatedCost"], "0.26")
+        self.assertEqual(response.json()["reservationAmount"], "0.26")
+        self.assertEqual(response.json()["pricingSource"], "stability-ai")
+        self.assertTrue(response.json()["sufficientBalance"])
+
+    @override_settings(
         CREDITS_DEMO_TOP_UP_ENABLED=True,
         CREDITS_TRANSFER_MAX_AMOUNT="10.00",
         CREDITS_TRANSFER_DAILY_LIMIT="15.00",

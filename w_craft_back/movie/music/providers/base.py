@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, BinaryIO, Mapping, Protocol
 
 
@@ -31,6 +32,7 @@ class MusicProviderError(RuntimeError):
         http_status: int = 503,
         retryable: bool = True,
         outcome_unknown: bool = False,
+        cost_incurred: bool = False,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -38,6 +40,7 @@ class MusicProviderError(RuntimeError):
         self.http_status = http_status
         self.retryable = retryable
         self.outcome_unknown = outcome_unknown
+        self.cost_incurred = cost_incurred
 
 
 @dataclass(frozen=True)
@@ -102,12 +105,20 @@ class AudioProviderCapabilities:
 
 
 @dataclass(frozen=True)
+class AudioProviderPricing:
+    """Provider-native USD estimate reserved before paid generation."""
+
+    estimated_cost: Decimal
+    snapshot: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class GeneratedAudio:
     """One provider output; raw bytes never enter the database."""
 
     payload: bytes
     mime_type: str
-    duration_seconds: float
+    duration_seconds: float | None
     seed: int | None = None
     provider_request_id: str = ""
     provenance: Mapping[str, Any] = field(default_factory=dict)
@@ -140,6 +151,10 @@ class AudioProvider(ABC):
     def capabilities(self) -> AudioProviderCapabilities:
         """Return the effective provider capability profile."""
 
+    @abstractmethod
+    def pricing(self, variant_count: int) -> AudioProviderPricing:
+        """Return the provider-native price reserved before submission."""
+
     def prepare_reference(
         self,
         stream: BinaryIO,
@@ -163,10 +178,11 @@ class AudioProvider(ABC):
         self,
         external_job_id: str,
         context: ExecutionContextProtocol,
+        provider_metadata: Mapping[str, Any] | None = None,
     ) -> ProviderSubmission:
         """Poll an external provider job when async execution is supported."""
 
-        del external_job_id
+        del external_job_id, provider_metadata
         context.checkpoint()
         raise MusicProviderError(
             "The selected provider does not support asynchronous polling.",
