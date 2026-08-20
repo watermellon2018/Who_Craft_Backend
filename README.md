@@ -31,6 +31,11 @@ Supported queue names are `character`, `poster`, `music`, `sound_effect`, and
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
 
+Music generation jobs remain queued until a generation worker polls the
+`music` queue. Music Studio shows a delayed-queue warning when a job has not
+been claimed within 30 seconds; start `run_generation_worker --queue music`
+before treating provider polling as active generation.
+
 ## Checks
 
 ```bash
