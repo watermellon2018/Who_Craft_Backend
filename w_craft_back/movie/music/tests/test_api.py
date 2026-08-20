@@ -18,6 +18,8 @@ from rest_framework.test import APIClient
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import StudioCharacter
+from w_craft_back.credits.models import CreditAccount
+from w_craft_back.movie.music.lifecycle import _legacy_provider_fingerprint
 from w_craft_back.movie.music.models import (
     MusicAsset,
     MusicAssetOrigin,
@@ -161,6 +163,9 @@ class MusicBriefSerializerTests(TestCase):
     SIGNED_MEDIA_TTL_SECONDS=120,
     MUSIC_MIN_REFERENCE_DURATION_SECONDS=0.01,
     MUSIC_MAX_REFERENCE_DURATION_SECONDS=300,
+    MUSIC_DEFAULT_AUDIO_MODEL="",
+    MUSIC_GENERATION_PROVIDER="mock",
+    MUSIC_ALLOW_MOCK=True,
 )
 class MusicApiTests(TestCase):
     def setUp(self) -> None:
@@ -413,6 +418,119 @@ class MusicApiTests(TestCase):
             **self._header(),
         )
         self.assertEqual(invalid.status_code, 400)
+
+    @override_settings(
+        MUSIC_DEFAULT_AUDIO_MODEL="lyria-3-pro",
+        GEMINI_API_KEY="google-key",
+        OPENROUTER_API_KEY="router-key",
+    )
+    def test_capabilities_exposes_model_catalog_and_cheapest_routes(self) -> None:
+        response = self.client.get(f"{self.root}capabilities/", **self._header())
+
+        self.assertEqual(response.status_code, 200, response.json())
+        payload = response.json()
+        self.assertEqual(payload["defaultModelKey"], "lyria-3-pro")
+        pro = next(row for row in payload["models"] if row["key"] == "lyria-3-pro")
+        self.assertTrue(pro["configured"])
+        self.assertTrue(pro["default"])
+        self.assertEqual(pro["routes"][0]["provider"], "google-lyria")
+        self.assertEqual(
+            pro["capabilities"]["briefFields"],
+            payload["briefFields"],
+        )
+
+    @override_settings(GEMINI_API_KEY="", OPENROUTER_API_KEY="")
+    def test_enqueue_rejects_unknown_and_unconfigured_model_keys(self) -> None:
+        unknown = self.client.post(
+            f"{self.root}generation-jobs/",
+            {"modelKey": "google/lyria-3-pro-preview", "brief": _brief()},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="unknown-model",
+            **self._header(),
+        )
+        unconfigured = self.client.post(
+            f"{self.root}generation-jobs/",
+            {"modelKey": "lyria-3-pro", "brief": _brief()},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="unconfigured-model",
+            **self._header(),
+        )
+
+        self.assertEqual(unknown.status_code, 400, unknown.json())
+        self.assertEqual(unknown.json()["code"], "MUSIC_MODEL_UNKNOWN")
+        self.assertEqual(unconfigured.status_code, 503, unconfigured.json())
+        self.assertEqual(
+            unconfigured.json()["code"],
+            "MUSIC_MODEL_NOT_CONFIGURED",
+        )
+
+    @override_settings(GEMINI_API_KEY="google-key", OPENROUTER_API_KEY="")
+    def test_idempotent_replay_does_not_depend_on_current_route_config(self) -> None:
+        CreditAccount.objects.create(
+            user=self.owner,
+            available_balance=Decimal("1.000000"),
+        )
+        payload = {
+            "modelKey": "lyria-3-pro",
+            "variantCount": 1,
+            "brief": _brief(),
+        }
+        first = self.client.post(
+            f"{self.root}generation-jobs/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="route-drift-replay",
+            **self._header(),
+        )
+        self.assertEqual(first.status_code, 202, first.json())
+
+        with override_settings(GEMINI_API_KEY="", OPENROUTER_API_KEY=""):
+            replay = self.client.post(
+                f"{self.root}generation-jobs/",
+                payload,
+                format="json",
+                HTTP_IDEMPOTENCY_KEY="route-drift-replay",
+                **self._header(),
+            )
+
+        self.assertEqual(replay.status_code, 202, replay.json())
+        self.assertEqual(replay.json()["jobId"], first.json()["jobId"])
+        self.assertTrue(replay.json()["idempotentReplay"])
+
+    def test_pre_catalog_job_keeps_legacy_idempotent_replay(self) -> None:
+        payload = {"variantCount": 2, "brief": _brief()}
+        first = self.client.post(
+            f"{self.root}generation-jobs/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="legacy-replay",
+            **self._header(),
+        )
+        self.assertEqual(first.status_code, 202, first.json())
+        job = MusicGenerationJob.objects.get(pk=first.json()["jobId"])
+        job.provider_snapshot = {}
+        job.request_fingerprint = _legacy_provider_fingerprint(
+            project=self.project,
+            normalized_brief=job.brief,
+            variant_count=job.variant_count,
+            target_track=job.target_track,
+            reference_asset=job.reference_asset,
+            provider_name=job.provider,
+            model_name=job.model_name,
+        )
+        job.save(update_fields=["provider_snapshot", "request_fingerprint"])
+
+        replay = self.client.post(
+            f"{self.root}generation-jobs/",
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="legacy-replay",
+            **self._header(),
+        )
+
+        self.assertEqual(replay.status_code, 202, replay.json())
+        self.assertEqual(replay.json()["jobId"], str(job.id))
+        self.assertTrue(replay.json()["idempotentReplay"])
 
     def test_library_search_filter_signed_expiry_and_permissions(self) -> None:
         active, version = self._track_with_version(title="Night Station")

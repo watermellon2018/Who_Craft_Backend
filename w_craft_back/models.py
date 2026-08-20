@@ -12,6 +12,8 @@ from w_craft_back.movie.project.dashboard_models import *
 from w_craft_back.movie.reference_library.models import *
 # Music models depend on Project + dashboard MusicTrack.
 from w_craft_back.movie.music.models import *
+# Sound Effects is a separate reusable-audio domain with immutable versions.
+from w_craft_back.movie.sound_effects.models import *
 # Team-collaboration models depend on dashboard role enums + Project.
 from w_craft_back.movie.project.team_models import *
 # Poster models depend on Project + ProjectAsset (defined above).

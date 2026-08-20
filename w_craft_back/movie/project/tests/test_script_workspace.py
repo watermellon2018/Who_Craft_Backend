@@ -236,6 +236,220 @@ class ScriptWorkspaceApiTests(TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()["code"], "VERSION_CONFLICT")
 
+    def test_reorder_scenes_updates_order_and_acts_atomically(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            act=1,
+            updated_by=self.owner,
+        )
+        third = Scene.objects.create(
+            project=self.project,
+            title="Street",
+            order=3,
+            act=3,
+            updated_by=self.owner,
+        )
+
+        response = self.client.patch(
+            f"{self.scenes_url}reorder/",
+            {
+                "scenes": [
+                    {
+                        "id": second.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                    {
+                        "id": first.id,
+                        "order": 2,
+                        "act": 2,
+                        "version": first.version,
+                    },
+                    {
+                        "id": third.id,
+                        "order": 3,
+                        "act": 3,
+                        "version": third.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [
+                (item["id"], item["order"], item["act"])
+                for item in response.json()["scenes"]
+            ],
+            [(second.id, 1, 1), (first.id, 2, 2), (third.id, 3, 3)],
+        )
+        first.refresh_from_db()
+        second.refresh_from_db()
+        third.refresh_from_db()
+        self.assertEqual(first.version, first_payload["version"] + 1)
+        self.assertEqual(second.version, 2)
+        self.assertEqual(third.version, 1)
+        self.assertEqual(second.updated_by, self.editor)
+
+    def test_reorder_scenes_rejects_invalid_or_stale_payload_without_changes(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            updated_by=self.owner,
+        )
+        reorder_url = f"{self.scenes_url}reorder/"
+
+        duplicate_order = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {"id": first.id, "order": 1, "act": 1, "version": first.version},
+                    {"id": second.id, "order": 1, "act": 1, "version": second.version},
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(duplicate_order.status_code, 400)
+
+        incomplete = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    }
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(incomplete.status_code, 400)
+
+        stale = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {"id": second.id, "order": 1, "act": 1, "version": 999},
+                    {"id": first.id, "order": 2, "act": 2, "version": first.version},
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["code"], "VERSION_CONFLICT")
+        self.assertEqual(
+            list(
+                Scene.objects.filter(project=self.project)
+                .order_by("order")
+                .values_list("id", "order")
+            ),
+            [(first.id, 1), (second.id, 2)],
+        )
+
+        forbidden = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    },
+                    {
+                        "id": second.id,
+                        "order": 2,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        unauthorized = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    },
+                    {
+                        "id": second.id,
+                        "order": 2,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+
+    def test_reorder_uses_safe_temporary_orders_for_legacy_large_values(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        Scene.objects.filter(pk=first.id).update(order=2_147_483_647)
+        first.refresh_from_db()
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            updated_by=self.owner,
+        )
+
+        response = self.client.patch(
+            f"{self.scenes_url}reorder/",
+            {
+                "scenes": [
+                    {
+                        "id": second.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                    {
+                        "id": first.id,
+                        "order": 2,
+                        "act": 2,
+                        "version": first.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            list(
+                Scene.objects.filter(project=self.project)
+                .order_by("order")
+                .values_list("id", "order")
+            ),
+            [(second.id, 1), (first.id, 2)],
+        )
+
     def test_legacy_script_text_serializes_as_fallback_block(self):
         scene = Scene.objects.create(
             project=self.project,

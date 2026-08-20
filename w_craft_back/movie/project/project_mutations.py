@@ -15,6 +15,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Max, Model
+from django.utils import timezone
 
 from w_craft_back.auth.models import UserKey
 from w_craft_back.character_studio.models import StudioCharacter
@@ -37,6 +38,7 @@ from w_craft_back.storage_gateway import (
     delete_storage_key,
     store_project_upload,
 )
+
 
 class ProjectMutationForbidden(Exception):
     """The actor lacks the requested project action."""
@@ -545,6 +547,71 @@ def update_scene(
         scene.updated_by = actor
         scene.save()
     return scene
+
+
+@transaction.atomic
+def reorder_scenes(
+    *,
+    actor: User,
+    action: policy.Action,
+    project_id: int,
+    placements: Sequence[Mapping[str, int]],
+) -> list[Scene]:
+    """Apply a complete scene order atomically without transient collisions."""
+    _require_action(action, policy.Action.EDIT_CONTENT)
+    project = get_project_for_action(
+        actor=actor, project_id=project_id, action=action, lock=True
+    )
+    scenes = list(
+        Scene.objects.select_for_update()
+        .filter(project=project)
+        .order_by("order", "created_at")
+    )
+    scenes_by_id = {scene.pk: scene for scene in scenes}
+    requested_by_id = {int(item["id"]): item for item in placements}
+
+    if set(requested_by_id) != set(scenes_by_id):
+        raise ValidationError(
+            {"scenes": ["The complete set of project scenes is required"]}
+        )
+
+    for scene_id, placement in requested_by_id.items():
+        scene = scenes_by_id[scene_id]
+        if int(placement["version"]) != scene.version:
+            raise VersionConflict(scene.version)
+
+    changed = []
+    for scene in scenes:
+        placement = requested_by_id[scene.pk]
+        order_changed = scene.order != int(placement["order"])
+        act_changed = scene.act != int(placement["act"])
+        if order_changed or act_changed:
+            changed.append(scene)
+    if not changed:
+        return scenes
+
+    used_orders = {scene.order for scene in scenes}
+    temporary_orders = []
+    candidate = len(scenes) + 1
+    while len(temporary_orders) < len(changed):
+        if candidate not in used_orders:
+            temporary_orders.append(candidate)
+        candidate += 1
+    for scene, temporary_order in zip(changed, temporary_orders):
+        Scene.objects.filter(pk=scene.pk).update(order=temporary_order)
+
+    updated_at = timezone.now()
+    for scene in changed:
+        placement = requested_by_id[scene.pk]
+        Scene.objects.filter(pk=scene.pk).update(
+            order=int(placement["order"]),
+            act=int(placement["act"]),
+            version=scene.version + 1,
+            updated_by=actor,
+            updated_at=updated_at,
+        )
+
+    return list(Scene.objects.filter(project=project).order_by("order", "created_at"))
 
 
 @transaction.atomic

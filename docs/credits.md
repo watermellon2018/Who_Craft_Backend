@@ -110,9 +110,33 @@ returned. If a provider supplies no usable cost, settlement retains the enqueue
 estimate and marks it as estimated. Prompts and generated content are never
 stored in billing usage metadata.
 
-Mock image generation, the current local music provider, and local 3D jobs cost
-zero. Paid music providers remain blocked until their adapter exposes supported
-billing metadata.
+Mock image generation, mock music, and local 3D jobs cost zero. The Stability
+music adapter reserves and captures its configured fixed USD cost per successful
+result. Confirmed failures before provider acceptance release the reservation;
+unknown provider outcomes retain the configured estimate as an estimated charge,
+and failures after a provider result was received retain the fixed charge. Keep
+`MUSIC_STABILITY_COST_USD_PER_VARIANT` aligned with the provider tariff because
+an invalid or zero price blocks paid generation.
+
+ElevenLabs Music reserves `duration / 60 ×
+MUSIC_ELEVENLABS_COST_USD_PER_MINUTE` for one result. MiniMax Music uses its
+configured fixed per-generation amount and remains unavailable without explicit
+legacy paid-access confirmation. Sound Effects uses the independent
+`sound_effect` billing domain: fixed durations reserve the configured
+ElevenLabs per-minute rate, while Auto duration fails closed unless an operator
+sets a verified `SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD`. Synchronous paid audio
+providers do not expose idempotency or provider-side cancellation; an ambiguous
+POST outcome therefore captures the estimate and cannot be blindly retried.
+
+Google Lyria model definitions can expose a direct Google route and an
+OpenRouter route as separate price snapshots. At the documented launch prices,
+direct Google reserves `$0.08` for Lyria 3 Pro and `$0.04` for Lyria 3 Clip;
+OpenRouter reserves `$0.0844` and `$0.0422` respectively, including its 5.5%
+credit-purchase fee. Automatic selection may prefer the cheaper configured
+direct route before submission. It must not resend a timed-out, disconnected,
+or malformed paid request through the other route because neither integration
+provides an idempotency key that proves the first request was not charged.
+Both routes retain the reservation as an unknown outcome in that case.
 
 ## Demo configuration
 

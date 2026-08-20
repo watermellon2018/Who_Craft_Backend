@@ -251,6 +251,7 @@ class MusicGenerationJob(models.Model):
     compiled_request = models.JSONField(default=dict)
     provider = models.CharField(max_length=64, default="mock")
     model_name = models.CharField(max_length=128, blank=True, default="")
+    provider_snapshot = models.JSONField(default=dict, blank=True)
     status = models.CharField(
         max_length=32,
         choices=MusicJobStatus.choices,

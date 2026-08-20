@@ -32,16 +32,28 @@ from w_craft_back.movie.reference_library.lifecycle import (
 from w_craft_back.movie.reference_library.worker import (
     execute_next_reference_job,
 )
+from w_craft_back.movie.sound_effects.lifecycle import (
+    recover_stale_sound_effect_jobs,
+)
+from w_craft_back.movie.sound_effects.worker import (
+    execute_next_sound_effect_job,
+)
 
 
 class Command(BaseCommand):
-    help = "Poll selected durable character, poster, 3D, music and reference queues."
+    help = (
+        "Poll selected durable character, poster, 3D, music, sound-effect "
+        "and reference queues."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--queue",
             default="all",
-            help="Comma-separated character,poster,music,reference queues or all.",
+            help=(
+                "Comma-separated character,poster,music,sound_effect,reference "
+                "queues or all."
+            ),
         )
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-interval", type=float, default=2.0)
@@ -54,8 +66,20 @@ class Command(BaseCommand):
         raw_queues = str(options["queue"] or "all").lower().split(",")
         selected = {item.strip() for item in raw_queues if item.strip()}
         if "all" in selected:
-            selected = {"character", "poster", "music", "reference"}
-        unknown = selected - {"character", "poster", "music", "reference"}
+            selected = {
+                "character",
+                "poster",
+                "music",
+                "sound_effect",
+                "reference",
+            }
+        unknown = selected - {
+            "character",
+            "poster",
+            "music",
+            "sound_effect",
+            "reference",
+        }
         if unknown or not selected:
             raise CommandError(
                 "Unknown generation queue(s): " + ", ".join(sorted(unknown))
@@ -71,6 +95,8 @@ class Command(BaseCommand):
                 processed += self._poll_poster_jobs(batch_size)
             if "music" in selected:
                 processed += self._poll_music_jobs(batch_size)
+            if "sound_effect" in selected:
+                processed += self._poll_sound_effect_jobs(batch_size)
             if "reference" in selected:
                 processed += self._poll_reference_jobs(batch_size)
             if not once:
@@ -147,6 +173,17 @@ class Command(BaseCommand):
         processed = 0
         while processed < batch_size:
             job = execute_next_reference_job()
+            if job is None:
+                break
+            processed += 1
+        return processed
+
+    @staticmethod
+    def _poll_sound_effect_jobs(batch_size: int) -> int:
+        recover_stale_sound_effect_jobs(limit=batch_size)
+        processed = 0
+        while processed < batch_size:
+            job = execute_next_sound_effect_job()
             if job is None:
                 break
             processed += 1

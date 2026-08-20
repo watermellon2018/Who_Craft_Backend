@@ -6,7 +6,13 @@ import sys
 import uuid
 from unittest.mock import patch
 
-from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.test import (
+    Client,
+    RequestFactory,
+    SimpleTestCase,
+    TestCase,
+    override_settings,
+)
 from django.urls import resolve
 
 from w_craft_back.character_studio.services.prompt_compiler import (
@@ -81,6 +87,27 @@ class StructuredLoggingTests(SimpleTestCase):
         self.assertEqual(payload["request_id"], "request-42")
         self.assertEqual(payload["route"], "/api/media/<path:token>")
         self.assertNotIn("super-secret-signed-token", json.dumps(payload))
+
+    def test_django_request_filter_does_not_label_success_as_error(self):
+        request = RequestFactory().get("/health/live")
+        request.resolver_match = resolve(request.path)
+        record = logging.LogRecord(
+            name="django.server",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg='"GET %s HTTP/1.1" 200 12',
+            args=(request.path,),
+            exc_info=None,
+        )
+        record.request = request
+        record.status_code = 200
+
+        SafeDjangoRequestFilter().filter(record)
+        payload = json.loads(self.formatter.format(record))
+
+        self.assertEqual(payload["message"], "django_request_completed")
+        self.assertEqual(payload["status_code"], 200)
 
     def test_prompt_compiler_logs_metadata_but_not_prompt_text(self):
         secret_prompt = "private character backstory"

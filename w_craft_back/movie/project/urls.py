@@ -32,8 +32,9 @@ from w_craft_back.movie.project.team_views import (
     ProjectTransferOwnershipView,
 )
 from w_craft_back.movie.project.scene_views import (
-    SceneDetailView,
     LocationDetailView,
+    SceneDetailView,
+    SceneReorderView,
 )
 from w_craft_back.movie.reference_library.views import SceneReferencesView
 
@@ -44,6 +45,11 @@ urlpatterns = [
     path('<int:project_id>/dashboard/', ProjectDashboardView.as_view(), name='project-dashboard'),
     path('<int:project_id>/characters/', ProjectCharactersView.as_view(), name='project-characters'),
     path('<int:project_id>/scenes/', ProjectScenesView.as_view(), name='project-scenes'),
+    path(
+        '<int:project_id>/scenes/reorder/',
+        SceneReorderView.as_view(),
+        name='project-scenes-reorder',
+    ),
     path(
         '<int:project_id>/scenes/<int:scene_id>/references/',
         SceneReferencesView.as_view(),
@@ -56,6 +62,10 @@ urlpatterns = [
     path(
         '<int:project_id>/music/',
         include('w_craft_back.movie.music.urls'),
+    ),
+    path(
+        '<int:project_id>/sound-effects/',
+        include('w_craft_back.movie.sound_effects.urls'),
     ),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
