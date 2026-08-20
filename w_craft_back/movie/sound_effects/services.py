@@ -378,9 +378,7 @@ def retry_job(*, actor: User, project_id: int, job_id) -> dict[str, Any]:
         job_id=job_id,
         action=policy.Action.RUN_GENERATION,
     )
-    existing_retry = job.retries.order_by("created_at").first()
-    retry = retry_sound_effect_job(job, actor=actor)
-    replay = existing_retry is not None and existing_retry.pk == retry.pk
+    retry, replay = retry_sound_effect_job(job, actor=actor)
     return _accepted_payload(retry, replay)
 
 

@@ -193,9 +193,13 @@ class SoundEffectLifecycleTests(TestCase):
         self.assertEqual(cancelled.status, SoundEffectJobStatus.CANCELLED)
 
         with override_settings(SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD="0.99"):
-            retry = retry_sound_effect_job(cancelled, actor=self.user)
+            retry, was_replay = retry_sound_effect_job(
+                cancelled,
+                actor=self.user,
+            )
 
         self.assertEqual(retry.provider_snapshot, cancelled.provider_snapshot)
+        self.assertFalse(was_replay)
         replay = retry_job_payload(
             actor=self.user,
             project_id=self.project.pk,

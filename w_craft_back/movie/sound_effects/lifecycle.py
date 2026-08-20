@@ -417,7 +417,7 @@ def retry_sound_effect_job(
     original: SoundEffectGenerationJob,
     *,
     actor,
-) -> SoundEffectGenerationJob:
+) -> tuple[SoundEffectGenerationJob, bool]:
     locked = SoundEffectGenerationJob.objects.select_for_update().get(pk=original.pk)
     if locked.status not in (
         SoundEffectJobStatus.FAILED,
@@ -436,7 +436,7 @@ def retry_sound_effect_job(
         )
     existing = locked.retries.order_by("created_at").first()
     if existing is not None:
-        return existing
+        return existing, True
     retry, _ = enqueue_sound_effect_job(
         project=locked.project,
         actor=actor,
@@ -449,7 +449,7 @@ def retry_sound_effect_job(
     retry.retry_of = locked
     retry.max_attempts = locked.max_attempts
     retry.save(update_fields=("retry_of", "max_attempts", "updated_at"))
-    return retry
+    return retry, False
 
 
 def recover_stale_sound_effect_jobs(
