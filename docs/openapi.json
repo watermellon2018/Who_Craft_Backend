@@ -405,6 +405,125 @@
         }
       }
     },
+    "/api/projects/{projectId}/dashboard/": {
+      "get": {
+        "operationId": "getProjectDashboard",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {
+            "description": "Project dashboard with dynamically calculated progress",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectDashboard"}}}
+          },
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/scenes/{sceneId}/storyboard/": {
+      "get": {
+        "operationId": "getSceneStoryboard",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Scene storyboard state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboard"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      },
+      "put": {
+        "operationId": "putSceneStoryboard",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboardUpdateRequest"}}}},
+        "responses": {
+          "200": {"description": "Storyboard replaced", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboard"}}}},
+          "201": {"description": "Storyboard registered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboard"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/scenes/{sceneId}/storyboard/confirm/": {
+      "post": {
+        "operationId": "confirmSceneStoryboard",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboardConfirmRequest"}}}},
+        "responses": {
+          "200": {"description": "Storyboard confirmed for the current scene revision", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SceneStoryboard"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/video-shots/": {
+      "get": {
+        "operationId": "listProjectVideoShots",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Planned project video shots", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotList"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      },
+      "post": {
+        "operationId": "createProjectVideoShot",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotCreateRequest"}}}},
+        "responses": {
+          "201": {"description": "Planned video shot created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShot"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/video-shots/{shotId}/": {
+      "patch": {
+        "operationId": "updateProjectVideoShot",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "shotId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotUpdateRequest"}}}},
+        "responses": {
+          "200": {"description": "Video shot updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShot"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      },
+      "delete": {
+        "operationId": "deleteProjectVideoShot",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "shotId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "204": {"description": "Video shot removed from the plan"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/api/projects/{projectId}/team/invitations/": {
       "post": {
         "operationId": "createProjectInvitation",
@@ -1718,6 +1837,120 @@
           "posterUrl": {"type": "string", "nullable": true},
           "generationSettings": {"type": "object", "additionalProperties": true},
           "createdAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "ProjectProgressReviewScene": {
+        "type": "object",
+        "required": ["sceneId", "title", "currentRevision", "acceptedRevision"],
+        "properties": {
+          "sceneId": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "currentRevision": {"type": "integer", "minimum": 1},
+          "acceptedRevision": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ProjectReadiness": {
+        "type": "object",
+        "required": ["overall", "script", "characters", "storyboard", "video", "storyboardNeedsReview", "storyboardReviewScenes"],
+        "properties": {
+          "overall": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "script": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "characters": {"type": "number", "format": "double", "minimum": 0, "maximum": 1, "nullable": true},
+          "storyboard": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "video": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "storyboardNeedsReview": {"type": "integer", "minimum": 0},
+          "storyboardReviewScenes": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectProgressReviewScene"}}
+        }
+      },
+      "ProjectProgress": {
+        "type": "object",
+        "required": ["overall", "script", "visual", "audio", "postproduction", "readiness"],
+        "properties": {
+          "overall": {"type": "integer", "minimum": 0, "maximum": 100},
+          "script": {"type": "integer", "minimum": 0, "maximum": 100},
+          "visual": {"type": "integer", "minimum": 0, "maximum": 100, "deprecated": true},
+          "audio": {"type": "integer", "minimum": 0, "maximum": 100, "deprecated": true},
+          "postproduction": {"type": "integer", "minimum": 0, "maximum": 100, "deprecated": true},
+          "readiness": {"$ref": "#/components/schemas/ProjectReadiness"}
+        }
+      },
+      "ProjectDashboard": {
+        "type": "object",
+        "required": ["progress"],
+        "additionalProperties": true,
+        "properties": {
+          "progress": {"$ref": "#/components/schemas/ProjectProgress"}
+        }
+      },
+      "SceneStoryboard": {
+        "type": "object",
+        "required": ["sceneId", "assetId", "sourceSceneVersion", "confirmedSceneVersion", "acceptedSceneVersion", "currentSceneVersion", "needsReview", "updatedAt"],
+        "properties": {
+          "sceneId": {"type": "integer", "minimum": 1},
+          "assetId": {"type": "integer", "minimum": 1},
+          "sourceSceneVersion": {"type": "integer", "minimum": 1},
+          "confirmedSceneVersion": {"type": "integer", "minimum": 1, "nullable": true},
+          "acceptedSceneVersion": {"type": "integer", "minimum": 1},
+          "currentSceneVersion": {"type": "integer", "minimum": 1},
+          "needsReview": {"type": "boolean"},
+          "updatedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "SceneStoryboardUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["assetId", "sourceSceneVersion"],
+        "properties": {
+          "assetId": {"type": "integer", "minimum": 1},
+          "sourceSceneVersion": {"type": "integer", "minimum": 1}
+        }
+      },
+      "SceneStoryboardConfirmRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedSceneVersion"],
+        "properties": {
+          "expectedSceneVersion": {"type": "integer", "minimum": 1}
+        }
+      },
+      "VideoShot": {
+        "type": "object",
+        "required": ["id", "sceneId", "title", "order", "finalAssetId", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "sceneId": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "order": {"type": "integer", "minimum": 1},
+          "finalAssetId": {"type": "integer", "minimum": 1, "nullable": true},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time", "nullable": true},
+          "updatedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "VideoShotList": {
+        "type": "object",
+        "required": ["shots"],
+        "properties": {"shots": {"type": "array", "items": {"$ref": "#/components/schemas/VideoShot"}}}
+      },
+      "VideoShotCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sceneId"],
+        "properties": {
+          "sceneId": {"type": "integer", "minimum": 1},
+          "title": {"type": "string", "maxLength": 255},
+          "order": {"type": "integer", "minimum": 1}
+        }
+      },
+      "VideoShotUpdateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version"],
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "title": {"type": "string", "maxLength": 255},
+          "order": {"type": "integer", "minimum": 1},
+          "finalAssetId": {"type": "integer", "minimum": 1, "nullable": true}
         }
       },
       "ProjectInvitationRequest": {

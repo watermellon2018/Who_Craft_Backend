@@ -9,6 +9,8 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectListCreateView,
     ProjectLocationsView,
     ProjectScenesView,
+    ProjectVideoShotDetailView,
+    ProjectVideoShotsView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
     ProjectPosterEditView,
@@ -35,6 +37,8 @@ from w_craft_back.movie.project.scene_views import (
     LocationDetailView,
     SceneDetailView,
     SceneReorderView,
+    SceneStoryboardConfirmView,
+    SceneStoryboardView,
 )
 from w_craft_back.movie.reference_library.views import SceneReferencesView
 
@@ -56,6 +60,16 @@ urlpatterns = [
         name='project-scene-references',
     ),
     path(
+        '<int:project_id>/scenes/<int:scene_id>/storyboard/',
+        SceneStoryboardView.as_view(),
+        name='project-scene-storyboard',
+    ),
+    path(
+        '<int:project_id>/scenes/<int:scene_id>/storyboard/confirm/',
+        SceneStoryboardConfirmView.as_view(),
+        name='project-scene-storyboard-confirm',
+    ),
+    path(
         '<int:project_id>/references/',
         include('w_craft_back.movie.reference_library.urls'),
     ),
@@ -69,6 +83,16 @@ urlpatterns = [
     ),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
+    path(
+        '<int:project_id>/video-shots/',
+        ProjectVideoShotsView.as_view(),
+        name='project-video-shots',
+    ),
+    path(
+        '<int:project_id>/video-shots/<int:shot_id>/',
+        ProjectVideoShotDetailView.as_view(),
+        name='project-video-shot-detail',
+    ),
     path(
         '<int:project_id>/assets/<int:asset_id>/',
         ProjectAssetDetailView.as_view(),

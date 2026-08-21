@@ -65,6 +65,8 @@ operations are unchanged.
 - `GET /api/schema/openapi.json` — checked-in OpenAPI 3.0 document.
 - `/api/auth/` — register/login/refresh/logout.
 - `/api/projects/` — project aggregate, team, poster, music, references.
+- `/api/projects/{id}/dashboard/` — dashboard and dynamically calculated
+  [project readiness](docs/project-readiness.md).
 - `/api/projects/{id}/characters...` — Character Studio.
 - `/api/credits/` — internal balance, ledger, demo top-up, and transfers.
 - `/api/media/{signed-token}` — authorized private media delivery.

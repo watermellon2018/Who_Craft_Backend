@@ -12,8 +12,8 @@ from typing import Optional
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import transaction
-from django.db.models import Count, Prefetch, Q
+from django.db import IntegrityError, transaction
+from django.db.models import Count, Max, Prefetch, Q
 from django.db.models.deletion import ProtectedError, RestrictedError
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -28,11 +28,15 @@ from w_craft_back.movie.project import (
     team_service,
 )
 from w_craft_back.movie.project.dashboard_models import (
+    AssetType,
     ProjectAsset,
     ProjectMember,
     ProjectMemberRole,
     ProjectProgress,
     ProjectTag,
+    Scene,
+    SceneStoryboard,
+    VideoShot,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
 from w_craft_back.movie.project.project_images import (
@@ -46,6 +50,8 @@ from w_craft_back.movie.project.serializers import (
     LocationCreateSerializer,
     ProjectCreateSerializer,
     ProjectUpdateSerializer,
+    VideoShotCreateSerializer,
+    VideoShotUpdateSerializer,
 )
 from w_craft_back.movie.project.serializers import SceneWorkspaceCreateSerializer
 from w_craft_back.movie.project.services import (
@@ -65,6 +71,7 @@ from w_craft_back.movie.properties.models import Audience, Genre
 # --------------------------------------------------------------------------- #
 # Auth helper
 # --------------------------------------------------------------------------- #
+
 
 def _resolve_user(request) -> Optional[User]:
     """Return the Django user established by DRF authentication."""
@@ -395,9 +402,11 @@ class ProjectListCreateView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+
 # --------------------------------------------------------------------------- #
 # Project detail / update / delete
 # --------------------------------------------------------------------------- #
+
 
 class ProjectDetailView(APIView):
     def get(self, request, project_id: int):
@@ -660,8 +669,6 @@ class ProjectAssetsView(_ProjectScopedView):
         if err:
             return err
 
-        from w_craft_back.movie.project.dashboard_models import AssetType
-
         upload = request.FILES.get("file")
         if upload is None:
             return _validation_error({"file": ["this field is required"]})
@@ -750,13 +757,174 @@ class ProjectAssetDetailView(_ProjectScopedView):
             project_mutations.ProjectMutationForbidden,
         ) as exc:
             return _mutation_error_response(exc)
-        except (ProtectedError, RestrictedError):
+        except (ProtectedError, RestrictedError) as exc:
+            related_objects = getattr(
+                exc,
+                "protected_objects",
+                getattr(exc, "restricted_objects", ()),
+            )
+            used_by_progress = any(
+                isinstance(obj, (SceneStoryboard, VideoShot))
+                for obj in related_objects
+            )
             return Response(
                 {
-                    "code": "REFERENCE_ASSET_IN_USE",
-                    "detail": "Asset is used by a reference version or variant.",
+                    "code": (
+                        "PROJECT_PROGRESS_ASSET_IN_USE"
+                        if used_by_progress
+                        else "REFERENCE_ASSET_IN_USE"
+                    ),
+                    "detail": (
+                        "Asset is linked to a storyboard or selected as a "
+                        "final video shot. Replace or unselect it first."
+                        if used_by_progress
+                        else "Asset is used by a reference version or variant."
+                    ),
                     "retryable": False,
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _video_shot_payload(shot: VideoShot) -> dict:
+    return {
+        "id": shot.id,
+        "sceneId": shot.scene_id,
+        "title": shot.title,
+        "order": shot.order,
+        "finalAssetId": shot.final_asset_id,
+        "version": shot.version,
+        "createdAt": shot.created_at.isoformat() if shot.created_at else None,
+        "updatedAt": shot.updated_at.isoformat() if shot.updated_at else None,
+    }
+
+
+class ProjectVideoShotsView(_ProjectScopedView):
+    def get(self, request, project_id: int):
+        _user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        shots = VideoShot.objects.filter(project=project).order_by(
+            "scene__order",
+            "order",
+            "created_at",
+        )
+        return Response({"shots": [_video_shot_payload(shot) for shot in shots]})
+
+    def post(self, request, project_id: int):
+        user, project, err = self._editable_project(request, project_id)
+        if err:
+            return err
+        serializer = VideoShotCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer.errors)
+        data = serializer.validated_data
+
+        try:
+            with transaction.atomic():
+                scene = (
+                    Scene.objects.select_for_update()
+                    .filter(pk=data["sceneId"], project=project)
+                    .first()
+                )
+                if scene is None:
+                    return _validation_error({"sceneId": ["scene not found"]})
+                order = data.get("order")
+                if order is None:
+                    max_order = (
+                        VideoShot.objects.filter(scene=scene).aggregate(
+                            value=Max("order")
+                        )["value"]
+                        or 0
+                    )
+                    order = max_order + 1
+                shot = VideoShot.objects.create(
+                    project=project,
+                    scene=scene,
+                    title=data.get("title", ""),
+                    order=order,
+                    created_by=user,
+                    updated_by=user,
+                )
+        except (IntegrityError, ValidationError):
+            return _validation_error(
+                {"order": ["shot order must be unique within the scene"]}
+            )
+        return Response(
+            _video_shot_payload(shot),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProjectVideoShotDetailView(_ProjectScopedView):
+    def patch(self, request, project_id: int, shot_id: int):
+        user, project, err = self._editable_project(request, project_id)
+        if err:
+            return err
+        serializer = VideoShotUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_error(serializer.errors)
+        data = serializer.validated_data
+
+        try:
+            with transaction.atomic():
+                shot = (
+                    VideoShot.objects.select_for_update()
+                    .filter(pk=shot_id, project=project)
+                    .first()
+                )
+                if shot is None:
+                    return Response(
+                        {"detail": "Not found"},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                if data["version"] != shot.version:
+                    return Response(
+                        {
+                            "code": "VERSION_CONFLICT",
+                            "detail": "Video shot has changed. Refresh and retry.",
+                            "currentVersion": shot.version,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if "title" in data:
+                    shot.title = data["title"]
+                if "order" in data:
+                    shot.order = data["order"]
+                if "finalAssetId" in data:
+                    final_asset_id = data["finalAssetId"]
+                    if final_asset_id is None:
+                        shot.final_asset = None
+                    else:
+                        final_asset = ProjectAsset.objects.filter(
+                            pk=final_asset_id,
+                            project=project,
+                            asset_type=AssetType.VIDEO,
+                        ).first()
+                        if final_asset is None:
+                            return _validation_error(
+                                {"finalAssetId": ["video asset not found"]}
+                            )
+                        shot.final_asset = final_asset
+                shot.version += 1
+                shot.updated_by = user
+                shot.save()
+        except (IntegrityError, ValidationError):
+            return _validation_error(
+                {"order": ["shot order must be unique within the scene"]}
+            )
+        return Response(_video_shot_payload(shot))
+
+    def delete(self, request, project_id: int, shot_id: int):
+        _user, project, err = self._editable_project(request, project_id)
+        if err:
+            return err
+        shot = VideoShot.objects.filter(pk=shot_id, project=project).first()
+        if shot is None:
+            return Response(
+                {"detail": "Not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        shot.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

@@ -119,8 +119,14 @@ class DashboardShapeTests(TestCase):
         data = self._get()
         for k in ("overall", "script", "visual", "audio", "postproduction"):
             self.assertEqual(data["progress"][k], 0)
+        readiness = data["progress"]["readiness"]
+        for k in ("overall", "script", "storyboard", "video"):
+            self.assertEqual(readiness[k], 0)
+        self.assertIsNone(readiness["characters"])
+        self.assertEqual(readiness["storyboardNeedsReview"], 0)
+        self.assertEqual(readiness["storyboardReviewScenes"], [])
 
-    def test_progress_uses_db_values(self):
+    def test_readiness_ignores_legacy_cache_but_keeps_audio_compatibility(self):
         ProjectProgress.objects.update_or_create(
             project=self.project,
             defaults={
@@ -132,8 +138,10 @@ class DashboardShapeTests(TestCase):
             },
         )
         data = self._get()
-        self.assertEqual(data["progress"]["overall"], 58)
-        self.assertEqual(data["progress"]["script"], 80)
+        self.assertEqual(data["progress"]["overall"], 0)
+        self.assertEqual(data["progress"]["script"], 0)
+        self.assertEqual(data["progress"]["audio"], 67)
+        self.assertEqual(data["progress"]["readiness"]["overall"], 0)
 
     def test_empty_collections_are_arrays(self):
         data = self._get()
