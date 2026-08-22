@@ -22,6 +22,30 @@ is `null` and the other weights are normalized over 80%. The existing
 fields remain for rolling-deployment compatibility; new clients should use
 `progress.readiness`.
 
+## Video preparation
+
+`GET /api/projects/{project_id}/video/preparation/` recalculates the checklist
+that guards entry to video generation. The project is ready only when all three
+conditions are true:
+
+- there are no significant screenplay characters without a visible logical
+  Character Studio character;
+- there are no empty scenes under the same content rule used by script
+  readiness;
+- every scene has a storyboard accepted for its current scene revision.
+
+The response contains the actionable missing-character and empty-scene lists,
+missing or stale storyboard scene details, and a `taskCount`. Incomplete
+storyboard coverage contributes one task regardless of the number of affected
+scenes. A project with no scenes is not ready. The dashboard exposes only the
+compact `progress.readiness.videoPreparation` status; clients must re-read the
+dedicated endpoint before entering generation because project data can change
+after the dashboard was loaded.
+
+The checklist is informational and requires project view permission. A future
+generation mutation must repeat the prerequisite and generation-permission
+checks atomically; the GET response is not an authorization token.
+
 ## Storyboard and video lifecycle
 
 - `PUT /api/projects/{project_id}/scenes/{scene_id}/storyboard/` registers a

@@ -8,9 +8,11 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectDetailView,
     ProjectListCreateView,
     ProjectLocationsView,
+    ProjectMissingCharactersView,
     ProjectScenesView,
     ProjectVideoShotDetailView,
     ProjectVideoShotsView,
+    ProjectVideoPreparationView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
     ProjectPosterEditView,
@@ -50,6 +52,11 @@ urlpatterns = [
     path('<int:project_id>/characters/', ProjectCharactersView.as_view(), name='project-characters'),
     path('<int:project_id>/scenes/', ProjectScenesView.as_view(), name='project-scenes'),
     path(
+        '<int:project_id>/scenes/missing-characters/',
+        ProjectMissingCharactersView.as_view(),
+        name='project-scenes-missing-characters',
+    ),
+    path(
         '<int:project_id>/scenes/reorder/',
         SceneReorderView.as_view(),
         name='project-scenes-reorder',
@@ -87,6 +94,11 @@ urlpatterns = [
         '<int:project_id>/video-shots/',
         ProjectVideoShotsView.as_view(),
         name='project-video-shots',
+    ),
+    path(
+        '<int:project_id>/video/preparation/',
+        ProjectVideoPreparationView.as_view(),
+        name='project-video-preparation',
     ),
     path(
         '<int:project_id>/video-shots/<int:shot_id>/',

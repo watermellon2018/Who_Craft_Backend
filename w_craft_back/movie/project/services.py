@@ -598,8 +598,8 @@ def _quick_actions_payload(project: Project) -> list[dict]:
         },
         {
             "key": "generate_video",
-            "label": "Генерация видео",
-            "url": f"{base}/generate-video",
+            "label": "Создать видео",
+            "url": f"/project/{project.id}/video",
         },
     ]
 

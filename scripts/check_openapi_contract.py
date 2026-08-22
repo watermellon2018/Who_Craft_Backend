@@ -92,6 +92,8 @@ def check_contract() -> None:
         "/api/projects/{projectId}/character-tree/",
         "/api/projects/{projectId}/character-tree/nodes/",
         "/api/projects/{projectId}/character-tree/nodes/{nodeId}/",
+        "/api/projects/{projectId}/scenes/missing-characters/",
+        "/api/projects/{projectId}/video/preparation/",
         "/api/projects/{projectId}/poster/generate/",
         "/api/projects/{projectId}/team/invitations/",
         "/api/credits/project-budgets/",
@@ -103,6 +105,48 @@ def check_contract() -> None:
         document["paths"]["/api/projects/{projectId}/"]["get"]["operationId"]
         == "getProject"
     )
+    missing_characters_operation = document["paths"][
+        "/api/projects/{projectId}/scenes/missing-characters/"
+    ]["get"]
+    assert missing_characters_operation["operationId"] == "listProjectMissingCharacters"
+    assert missing_characters_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/MissingCharactersResponse"}
+    missing_character = _schema(document, "MissingCharacter")
+    assert set(missing_character["required"]) == {
+        "name",
+        "dialogueCount",
+        "sceneCount",
+    }
+    missing_characters_response = _schema(document, "MissingCharactersResponse")
+    assert set(missing_characters_response["required"]) == {"characters"}
+    assert missing_characters_response["properties"]["characters"]["items"] == {
+        "$ref": "#/components/schemas/MissingCharacter"
+    }
+    video_preparation_operation = document["paths"][
+        "/api/projects/{projectId}/video/preparation/"
+    ]["get"]
+    assert video_preparation_operation["operationId"] == "getProjectVideoPreparation"
+    assert video_preparation_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {"$ref": "#/components/schemas/VideoPreparationResponse"}
+    video_preparation = _schema(document, "VideoPreparationResponse")
+    assert set(video_preparation["required"]) == {
+        "project",
+        "ready",
+        "taskCount",
+        "missingCharacters",
+        "emptyScenes",
+        "storyboard",
+    }
+    assert video_preparation["properties"]["storyboard"] == {
+        "$ref": "#/components/schemas/VideoPreparationStoryboard"
+    }
+    project_readiness = _schema(document, "ProjectReadiness")
+    assert "videoPreparation" in project_readiness["required"]
+    assert project_readiness["properties"]["videoPreparation"] == {
+        "$ref": "#/components/schemas/VideoPreparationCompact"
+    }
     admin_operation = _schema(document, "CreditAdminOperationRequest")
     assert set(admin_operation["properties"]) == {"action", "reason"}
     assert set(admin_operation["properties"]["action"]["enum"]) == {

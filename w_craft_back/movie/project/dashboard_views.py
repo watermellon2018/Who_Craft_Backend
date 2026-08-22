@@ -45,6 +45,7 @@ from w_craft_back.movie.project.project_images import (
 from w_craft_back.movie.project.permissions import (
     user_has_project_access,
 )
+from w_craft_back.movie.project.progress_service import video_preparation_payload
 from w_craft_back.movie.project.serializers import (
     CharacterCreateSerializer,
     LocationCreateSerializer,
@@ -62,6 +63,7 @@ from w_craft_back.movie.project.services import (
 )
 from w_craft_back.movie.project.script_workspace import (
     characters_collection_payload,
+    missing_characters_payload,
     scene_payload,
 )
 from w_craft_back.storage_gateway import signed_url_for_file
@@ -629,6 +631,22 @@ class ProjectScenesView(_ProjectScopedView):
             return _mutation_error_response(exc)
 
         return Response(scene_payload(scene, request), status=status.HTTP_201_CREATED)
+
+
+class ProjectMissingCharactersView(_ProjectScopedView):
+    def get(self, request, project_id: int):
+        _user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        return Response(missing_characters_payload(project))
+
+
+class ProjectVideoPreparationView(_ProjectScopedView):
+    def get(self, request, project_id: int):
+        user, project, err = self._viewable_project(request, project_id)
+        if err:
+            return err
+        return Response(video_preparation_payload(project, user))
 
 
 class ProjectLocationsView(_ProjectScopedView):
