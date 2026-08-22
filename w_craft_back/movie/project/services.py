@@ -26,6 +26,10 @@ from w_craft_back.movie.project.dashboard_models import (
     SceneMusic,
 )
 from w_craft_back.movie.project.models import Project, ProjectStatus
+from w_craft_back.movie.project.progress_service import (
+    ProjectProgressSnapshot,
+    calculate_project_progress,
+)
 from w_craft_back.storage_gateway import (
     signed_url_for_asset,
     signed_url_for_file,
@@ -404,33 +408,26 @@ def _characters_payload(project: Project, request, limit: int = 6) -> list[dict]
 # Pipeline
 # --------------------------------------------------------------------------- #
 
-def _pipeline_payload(project: Project, scenes_total: int) -> dict:
+def _pipeline_payload(
+    project: Project,
+    scenes_total: int,
+    progress_snapshot: ProjectProgressSnapshot,
+) -> dict:
     from w_craft_back.movie.reference_library.models import ProjectReference
 
     progress = getattr(project, "progress", None)
-    script_p = _clamp_progress(getattr(progress, "script_progress", 0))
     visual_p = _clamp_progress(getattr(progress, "visual_progress", 0))
-    postprod_p = _clamp_progress(getattr(progress, "postproduction_progress", 0))
+    calculated = progress_snapshot.as_percentage_payload()
 
-    # Group all four asset-type counts into a single aggregate query (was 4
-    # separate counts firing every dashboard load).
-    asset_counts = (
-        ProjectAsset.objects.filter(
-            project=project,
-            asset_type__in=("storyboard", "reference", "model_3d", "video"),
-        )
-        .values_list("asset_type")
-        .annotate(c=Count("id"))
-    )
-    counts_by_type = {row[0]: row[1] for row in asset_counts}
-    storyboard_count = counts_by_type.get("storyboard", 0)
     reference_count = ProjectReference.objects.filter(
         project=project,
         archived_at__isnull=True,
         active_version__isnull=False,
     ).count()
-    models3d_count = counts_by_type.get("model_3d", 0)
-    video_count = counts_by_type.get("video", 0)
+    models3d_count = ProjectAsset.objects.filter(
+        project=project,
+        asset_type="model_3d",
+    ).count()
 
     def _pluralize_scenes(n):
         return f"{n} {_plural_ru(n, 'сцена', 'сцены', 'сцен')}"
@@ -444,17 +441,21 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
     def _pluralize_models(n):
         return f"{n} {_plural_ru(n, 'модель', 'модели', 'моделей')}"
 
+    def _pluralize_shots(n):
+        return f"{n} {_plural_ru(n, 'шот', 'шота', 'шотов')}"
+
     return {
         "script": {
             "label": "Сценарий",
-            "progress": script_p,
+            "progress": calculated["script"],
             "subtitle": _pluralize_scenes(scenes_total),
         },
         "storyboard": {
             "label": "Сториборд",
-            # TODO(progress): split visual into storyboard/reference/3d separately later
-            "progress": visual_p,
-            "subtitle": _pluralize_scenes(storyboard_count),
+            "progress": calculated["storyboard"],
+            "subtitle": _pluralize_scenes(
+                progress_snapshot.storyboard_ready_count
+            ),
         },
         "references": {
             "label": "Визуальная библиотека",
@@ -468,8 +469,8 @@ def _pipeline_payload(project: Project, scenes_total: int) -> dict:
         },
         "video": {
             "label": "Видео",
-            "progress": postprod_p,
-            "subtitle": _pluralize_scenes(video_count),
+            "progress": calculated["video"],
+            "subtitle": _pluralize_shots(progress_snapshot.video_ready_count),
         },
     }
 
@@ -554,14 +555,21 @@ def _music_payload(project: Project, request, limit: int = 5) -> list[dict]:
 # Progress card
 # --------------------------------------------------------------------------- #
 
-def _progress_payload(project: Project) -> dict:
-    progress = getattr(project, "progress", None)
+def _progress_payload(
+    project: Project,
+    progress_snapshot: ProjectProgressSnapshot,
+) -> dict:
+    """Keep legacy percentages while exposing the ratio-based readiness v2."""
+
+    percentages = progress_snapshot.as_percentage_payload()
+    legacy = getattr(project, "progress", None)
     return {
-        "overall": _clamp_progress(getattr(progress, "overall_progress", 0)),
-        "script": _clamp_progress(getattr(progress, "script_progress", 0)),
-        "visual": _clamp_progress(getattr(progress, "visual_progress", 0)),
-        "audio": _clamp_progress(getattr(progress, "audio_progress", 0)),
-        "postproduction": _clamp_progress(getattr(progress, "postproduction_progress", 0)),
+        "overall": percentages["overall"],
+        "script": percentages["script"],
+        "visual": percentages["storyboard"],
+        "audio": _clamp_progress(getattr(legacy, "audio_progress", 0)),
+        "postproduction": percentages["video"],
+        "readiness": progress_snapshot.as_payload(),
     }
 
 
@@ -590,8 +598,8 @@ def _quick_actions_payload(project: Project) -> list[dict]:
         },
         {
             "key": "generate_video",
-            "label": "Генерация видео",
-            "url": f"{base}/generate-video",
+            "label": "Создать видео",
+            "url": f"/project/{project.id}/video",
         },
     ]
 
@@ -632,14 +640,19 @@ def _activity_payload(project: Project, request, limit: int = 5) -> list[dict]:
 def build_project_dashboard(project: Project, user: User, request=None) -> dict[str, Any]:
     hero = _hero_payload(project, request, user=user)
     stats = _stats_payload(project)
-    pipeline = _pipeline_payload(project, scenes_total=stats["scenesTotal"])
+    progress_snapshot = calculate_project_progress(project)
+    pipeline = _pipeline_payload(
+        project,
+        scenes_total=stats["scenesTotal"],
+        progress_snapshot=progress_snapshot,
+    )
     return {
         "project": hero,
         "stats": stats,
         "characters": _characters_payload(project, request),
         "pipeline": pipeline,
         "music": _music_payload(project, request),
-        "progress": _progress_payload(project),
+        "progress": _progress_payload(project, progress_snapshot),
         "quickActions": _quick_actions_payload(project),
         "recentActivity": _activity_payload(project, request),
     }

@@ -8,7 +8,11 @@ from w_craft_back.movie.project.dashboard_views import (
     ProjectDetailView,
     ProjectListCreateView,
     ProjectLocationsView,
+    ProjectMissingCharactersView,
     ProjectScenesView,
+    ProjectVideoShotDetailView,
+    ProjectVideoShotsView,
+    ProjectVideoPreparationView,
 )
 from w_craft_back.movie.poster.dashboard_views import (
     ProjectPosterEditView,
@@ -35,6 +39,8 @@ from w_craft_back.movie.project.scene_views import (
     LocationDetailView,
     SceneDetailView,
     SceneReorderView,
+    SceneStoryboardConfirmView,
+    SceneStoryboardView,
 )
 from w_craft_back.movie.reference_library.views import SceneReferencesView
 
@@ -46,6 +52,11 @@ urlpatterns = [
     path('<int:project_id>/characters/', ProjectCharactersView.as_view(), name='project-characters'),
     path('<int:project_id>/scenes/', ProjectScenesView.as_view(), name='project-scenes'),
     path(
+        '<int:project_id>/scenes/missing-characters/',
+        ProjectMissingCharactersView.as_view(),
+        name='project-scenes-missing-characters',
+    ),
+    path(
         '<int:project_id>/scenes/reorder/',
         SceneReorderView.as_view(),
         name='project-scenes-reorder',
@@ -54,6 +65,16 @@ urlpatterns = [
         '<int:project_id>/scenes/<int:scene_id>/references/',
         SceneReferencesView.as_view(),
         name='project-scene-references',
+    ),
+    path(
+        '<int:project_id>/scenes/<int:scene_id>/storyboard/',
+        SceneStoryboardView.as_view(),
+        name='project-scene-storyboard',
+    ),
+    path(
+        '<int:project_id>/scenes/<int:scene_id>/storyboard/confirm/',
+        SceneStoryboardConfirmView.as_view(),
+        name='project-scene-storyboard-confirm',
     ),
     path(
         '<int:project_id>/references/',
@@ -69,6 +90,21 @@ urlpatterns = [
     ),
     path('<int:project_id>/locations/', ProjectLocationsView.as_view(), name='project-locations'),
     path('<int:project_id>/assets/', ProjectAssetsView.as_view(), name='project-assets'),
+    path(
+        '<int:project_id>/video-shots/',
+        ProjectVideoShotsView.as_view(),
+        name='project-video-shots',
+    ),
+    path(
+        '<int:project_id>/video/preparation/',
+        ProjectVideoPreparationView.as_view(),
+        name='project-video-preparation',
+    ),
+    path(
+        '<int:project_id>/video-shots/<int:shot_id>/',
+        ProjectVideoShotDetailView.as_view(),
+        name='project-video-shot-detail',
+    ),
     path(
         '<int:project_id>/assets/<int:asset_id>/',
         ProjectAssetDetailView.as_view(),

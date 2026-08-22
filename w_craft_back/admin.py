@@ -13,11 +13,13 @@ from w_craft_back.movie.project.dashboard_models import (
     Location,
     Scene,
     SceneCharacter,
+    SceneStoryboard,
     MusicTrack,
     SceneMusic,
     ProjectAsset,
     ProjectProgress,
     ProjectActivity,
+    VideoShot,
 )
 
 
@@ -194,6 +196,30 @@ class SceneAdmin(admin.ModelAdmin):
 class SceneCharacterAdmin(admin.ModelAdmin):
     list_display = ("id", "scene", "character", "role_in_scene")
     raw_id_fields = ("scene", "character")
+
+
+@admin.register(SceneStoryboard)
+class SceneStoryboardAdmin(admin.ModelAdmin):
+    list_display = (
+        "scene",
+        "asset",
+        "source_scene_version",
+        "confirmed_scene_version",
+        "updated_at",
+    )
+    raw_id_fields = ("scene", "asset", "created_by", "updated_by")
+
+
+@admin.register(VideoShot)
+class VideoShotAdmin(admin.ModelAdmin):
+    list_display = ("id", "project", "scene", "order", "final_asset", "updated_at")
+    raw_id_fields = (
+        "project",
+        "scene",
+        "final_asset",
+        "created_by",
+        "updated_by",
+    )
 
 
 @admin.register(MusicTrack)

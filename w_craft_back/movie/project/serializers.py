@@ -178,7 +178,11 @@ class ProjectUpdateSerializer(serializers.Serializer):
 
 class CharacterCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
-    short_description = serializers.CharField(allow_blank=True, required=False, default="")
+    short_description = serializers.CharField(
+        allow_blank=True,
+        required=False,
+        default="",
+    )
     role = serializers.ChoiceField(
         choices=CharacterRole.choices,
         required=False,
@@ -306,6 +310,37 @@ class SceneReorderSerializer(serializers.Serializer):
                 "Scene orders must form a continuous sequence"
             )
         return value
+
+
+class SceneStoryboardUpdateSerializer(serializers.Serializer):
+    assetId = serializers.IntegerField(min_value=1)
+    sourceSceneVersion = serializers.IntegerField(min_value=1)
+
+
+class SceneStoryboardConfirmSerializer(serializers.Serializer):
+    expectedSceneVersion = serializers.IntegerField(min_value=1)
+
+
+class VideoShotCreateSerializer(serializers.Serializer):
+    sceneId = serializers.IntegerField(min_value=1)
+    title = serializers.CharField(
+        max_length=255,
+        allow_blank=True,
+        required=False,
+        default="",
+    )
+    order = serializers.IntegerField(min_value=1, required=False)
+
+
+class VideoShotUpdateSerializer(serializers.Serializer):
+    version = serializers.IntegerField(min_value=1)
+    title = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    order = serializers.IntegerField(min_value=1, required=False)
+    finalAssetId = serializers.IntegerField(
+        min_value=1,
+        allow_null=True,
+        required=False,
+    )
 
 
 class LocationCreateSerializer(serializers.Serializer):
