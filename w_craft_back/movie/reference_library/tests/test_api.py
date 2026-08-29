@@ -68,6 +68,13 @@ class RegistryReferenceStubProvider(DeterministicReferenceMockProvider):
     model_id = "gemini/gemini-2.5-flash-image"
 
 
+class OpenRouterReferenceStubProvider(DeterministicReferenceMockProvider):
+    """Represent the configured OpenRouter image route without network I/O."""
+
+    name = "openrouter-flash-image"
+    model_id = "google/gemini-3.1-flash-image-preview"
+
+
 @override_settings(REFERENCE_IMAGE_PROVIDER="mock", SIGNED_MEDIA_TTL_SECONDS=120)
 class ReferenceApiTests(TestCase):
     def setUp(self):
@@ -133,6 +140,52 @@ class ReferenceApiTests(TestCase):
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(denied.status_code, 403)
         self.assertEqual(denied.json()["code"], "REFERENCE_EDIT_FORBIDDEN")
+
+    @override_settings(REFERENCE_IMAGE_PROVIDER="registry")
+    def test_capabilities_model_key_can_be_priced_by_generation_estimate(self):
+        self.project.generation_settings = {
+            "image_generation_model": "openrouter-flash-image",
+        }
+        self.project.save(update_fields=["generation_settings"])
+        provider = OpenRouterReferenceStubProvider()
+
+        with patch(
+            (
+                "w_craft_back.movie.reference_library.services."
+                "resolve_reference_provider"
+            ),
+            return_value=provider,
+        ):
+            capabilities = self.client.get(
+                f"{self.collection_url}capabilities/",
+                HTTP_X_USER_TOKEN=self.owner_token,
+            )
+
+        self.assertEqual(capabilities.status_code, 200, capabilities.content)
+        effective_model = capabilities.json()["generation"]["effectiveModel"]
+        self.assertEqual(effective_model, "openrouter-flash-image")
+
+        estimate = self.client.post(
+            "/api/credits/generation-estimate/",
+            {
+                "domain": "reference",
+                "operation": "generate",
+                "modelKey": effective_model,
+                "variantCount": 1,
+                "promptLength": 120,
+                "resolution": "1K",
+                "routingMode": "manual",
+            },
+            format="json",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        )
+        self.assertEqual(estimate.status_code, 200, estimate.content)
+        self.assertEqual(estimate.json()["modelKey"], "openrouter-flash-image")
+        self.assertEqual(estimate.json()["estimatedCost"], "0.067015")
+        self.assertEqual(
+            estimate.json()["modelName"],
+            "google/gemini-3.1-flash-image-preview",
+        )
 
     def test_link_options_and_reference_settings_are_project_scoped(self):
         anna = StudioCharacter.objects.create(
