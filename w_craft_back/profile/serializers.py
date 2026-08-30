@@ -1,5 +1,3 @@
-import re
-
 from rest_framework import serializers
 
 from w_craft_back.storage_gateway import signed_url_for_file
@@ -10,7 +8,14 @@ from .models import UserProfile, UserSocialLink, USERNAME_RE
 class UserProfileSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['language', 'private_account', 'notifications_enabled']
+        fields = [
+            'language',
+            'content_language',
+            'private_account',
+            'notifications_in_app',
+            'notifications_email',
+            'comment_permission',
+        ]
 
 
 class SocialLinkSerializer(serializers.Serializer):
@@ -30,8 +35,17 @@ class ProfileMeUpdateSerializer(serializers.Serializer):
     tagline = serializers.CharField(max_length=255, required=False, allow_blank=True)
     location = serializers.CharField(max_length=255, required=False, allow_blank=True)
     language = serializers.ChoiceField(choices=['ru', 'en'], required=False)
+    content_language = serializers.ChoiceField(
+        choices=UserProfile.ContentLanguage.values,
+        required=False,
+    )
     private_account = serializers.BooleanField(required=False)
-    notifications_enabled = serializers.BooleanField(required=False)
+    notifications_in_app = serializers.BooleanField(required=False)
+    notifications_email = serializers.BooleanField(required=False)
+    comment_permission = serializers.ChoiceField(
+        choices=UserProfile.CommentPermission.values,
+        required=False,
+    )
     interests = serializers.ListField(
         child=serializers.CharField(max_length=32),
         required=False,
@@ -109,8 +123,11 @@ def serialize_profile_me(profile: UserProfile, request) -> dict:
         'socials': socials,
         'settings': {
             'language': profile.language,
+            'content_language': profile.content_language,
             'private_account': profile.private_account,
-            'notifications_enabled': profile.notifications_enabled,
+            'notifications_in_app': profile.notifications_in_app,
+            'notifications_email': profile.notifications_email,
+            'comment_permission': profile.comment_permission,
             'image_generation_model': profile.image_generation_model or None,
         },
         'profile_completion': completion,

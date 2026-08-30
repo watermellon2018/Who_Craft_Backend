@@ -189,6 +189,28 @@ class AuthLifecycleViewTests(TestCase):
             ).status_code,
             status.HTTP_401_UNAUTHORIZED,
         )
+
+    def test_logout_all_revokes_current_access_and_refresh(self):
+        response = self.client.post(
+            reverse('logout-all'),
+            HTTP_X_USER_TOKEN=self.old_access,
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(
+            self.client.get(
+                reverse('profile-me'),
+                HTTP_X_USER_TOKEN=self.old_access,
+            ).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse('refresh'),
+                {'refresh': self.old_refresh},
+                format='json',
+            ).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
         self.assertEqual(
             self.client.post(
                 reverse("refresh"),

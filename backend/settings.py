@@ -473,6 +473,22 @@ SOUND_EFFECTS_JOB_LEASE_SECONDS = max(
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
 
+# Notification email delivery uses Django's standard backend. Production should
+# provide an SMTP service; tests override this with Django's in-memory backend.
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend',
+)
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '25'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_TIMEOUT = float(os.getenv('EMAIL_TIMEOUT', '10'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'false').lower() in {
+    '1', 'true', 'yes', 'on',
+}
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@wcraft.local')
+
 # Per-character 3D reconstruction. The web process stays in the lightweight
 # ``backend`` environment; the detached worker invokes these tools through the
 # CUDA-enabled ``basic`` conda environment.

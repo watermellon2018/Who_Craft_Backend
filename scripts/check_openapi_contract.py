@@ -89,6 +89,12 @@ def check_contract() -> None:
     assert {"error", "code", "detail"}.issubset(error["properties"])
 
     required_paths = {
+        "/api/auth/logout-all/",
+        "/api/profile/settings/",
+        "/api/notifications/",
+        "/api/notifications/{notificationId}/read/",
+        "/api/notifications/read-all/",
+        "/api/projects/{projectId}/video-shots/{shotId}/comments/",
         "/api/projects/{projectId}/character-tree/",
         "/api/projects/{projectId}/character-tree/nodes/",
         "/api/projects/{projectId}/character-tree/nodes/{nodeId}/",
@@ -100,6 +106,20 @@ def check_contract() -> None:
         "/api/credits/project-budgets/{projectId}/",
     }
     assert required_paths.issubset(document["paths"])
+    profile_settings = _schema(document, "ProfileSettings")
+    assert set(profile_settings["properties"]["content_language"]["enum"]) == {
+        "ru",
+        "en",
+    }
+    assert set(profile_settings["properties"]["comment_permission"]["enum"]) == {
+        "everyone",
+        "followers",
+        "nobody",
+    }
+    assert {
+        "notifications_in_app",
+        "notifications_email",
+    }.issubset(profile_settings["required"])
     assert not any(path.startswith("/api/character/") for path in document["paths"])
     assert (
         document["paths"]["/api/projects/{projectId}/"]["get"]["operationId"]

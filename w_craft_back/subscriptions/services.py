@@ -29,6 +29,10 @@ class SubscriptionNotFoundError(SubscriptionError):
     pass
 
 
+class AccountInactiveError(SubscriptionError):
+    pass
+
+
 @dataclass
 class SubscriptionState:
     target_user_id: int
@@ -37,14 +41,34 @@ class SubscriptionState:
     notifications_enabled: bool
 
 
-def _ensure_target(current_user: User, target_user_id: int) -> User:
+def _lock_subscription_users(
+    current_user: User,
+    target_user_id: int,
+    *,
+    missing_target_error: type[SubscriptionError],
+) -> tuple[User, User]:
+    """Lock both users in primary-key order and recheck active state."""
+
     if current_user.id == target_user_id:
         raise SelfSubscriptionError('cannot subscribe to yourself')
-    try:
-        target = User.objects.get(pk=target_user_id, is_active=True)
-    except User.DoesNotExist:
-        raise TargetNotFoundError('target user does not exist or is inactive')
-    return target
+    user_ids = sorted({current_user.id, target_user_id})
+    locked_users = {
+        user.id: user
+        for user in User.objects.select_for_update()
+        .filter(pk__in=user_ids)
+        .order_by('pk')
+    }
+    locked_current = locked_users.get(current_user.id)
+    if locked_current is None or not locked_current.is_active:
+        raise AccountInactiveError('current account is inactive')
+    target = locked_users.get(target_user_id)
+    if target is None or not target.is_active:
+        if missing_target_error is TargetNotFoundError:
+            raise TargetNotFoundError(
+                'target user does not exist or is inactive'
+            )
+        raise missing_target_error('no active subscription target')
+    return locked_current, target
 
 
 def _lock_profiles(*users: User) -> None:
@@ -133,7 +157,11 @@ def _activate_subscription(
 @transaction.atomic
 def subscribe(current_user: User, target_user_id: int) -> SubscriptionState:
     """Create or restore a subscription. Counters update only on real state change."""
-    target = _ensure_target(current_user, target_user_id)
+    current_user, target = _lock_subscription_users(
+        current_user,
+        target_user_id,
+        missing_target_error=TargetNotFoundError,
+    )
     _lock_profiles(current_user, target)
     sub, became_active = _activate_subscription(current_user, target)
 
@@ -156,8 +184,11 @@ def subscribe(current_user: User, target_user_id: int) -> SubscriptionState:
 @transaction.atomic
 def unsubscribe(current_user: User, target_user_id: int) -> SubscriptionState:
     """Soft-delete an active subscription. No-op (raise) if no active subscription."""
-    if current_user.id == target_user_id:
-        raise SelfSubscriptionError('cannot unsubscribe from yourself')
+    current_user, _ = _lock_subscription_users(
+        current_user,
+        target_user_id,
+        missing_target_error=SubscriptionNotFoundError,
+    )
 
     sub = (
         ChannelSubscription.objects
@@ -194,6 +225,54 @@ def unsubscribe(current_user: User, target_user_id: int) -> SubscriptionState:
 
 
 @transaction.atomic
+def remove_user_subscriptions(user: User) -> None:
+    """Remove all subscription relations for a closing account.
+
+    Active rows decrement the same denormalized counters as ``unsubscribe``.
+    Soft-deleted history is removed as personal account data without changing
+    counters a second time.
+    """
+
+    rows = list(
+        ChannelSubscription.objects.select_for_update()
+        .filter(Q(subscriber=user) | Q(subscribed_to=user))
+        .order_by('subscriber_id', 'subscribed_to_id')
+    )
+    active_rows = [row for row in rows if row.deleted_at is None]
+    surviving_user_ids = sorted({
+        row.subscribed_to_id
+        if row.subscriber_id == user.id
+        else row.subscriber_id
+        for row in active_rows
+    })
+    list(
+        UserProfile.objects.select_for_update()
+        .filter(user_id__in=surviving_user_ids)
+        .order_by('user_id')
+    )
+
+    for row in active_rows:
+        if row.subscriber_id == user.id:
+            UserProfile.objects.filter(user_id=row.subscribed_to_id).update(
+                subscribers_count=Greatest(
+                    F('subscribers_count') - 1,
+                    Value(0),
+                ),
+            )
+        else:
+            UserProfile.objects.filter(user_id=row.subscriber_id).update(
+                subscriptions_count=Greatest(
+                    F('subscriptions_count') - 1,
+                    Value(0),
+                ),
+            )
+
+    ChannelSubscription.objects.filter(
+        Q(subscriber=user) | Q(subscribed_to=user)
+    ).delete()
+
+
+@transaction.atomic
 def update_settings(
     current_user: User,
     target_user_id: int,
@@ -201,6 +280,11 @@ def update_settings(
     notifications_enabled: Optional[bool] = None,
 ) -> SubscriptionState:
     """Update is_favorite / notifications_enabled on an active subscription."""
+    current_user, _ = _lock_subscription_users(
+        current_user,
+        target_user_id,
+        missing_target_error=SubscriptionNotFoundError,
+    )
     sub = (
         ChannelSubscription.objects
         .select_for_update()

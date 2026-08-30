@@ -29,6 +29,8 @@ from w_craft_back.movie.project.team_models import (
     InvitationType,
     ProjectInvitation,
 )
+from w_craft_back.notifications.models import Notification
+from w_craft_back.profile.models import UserProfile
 
 
 def _make_user(username: str) -> tuple[User, str]:
@@ -192,6 +194,28 @@ class UsernameInvitationTests(TestCase):
             ProjectMember.objects.filter(project=self.project, user=self.invitee).exists()
         )
 
+    @patch('w_craft_back.notifications.services.send_notification_email')
+    def test_username_invitation_dispatches_in_app_and_email_after_commit(self, send_email):
+        self.invitee.email = 'invitee@example.test'
+        self.invitee.save(update_fields=['email'])
+        UserProfile.objects.create(
+            user=self.invitee,
+            notifications_in_app=True,
+            notifications_email=True,
+        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                self._invite_url(),
+                data={'username': 'invitee', 'access_role': 'editor'},
+                format='json',
+                HTTP_X_USER_TOKEN=self.owner_token,
+            )
+        self.assertEqual(response.status_code, 201)
+        notification = Notification.objects.get(recipient=self.invitee)
+        self.assertEqual(notification.type, Notification.Type.PROJECT_INVITATION)
+        self.assertEqual(notification.target_url, '/project-list')
+        send_email.assert_called_once()
+
     def test_invite_unknown_username(self):
         resp = self.client.post(
             self._invite_url(),
@@ -238,6 +262,25 @@ class UsernameInvitationTests(TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(resp.json()["code"], "INSUFFICIENT_PERMISSIONS")
 
+    def test_stale_inactive_owner_cannot_create_invitation(self):
+        self.owner.is_active = False
+        self.owner.save(update_fields=["is_active"])
+        self.client.force_authenticate(user=self.owner)
+
+        resp = self.client.post(
+            self._invite_url(),
+            data={"username": "invitee", "access_role": "viewer"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(
+            ProjectInvitation.objects.filter(
+                project=self.project,
+                invited_user=self.invitee,
+            ).exists()
+        )
+
     def test_accept_creates_membership(self):
         invite = self.client.post(
             self._invite_url(),
@@ -254,6 +297,27 @@ class UsernameInvitationTests(TestCase):
         self.assertEqual(member.role, ProjectMemberRole.EDITOR)
         inv = ProjectInvitation.objects.get(pk=invite["id"])
         self.assertEqual(inv.status, InvitationStatus.ACCEPTED)
+
+    def test_stale_inactive_invitee_cannot_accept_invitation(self):
+        invite = self.client.post(
+            self._invite_url(),
+            data={"username": "invitee", "access_role": "editor"},
+            format="json",
+            HTTP_X_USER_TOKEN=self.owner_token,
+        ).json()
+        self.invitee.is_active = False
+        self.invitee.save(update_fields=["is_active"])
+        self.client.force_authenticate(user=self.invitee)
+
+        resp = self.client.post(f"/api/invitations/{invite['id']}/accept/")
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(
+            ProjectMember.objects.filter(
+                project=self.project,
+                user=self.invitee,
+            ).exists()
+        )
 
     def test_decline_does_not_create_membership(self):
         invite = self.client.post(
@@ -524,6 +588,20 @@ class MemberManagementTests(TestCase):
             policy.get_role(self.owner, self.project), ProjectMemberRole.ADMIN,
         )
         self.assertFalse(policy.can_transfer_ownership(self.owner, self.project))
+
+    def test_transfer_rejects_inactive_target_under_user_lock(self):
+        self.admin.is_active = False
+        self.admin.save(update_fields=["is_active"])
+
+        with self.assertRaises(errors.UserNotFound):
+            team_service.transfer_ownership(
+                self.owner,
+                self.project,
+                self.admin_m.id,
+            )
+
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.owner_id, self.owner.id)
 
     def test_stale_former_owner_cannot_transfer_again(self):
         team_service.transfer_ownership(
