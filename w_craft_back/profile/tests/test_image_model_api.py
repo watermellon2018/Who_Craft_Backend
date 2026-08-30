@@ -64,6 +64,21 @@ class ImageModelApiTest(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_stale_inactive_user_cannot_mutate_image_model(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.patch(
+            self.url,
+            {'image_generation_model': 'gemini-imagen-4'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+        profile = UserProfile.objects.get(user=self.user)
+        self.assertEqual(profile.image_generation_model, '')
+
     # ---------- GET ----------
 
     def test_get_returns_default_for_fresh_user(self):

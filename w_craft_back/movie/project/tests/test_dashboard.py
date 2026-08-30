@@ -407,6 +407,20 @@ class ProjectCrudTests(TestCase):
             ["Драма"],
         )
 
+    def test_stale_inactive_user_cannot_create_project(self):
+        self.owner.is_active = False
+        self.owner.save(update_fields=["is_active"])
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            "/api/projects/",
+            data={"title": "Must not exist"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Project.objects.filter(title="Must not exist").exists())
+
     def test_create_project_keeps_synopsis_separate_from_summary(self):
         response = self.client.post(
             "/api/projects/",

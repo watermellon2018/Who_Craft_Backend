@@ -1,10 +1,12 @@
 from django.contrib.auth.models import User
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
+from w_craft_back.api_errors import api_error_response
 from w_craft_back.storage_gateway import signed_url_for_file
 
 from .models import UserAsset, UserProfile
@@ -14,13 +16,31 @@ from .serializers import (
     serialize_profile_me,
 )
 from .services import (
+    AccountHasOwnedProjects,
     FileTooLarge,
+    InactiveAccount,
+    InvalidCurrentPassword,
     UnsupportedMediaType,
+    close_user_account,
     delete_image,
+    lock_active_user,
     replace_user_interests,
     replace_user_socials,
     save_uploaded_image,
 )
+
+
+class AccountDeleteThrottle(UserRateThrottle):
+    """Separate per-user budget for destructive account closure attempts."""
+
+    scope = 'profile_account_delete'
+    rate = '5/hour'
+
+    def get_cache_key(self, request, view):
+        user = getattr(request, 'user', None)
+        if user is None or not user.is_authenticated:
+            return None
+        return super().get_cache_key(request, view)
 
 
 def _get_user_from_request(request):
@@ -32,8 +52,20 @@ def _get_user_from_request(request):
 
 
 def _get_or_create_profile(user: User) -> UserProfile:
-    profile, _ = UserProfile.objects.get_or_create(user=user)
-    return profile
+    with transaction.atomic():
+        locked_user = lock_active_user(user)
+        profile, _ = UserProfile.objects.select_for_update().get_or_create(
+            user=locked_user,
+        )
+        return profile
+
+
+def _inactive_account_response():
+    return api_error_response(
+        code='ACCOUNT_INACTIVE',
+        message='account is inactive',
+        status=status.HTTP_401_UNAUTHORIZED,
+    )
 
 
 class DashboardView(APIView):
@@ -42,7 +74,10 @@ class DashboardView(APIView):
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        profile = _get_or_create_profile(user)
+        try:
+            profile = _get_or_create_profile(user)
+        except InactiveAccount:
+            return _inactive_account_response()
         completion = profile.get_profile_completion()
 
         display_name = profile.display_name or user.username
@@ -60,6 +95,7 @@ class DashboardView(APIView):
             'user': {
                 'id': user.id,
                 'username': user.username,
+                'effective_username': profile.effective_username,
                 'display_name': display_name,
                 'avatar_url': avatar_url,
                 'cover_url': cover_url,
@@ -67,6 +103,7 @@ class DashboardView(APIView):
                 'bio': profile.bio,
                 'location': profile.location,
                 'joined_at': user.date_joined.strftime('%Y-%m-%d') if hasattr(user, 'date_joined') else None,
+                'subscribers_count': profile.subscribers_count,
             },
             'profile_completion': completion,
             'stats': {
@@ -99,30 +136,63 @@ class DashboardView(APIView):
             'continue_watching': [],
             'settings': {
                 'language': profile.language,
+                'content_language': profile.content_language,
                 'private_account': profile.private_account,
-                'notifications_enabled': profile.notifications_enabled,
+                'notifications_in_app': profile.notifications_in_app,
+                'notifications_email': profile.notifications_email,
+                'comment_permission': profile.comment_permission,
             },
         }
         return Response(data)
 
 
 class ProfileSettingsView(APIView):
+    def get(self, request):
+        user = _get_user_from_request(request)
+        if user is None:
+            return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            profile = _get_or_create_profile(user)
+        except InactiveAccount:
+            return _inactive_account_response()
+        return Response(UserProfileSettingsSerializer(profile).data)
+
     def patch(self, request):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        profile = _get_or_create_profile(user)
-        serializer = UserProfileSettingsSerializer(profile, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer = UserProfileSettingsSerializer(
+            data=request.data,
+            partial=True,
+        )
+        if not serializer.is_valid():
+            return Response(
+                serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            with transaction.atomic():
+                locked_user = lock_active_user(user)
+                profile, _ = (
+                    UserProfile.objects.select_for_update().get_or_create(
+                        user=locked_user,
+                    )
+                )
+                for field, value in serializer.validated_data.items():
+                    setattr(profile, field, value)
+                profile.save()
+                response_data = UserProfileSettingsSerializer(profile).data
+        except InactiveAccount:
+            return _inactive_account_response()
+        return Response(response_data)
 
 
 _BASIC_FIELDS = (
     'display_name', 'public_username', 'bio', 'tagline', 'location',
-    'language', 'private_account', 'notifications_enabled',
+    'language', 'content_language', 'private_account',
+    'notifications_in_app', 'notifications_email', 'comment_permission',
 )
 
 
@@ -140,11 +210,19 @@ def _has_conflict_error(errors) -> bool:
 class ProfileMeView(APIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
+    def get_throttles(self):
+        if self.request.method == 'DELETE':
+            return [AccountDeleteThrottle()]
+        return super().get_throttles()
+
     def get(self, request):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        profile = _get_or_create_profile(user)
+        try:
+            profile = _get_or_create_profile(user)
+        except InactiveAccount:
+            return _inactive_account_response()
         return Response(serialize_profile_me(profile, request))
 
     def patch(self, request):
@@ -152,7 +230,6 @@ class ProfileMeView(APIView):
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        profile = _get_or_create_profile(user)
         serializer = ProfileMeUpdateSerializer(
             data=request.data, partial=True, context={'user': user}
         )
@@ -170,26 +247,81 @@ class ProfileMeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = serializer.validated_data
-
-        for field in _BASIC_FIELDS:
-            if field in data:
-                setattr(profile, field, data[field])
         try:
-            profile.save()
+            with transaction.atomic():
+                locked_user = lock_active_user(user)
+                profile, _ = (
+                    UserProfile.objects.select_for_update().get_or_create(
+                        user=locked_user,
+                    )
+                )
+                data = serializer.validated_data
+                for field in _BASIC_FIELDS:
+                    if field in data:
+                        setattr(profile, field, data[field])
+                profile.save()
+
+                if 'interests' in data:
+                    replace_user_interests(
+                        locked_user,
+                        data['interests'],
+                    )
+                if 'socials' in data:
+                    replace_user_socials(locked_user, data['socials'])
+
+                profile.refresh_from_db()
+                response_data = serialize_profile_me(profile, request)
+        except InactiveAccount:
+            return _inactive_account_response()
         except IntegrityError:
             return Response(
                 {'detail': 'username already taken', 'field': 'public_username'},
                 status=status.HTTP_409_CONFLICT,
             )
+        return Response(response_data)
 
-        if 'interests' in data:
-            replace_user_interests(user, data['interests'])
-        if 'socials' in data:
-            replace_user_socials(user, data['socials'])
+    def delete(self, request):
+        user = _get_user_from_request(request)
+        if user is None:
+            return Response(
+                {'detail': 'Unauthorized'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
-        profile.refresh_from_db()
-        return Response(serialize_profile_me(profile, request))
+        current_password = request.data.get('current_password')
+        if not isinstance(current_password, str) or not current_password.strip():
+            return api_error_response(
+                code='ACCOUNT_DELETE_PASSWORD_REQUIRED',
+                message='current password is required',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            close_user_account(user, current_password)
+        except InvalidCurrentPassword:
+            return api_error_response(
+                code='ACCOUNT_DELETE_PASSWORD_INVALID',
+                message='current password is invalid',
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        except AccountHasOwnedProjects as exc:
+            message = (
+                'transfer or delete owned projects before closing the account'
+            )
+            return Response(
+                {
+                    'error': {
+                        'code': 'ACCOUNT_HAS_OWNED_PROJECTS',
+                        'message': message,
+                    },
+                    'code': 'ACCOUNT_HAS_OWNED_PROJECTS',
+                    'detail': message,
+                    'ownedProjectCount': exc.owned_projects_count,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class _ImageEndpointMixin:
@@ -206,7 +338,9 @@ class _ImageEndpointMixin:
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            save_uploaded_image(user, upload, self.asset_type)
+            _, profile = save_uploaded_image(user, upload, self.asset_type)
+        except InactiveAccount:
+            return _inactive_account_response()
         except UnsupportedMediaType as e:
             return Response(
                 {'detail': f'unsupported media type: {e}'},
@@ -217,17 +351,16 @@ class _ImageEndpointMixin:
                 {'detail': f'file too large: {e}'},
                 status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             )
-        profile = _get_or_create_profile(user)
-        profile.refresh_from_db()
         return Response(serialize_profile_me(profile, request), status=status.HTTP_200_OK)
 
     def delete(self, request):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        delete_image(user, self.asset_type)
-        profile = _get_or_create_profile(user)
-        profile.refresh_from_db()
+        try:
+            profile = delete_image(user, self.asset_type)
+        except InactiveAccount:
+            return _inactive_account_response()
         return Response(serialize_profile_me(profile, request), status=status.HTTP_200_OK)
 
 
@@ -278,7 +411,10 @@ class ImageModelView(APIView):
         user = _get_user_from_request(request)
         if user is None:
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        profile = _get_or_create_profile(user)
+        try:
+            profile = _get_or_create_profile(user)
+        except InactiveAccount:
+            return _inactive_account_response()
         raw_project_id = request.query_params.get('project_id')
         if raw_project_id is None:
             return Response(self._serialize(profile))
@@ -413,10 +549,22 @@ class ImageModelView(APIView):
                 )
             new_value = key
 
-        profile = _get_or_create_profile(user)
-        profile.image_generation_model = new_value
-        profile.save(update_fields=['image_generation_model', 'updated_at'])
-        return Response(self._serialize(profile))
+        try:
+            with transaction.atomic():
+                locked_user = lock_active_user(user)
+                profile, _ = (
+                    UserProfile.objects.select_for_update().get_or_create(
+                        user=locked_user,
+                    )
+                )
+                profile.image_generation_model = new_value
+                profile.save(
+                    update_fields=['image_generation_model', 'updated_at'],
+                )
+                response_data = self._serialize(profile)
+        except InactiveAccount:
+            return _inactive_account_response()
+        return Response(response_data)
 
     @staticmethod
     def _serialize(profile: UserProfile) -> dict:

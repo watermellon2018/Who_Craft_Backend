@@ -64,6 +64,8 @@ operations are unchanged.
   optional 3D runtime. Music/reference tables are not currently probed.
 - `GET /api/schema/openapi.json` — checked-in OpenAPI 3.0 document.
 - `/api/auth/` — register/login/refresh/logout.
+- `GET/PATCH /api/profile/me/` — current profile; `DELETE` closes and
+  anonymizes the current account after password confirmation.
 - `/api/projects/` — project aggregate, team, poster, music, references.
 - `/api/projects/{id}/dashboard/` — dashboard and dynamically calculated
   [project readiness](docs/project-readiness.md).
@@ -84,6 +86,29 @@ Auth uses distinct opaque access/refresh tokens. `UserKey` stores SHA-256
 digests, expiry, revocation, and rotation state; plaintext tokens are returned
 only when issued. Clients send the access token in `X-User-Token`. Refresh is
 single-use and atomically rotates both credentials. This is not JWT.
+
+### Account closure
+
+`DELETE /api/profile/me/` accepts JSON `{"current_password":"..."}` and is
+limited to five attempts per authenticated user per hour. The throttle uses
+the configured Django cache; the default local-memory cache is per process, so
+a shared cache is required for a global limit across multiple web processes.
+A missing password
+returns `ACCOUNT_DELETE_PASSWORD_REQUIRED`; an invalid password returns
+`ACCOUNT_DELETE_PASSWORD_INVALID`. Closure is blocked with
+`ACCOUNT_HAS_OWNED_PROJECTS` and `ownedProjectCount` until every owned project
+is transferred or deleted. Projects are never deleted automatically.
+
+On success, profile media/metadata, interests, social links, subscriptions,
+non-owner project memberships, incoming invitations, and authentication tokens
+are removed. The Django user is deactivated and anonymized rather than deleted,
+so protected generation attribution and the credit ledger remain referentially
+valid. The response is `204`, and the previous access/refresh credentials stop
+working immediately. Historical project/activity records may retain author,
+title, or metadata snapshots created before closure; audit history is not
+rewritten. Physical media deletion runs after the database commit through the
+storage cleanup hook and is logged for operational retry if storage is
+temporarily unavailable.
 
 ## Data, jobs, and media
 
@@ -216,6 +241,35 @@ require that optional runtime.
 
 Never commit `.env`, provider credentials, raw auth tokens, private media,
 licensed models/checkpoints, or local database dumps.
+
+## Profile settings, notifications, and comments
+
+Authenticated profile preferences are read and partially updated through
+`GET/PATCH /api/profile/settings/`. Interface language and content language are
+independent. In-app/email delivery channels and the video comment audience are
+server-side profile settings; the existing private-account setting is retained.
+
+Notification producers call the centralized dispatcher in
+`w_craft_back.notifications.services`. It checks preferences once, stores an
+in-app notification, and/or creates a durable email-delivery row in the same
+transaction. The first SMTP attempt runs after commit; failures remain eligible
+for `python manage.py retry_notification_emails --limit 100`. Username project
+invitations and new shot comments use this dispatcher. Configure Django's email
+backend, sender, and timeout before enabling email notifications, and schedule
+the bounded retry command operationally. No websocket, SSE,
+or polling transport is introduced here: `/api/notifications/` is the durable
+notification center, and a future push adapter can publish the same rows.
+
+Shot comments are available at
+`/api/projects/{projectId}/video-shots/{shotId}/comments/`. A caller must first
+have project access. The video's temporary ownership contract is the owning
+project's `owner`; `everyone`, active `followers`, or `nobody` is enforced again
+inside the transactional create service. Changing the preference never deletes
+existing comments.
+
+`POST /api/auth/logout-all/` revokes the user's current one-to-one opaque
+access/refresh credential pair. Because login and refresh rotate that same pair,
+this invalidates credentials held by all devices, including the caller.
 
 ## API contract
 

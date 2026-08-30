@@ -43,6 +43,7 @@ from w_craft_back.movie.project.scene_views import (
     SceneStoryboardView,
 )
 from w_craft_back.movie.reference_library.views import SceneReferencesView
+from w_craft_back.movie.project.comment_views import VideoShotCommentsView
 
 urlpatterns = [
     # New dashboard / project API.
@@ -104,6 +105,11 @@ urlpatterns = [
         '<int:project_id>/video-shots/<int:shot_id>/',
         ProjectVideoShotDetailView.as_view(),
         name='project-video-shot-detail',
+    ),
+    path(
+        '<int:project_id>/video-shots/<int:shot_id>/comments/',
+        VideoShotCommentsView.as_view(),
+        name='project-video-shot-comments',
     ),
     path(
         '<int:project_id>/assets/<int:asset_id>/',

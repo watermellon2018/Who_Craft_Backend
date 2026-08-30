@@ -114,6 +114,17 @@ class SubscribeServiceTest(TestCase):
         with self.assertRaises(services.TargetNotFoundError):
             services.subscribe(self.alice, self.bob.id)
 
+    def test_inactive_subscriber_cannot_create_relation(self):
+        self.alice.is_active = False
+        self.alice.save(update_fields=['is_active'])
+
+        with self.assertRaises(services.AccountInactiveError):
+            services.subscribe(self.alice, self.bob.id)
+
+        self.assertFalse(
+            ChannelSubscription.objects.filter(subscriber=self.alice).exists()
+        )
+
 
 class UnsubscribeServiceTest(TestCase):
     def setUp(self):
