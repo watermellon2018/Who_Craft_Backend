@@ -30,6 +30,112 @@
         }
       }
     },
+    "/api/profile/me/": {
+      "delete": {
+        "operationId": "deleteOwnAccount",
+        "summary": "Close and anonymize the current account",
+        "description": "Requires the current password. The operation is blocked while the account owns projects. On success, personal profile data and tokens are removed while the anonymized technical user row remains for generation and credit history. Limited to five attempts per user per hour.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AccountDeleteRequest"}
+            }
+          }
+        },
+        "responses": {
+          "204": {"description": "Account closed, anonymized, and signed out"},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "409": {
+            "description": "Account still owns one or more projects",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/AccountDeleteOwnedProjectsError"}
+              }
+            }
+          },
+          "429": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/profile/settings/": {
+      "get": {
+        "operationId": "getProfileSettings",
+        "responses": {
+          "200": {"description": "Current user settings", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProfileSettings"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateProfileSettings",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProfileSettingsPatch"}}}},
+        "responses": {
+          "200": {"description": "Updated user settings", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProfileSettings"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/auth/logout-all/": {
+      "post": {
+        "operationId": "logoutAllDevices",
+        "responses": {
+          "204": {"description": "All current access and refresh credentials revoked"},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/notifications/": {
+      "get": {
+        "operationId": "listNotifications",
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}],
+        "responses": {
+          "200": {"description": "Latest notifications and unread count", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NotificationList"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/notifications/{notificationId}/read/": {
+      "post": {
+        "operationId": "readNotification",
+        "parameters": [{"name": "notificationId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {
+          "200": {"description": "Notification marked read", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Notification"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/notifications/read-all/": {
+      "post": {
+        "operationId": "readAllNotifications",
+        "responses": {
+          "200": {"description": "All current-user notifications marked read", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NotificationReadAllResult"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/video-shots/{shotId}/comments/": {
+      "get": {
+        "operationId": "listVideoShotComments",
+        "parameters": [
+          {"name": "projectId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}},
+          {"name": "shotId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {"200": {"description": "Comments and current-user comment capability", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotCommentList"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}}
+      },
+      "post": {
+        "operationId": "createVideoShotComment",
+        "parameters": [
+          {"name": "projectId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}},
+          {"name": "shotId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotCommentCreate"}}}},
+        "responses": {"201": {"description": "Comment created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VideoShotComment"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
     "/api/credits/summary/": {
       "get": {
         "operationId": "getCreditSummary",
@@ -1346,6 +1452,100 @@
       }
     },
     "schemas": {
+      "ProfileSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["language", "content_language", "private_account", "notifications_in_app", "notifications_email", "comment_permission"],
+        "properties": {
+          "language": {"type": "string", "enum": ["ru", "en"]},
+          "content_language": {"type": "string", "enum": ["ru", "en"]},
+          "private_account": {"type": "boolean"},
+          "notifications_in_app": {"type": "boolean"},
+          "notifications_email": {"type": "boolean"},
+          "comment_permission": {"type": "string", "enum": ["everyone", "followers", "nobody"]}
+        }
+      },
+      "ProfileSettingsPatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "language": {"type": "string", "enum": ["ru", "en"]},
+          "content_language": {"type": "string", "enum": ["ru", "en"]},
+          "private_account": {"type": "boolean"},
+          "notifications_in_app": {"type": "boolean"},
+          "notifications_email": {"type": "boolean"},
+          "comment_permission": {"type": "string", "enum": ["everyone", "followers", "nobody"]}
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "title", "message", "created_at", "is_read", "target_url", "entity_type", "entity_id"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "type": {"type": "string"},
+          "title": {"type": "string"},
+          "message": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "is_read": {"type": "boolean"},
+          "target_url": {"type": "string", "description": "Internal relative frontend URL or empty string"},
+          "entity_type": {"type": "string"},
+          "entity_id": {"type": "string"}
+        }
+      },
+      "NotificationList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["results", "unread_count"],
+        "properties": {
+          "results": {"type": "array", "items": {"$ref": "#/components/schemas/Notification"}},
+          "unread_count": {"type": "integer", "minimum": 0}
+        }
+      },
+      "NotificationReadAllResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unread_count", "updated"],
+        "properties": {
+          "unread_count": {"type": "integer", "enum": [0]},
+          "updated": {"type": "integer", "minimum": 0}
+        }
+      },
+      "VideoShotCommentAuthor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "username"],
+        "properties": {"id": {"type": "integer", "minimum": 1}, "username": {"type": "string"}}
+      },
+      "VideoShotComment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "author", "body", "created_at", "updated_at"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "author": {"$ref": "#/components/schemas/VideoShotCommentAuthor"},
+          "body": {"type": "string", "maxLength": 4000},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "VideoShotCommentCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["body"],
+        "properties": {"body": {"type": "string", "minLength": 1, "maxLength": 4000}}
+      },
+      "VideoShotCommentList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["can_comment", "comment_block_reason", "comments"],
+        "properties": {
+          "can_comment": {"type": "boolean"},
+          "comment_block_reason": {"type": "string", "nullable": true, "enum": ["COMMENTS_DISABLED", "COMMENTS_FOLLOWERS_ONLY"]},
+          "comments": {"type": "array", "items": {"$ref": "#/components/schemas/VideoShotComment"}}
+        }
+      },
       "MissingCharacter": {
         "type": "object",
         "additionalProperties": false,
@@ -1546,6 +1746,32 @@
           "code": {"type": "string", "deprecated": true},
           "detail": {"type": "string", "deprecated": true},
           "errors": {"type": "object", "additionalProperties": true, "deprecated": true}
+        }
+      },
+      "AccountDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["current_password"],
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true
+          }
+        }
+      },
+      "AccountDeleteOwnedProjectsError": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["error", "code", "detail", "ownedProjectCount"],
+        "properties": {
+          "error": {"$ref": "#/components/schemas/ApiErrorDetail"},
+          "code": {
+            "type": "string",
+            "enum": ["ACCOUNT_HAS_OWNED_PROJECTS"]
+          },
+          "detail": {"type": "string"},
+          "ownedProjectCount": {"type": "integer", "minimum": 1}
         }
       },
       "CreditAmount": {

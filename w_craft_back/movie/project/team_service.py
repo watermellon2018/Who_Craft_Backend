@@ -30,6 +30,9 @@ from w_craft_back.movie.project.team_models import (
     generate_invitation_token,
     hash_invitation_token,
 )
+from w_craft_back.notifications.models import Notification
+from w_craft_back.notifications.services import NotificationEvent, dispatch_notification
+from w_craft_back.profile.models import UserProfile
 
 
 # Roles a non-owner manager (admin) may assign / change. Owner is never
@@ -171,11 +174,27 @@ def create_username_invitation(
 
     raw_token = generate_invitation_token()
     with transaction.atomic():
+        user_ids = sorted({actor.id, invited.id})
+        locked_users = {
+            user.id: user
+            for user in User.objects.select_for_update()
+            .filter(pk__in=user_ids)
+            .order_by("pk")
+        }
+        locked_actor = locked_users.get(actor.id)
+        if locked_actor is None or not locked_actor.is_active:
+            raise errors.InsufficientPermissions()
+        locked_invited = locked_users.get(invited.id)
+        if locked_invited is None or not locked_invited.is_active:
+            raise errors.UserNotFound()
+        locked_project = _lock_project(project)
+        _require_manage(locked_actor, locked_project)
+
         try:
             invitation = ProjectInvitation.objects.create(
-                project=project,
-                invited_by=actor,
-                invited_user=invited,
+                project=locked_project,
+                invited_by=locked_actor,
+                invited_user=locked_invited,
                 token_hash=hash_invitation_token(raw_token),
                 access_role=access_role,
                 team_role=team_role,
@@ -188,15 +207,43 @@ def create_username_invitation(
             # Lost the race against the partial-unique constraint.
             raise errors.InvitationAlreadyExists() from exc
         record_activity(
-            project,
-            actor,
+            locked_project,
+            locked_actor,
             "member_invited",
-            title=invited.username,
+            title=locked_invited.username,
             description="приглашение по username",
             metadata={"access_role": access_role, "invitation_type": "username"},
             target_type="invitation",
             target_id=str(invitation.id),
         )
+        notification_language = (
+            UserProfile.objects.filter(user=locked_invited)
+            .values_list('language', flat=True)
+            .first()
+            or 'ru'
+        )
+        if notification_language == 'en':
+            notification_title = 'Project invitation'
+            notification_message = (
+                f'{locked_actor.username} invited you to '
+                f'“{locked_project.title}”.'
+            )
+        else:
+            notification_title = 'Приглашение в проект'
+            notification_message = (
+                f'{locked_actor.username} приглашает вас в проект '
+                f'«{locked_project.title}».'
+            )
+        dispatch_notification(NotificationEvent(
+            recipient=locked_invited,
+            type=Notification.Type.PROJECT_INVITATION,
+            title=notification_title,
+            message=notification_message,
+            target_url='/project-list',
+            entity_type='project_invitation',
+            entity_id=str(invitation.id),
+            idempotency_key=f'project-invitation:{invitation.id}',
+        ))
     return invitation, raw_token
 
 
@@ -215,9 +262,19 @@ def create_link_invitation(
 
     raw_token = generate_invitation_token()
     with transaction.atomic():
+        locked_actor = (
+            User.objects.select_for_update()
+            .filter(pk=actor.pk, is_active=True)
+            .first()
+        )
+        if locked_actor is None:
+            raise errors.InsufficientPermissions()
+        locked_project = _lock_project(project)
+        _require_manage(locked_actor, locked_project)
+
         invitation = ProjectInvitation.objects.create(
-            project=project,
-            invited_by=actor,
+            project=locked_project,
+            invited_by=locked_actor,
             invited_user=None,
             token_hash=hash_invitation_token(raw_token),
             access_role=access_role,
@@ -228,8 +285,8 @@ def create_link_invitation(
             expires_at=ProjectInvitation.default_expiry(),
         )
         record_activity(
-            project,
-            actor,
+            locked_project,
+            locked_actor,
             "member_invited",
             title="Ссылка-приглашение",
             description="приглашение по ссылке",
@@ -300,6 +357,13 @@ def accept_invitation(user: User, raw_token: str) -> ProjectMember:
 
 def accept_invitation_obj(user: User, invitation: ProjectInvitation) -> ProjectMember:
     with transaction.atomic():
+        user = (
+            User.objects.select_for_update()
+            .filter(pk=user.pk, is_active=True)
+            .first()
+        )
+        if user is None:
+            raise errors.InsufficientPermissions()
         invitation = (
             ProjectInvitation.objects.select_for_update()
             .select_related("project")
@@ -553,8 +617,33 @@ def transfer_ownership(actor: User, project: Project, new_owner_member_id: int) 
     from the former owner cannot perform a second transfer.
     """
     with transaction.atomic():
+        target_user_id = (
+            ProjectMember.objects.filter(
+                project_id=project.pk,
+                pk=new_owner_member_id,
+            )
+            .values_list("user_id", flat=True)
+            .first()
+        )
+        if target_user_id is None:
+            raise errors.MemberNotFound()
+
+        user_ids = sorted({actor.id, target_user_id})
+        locked_users = {
+            user.id: user
+            for user in User.objects.select_for_update()
+            .filter(pk__in=user_ids)
+            .order_by("pk")
+        }
+        locked_actor = locked_users.get(actor.id)
+        if locked_actor is None or not locked_actor.is_active:
+            raise errors.InsufficientPermissions()
+        locked_target_user = locked_users.get(target_user_id)
+        if locked_target_user is None or not locked_target_user.is_active:
+            raise errors.UserNotFound()
+
         locked_project = Project.objects.select_for_update().get(pk=project.pk)
-        if not policy.can_transfer_ownership(actor, locked_project):
+        if not policy.can_transfer_ownership(locked_actor, locked_project):
             raise errors.InsufficientPermissions()
 
         target = (
@@ -565,7 +654,9 @@ def transfer_ownership(actor: User, project: Project, new_owner_member_id: int) 
         )
         if target is None:
             raise errors.MemberNotFound()
-        if target.user_id == actor.id:
+        if target.user_id != locked_target_user.id:
+            raise errors.MemberNotFound()
+        if target.user_id == locked_actor.id:
             raise errors.InvalidRole("Нельзя передать владение самому себе.")
 
         former_owner_member = (
@@ -602,9 +693,9 @@ def transfer_ownership(actor: User, project: Project, new_owner_member_id: int) 
 
         record_activity(
             locked_project,
-            actor,
+            locked_actor,
             "ownership_transferred",
-            title=target.user.username,
+            title=locked_target_user.username,
             description="владение передано",
             metadata={"new_owner_user_id": target.user_id},
             target_type="member",

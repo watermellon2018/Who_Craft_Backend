@@ -6,8 +6,10 @@ from w_craft_back.character_studio.tree_models import *
 from w_craft_back.credits.models import *
 from w_craft_back.profile.models import *
 from w_craft_back.subscriptions.models import *
+from w_craft_back.notifications.models import *
 # Dashboard models depend on StudioCharacter — import last.
 from w_craft_back.movie.project.dashboard_models import *
+from w_craft_back.movie.project.comment_models import *
 # Reference Library models depend on ProjectAsset, Scene and StudioCharacter.
 from w_craft_back.movie.reference_library.models import *
 # Music models depend on Project + dashboard MusicTrack.

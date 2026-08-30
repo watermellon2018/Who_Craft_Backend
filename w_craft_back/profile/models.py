@@ -118,6 +118,15 @@ class UserSocialLink(models.Model):
 
 
 class UserProfile(models.Model):
+    class ContentLanguage(models.TextChoices):
+        RU = 'ru', 'Russian'
+        EN = 'en', 'English'
+
+    class CommentPermission(models.TextChoices):
+        EVERYONE = 'everyone', 'Everyone'
+        FOLLOWERS = 'followers', 'Followers'
+        NOBODY = 'nobody', 'Nobody'
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     public_username = models.CharField(
         max_length=30,
@@ -147,8 +156,19 @@ class UserProfile(models.Model):
         null=True,
     )
     language = models.CharField(max_length=10, default='ru')
+    content_language = models.CharField(
+        max_length=10,
+        choices=ContentLanguage.choices,
+        default=ContentLanguage.RU,
+    )
     private_account = models.BooleanField(default=False)
-    notifications_enabled = models.BooleanField(default=True)
+    notifications_in_app = models.BooleanField(default=True)
+    notifications_email = models.BooleanField(default=False)
+    comment_permission = models.CharField(
+        max_length=16,
+        choices=CommentPermission.choices,
+        default=CommentPermission.EVERYONE,
+    )
     favorite_genres = models.JSONField(default=list, blank=True)
     interests = models.JSONField(default=list, blank=True)
     subscribers_count = models.IntegerField(default=0)

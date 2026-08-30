@@ -33,6 +33,7 @@ from w_craft_back.movie.project.team_serializers import (
     members_payload,
     team_role_options,
 )
+from w_craft_back.notifications.throttles import NotificationEventThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,11 @@ class ProjectTransferOwnershipView(_TeamView):
 
 class ProjectInvitationsView(_TeamView):
     """GET pending invitations; POST create (username or link)."""
+
+    def get_throttles(self):
+        if self.request.method == 'POST':
+            return [NotificationEventThrottle()]
+        return super().get_throttles()
 
     def get(self, request, project_id: int):
         user, project, err = self._ctx(request, project_id)

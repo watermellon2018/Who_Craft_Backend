@@ -365,9 +365,16 @@ class ProjectListCreateView(APIView):
         data = serializer.validated_data
 
         with transaction.atomic():
+            locked_user = (
+                User.objects.select_for_update()
+                .filter(pk=user.pk, is_active=True)
+                .first()
+            )
+            if locked_user is None:
+                return _unauthorized()
             synopsis = data.get("synopsis", "") or ""
             project = Project.objects.create(
-                owner=user,
+                owner=locked_user,
                 title=data["title"],
                 summary=data.get("description", "") or "",
                 status=data.get("status", ProjectStatus.DRAFT),
@@ -382,18 +389,18 @@ class ProjectListCreateView(APIView):
                 project.genres.set(_resolve_genres(data["genre"]))
             if "audience" in data:
                 project.audiences.set(_resolve_audiences(data["audience"]))
-            _apply_poster(project, data, owner_id=user.id)
+            _apply_poster(project, data, owner_id=locked_user.id)
             project.save()
 
             ProjectMember.objects.get_or_create(
                 project=project,
-                user=user,
+                user=locked_user,
                 defaults={"role": ProjectMemberRole.OWNER},
             )
             ProjectProgress.objects.get_or_create(project=project)
             record_activity(
                 project,
-                user,
+                locked_user,
                 "project_updated",
                 title=project.title,
                 description="проект создан",

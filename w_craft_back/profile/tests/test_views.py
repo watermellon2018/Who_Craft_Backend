@@ -39,6 +39,30 @@ class DashboardViewTest(TestCase):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         self.assertEqual(response.json()['user']['username'], 'craftuser')
 
+    def test_user_section_contains_effective_username_with_fallback(self):
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        self.assertEqual(
+            response.json()['user']['effective_username'],
+            'craftuser',
+        )
+
+        profile = UserProfile.objects.get(user=self.user)
+        profile.public_username = 'public_craft'
+        profile.save(update_fields=['public_username', 'updated_at'])
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        self.assertEqual(
+            response.json()['user']['effective_username'],
+            'public_craft',
+        )
+
+    def test_user_section_contains_saved_subscribers_count(self):
+        UserProfile.objects.create(user=self.user, subscribers_count=17)
+
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+
+        self.assertEqual(response.json()['user']['subscribers_count'], 17)
+
     def test_profile_completion_structure(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
         completion = response.json()['profile_completion']
@@ -62,7 +86,10 @@ class DashboardViewTest(TestCase):
         settings = response.json()['settings']
         self.assertEqual(settings['language'], 'ru')
         self.assertFalse(settings['private_account'])
-        self.assertTrue(settings['notifications_enabled'])
+        self.assertTrue(settings['notifications_in_app'])
+        self.assertFalse(settings['notifications_email'])
+        self.assertEqual(settings['content_language'], 'ru')
+        self.assertEqual(settings['comment_permission'], 'everyone')
 
     def test_display_name_falls_back_to_username(self):
         response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
@@ -163,6 +190,44 @@ class ProfileSettingsViewTest(TestCase):
         response = self.client.patch(self.url, {'language': 'en'}, format='json')
         self.assertEqual(response.status_code, 401)
 
+    def test_get_returns_server_settings_without_mutation(self):
+        UserProfile.objects.create(
+            user=self.user,
+            content_language='en',
+            notifications_email=True,
+            comment_permission='followers',
+        )
+        response = self.client.get(self.url, HTTP_X_USER_TOKEN=self.token)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['content_language'], 'en')
+        self.assertTrue(response.json()['notifications_email'])
+        self.assertEqual(response.json()['comment_permission'], 'followers')
+
+    def test_rejects_invalid_extensible_choice_values(self):
+        response = self.client.patch(
+            self.url,
+            {'content_language': 'de', 'comment_permission': 'friends'},
+            format='json',
+            HTTP_X_USER_TOKEN=self.token,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('content_language', response.json())
+        self.assertIn('comment_permission', response.json())
+
+    def test_stale_inactive_user_cannot_mutate_settings(self):
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.patch(
+            self.url,
+            {'language': 'en'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
+
     def test_patch_language_saves_and_returns(self):
         response = self.client.patch(
             self.url,
@@ -189,12 +254,12 @@ class ProfileSettingsViewTest(TestCase):
     def test_patch_notifications_saves(self):
         response = self.client.patch(
             self.url,
-            {'notifications_enabled': False},
+            {'notifications_in_app': False},
             format='json',
             HTTP_X_USER_TOKEN=self.token,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()['notifications_enabled'])
+        self.assertFalse(response.json()['notifications_in_app'])
 
     def test_patch_multiple_fields_at_once(self):
         response = self.client.patch(
@@ -202,7 +267,10 @@ class ProfileSettingsViewTest(TestCase):
             {
                 'language': 'en',
                 'private_account': True,
-                'notifications_enabled': False,
+                'notifications_in_app': False,
+                'notifications_email': True,
+                'content_language': 'en',
+                'comment_permission': 'followers',
             },
             format='json',
             HTTP_X_USER_TOKEN=self.token,
@@ -211,7 +279,10 @@ class ProfileSettingsViewTest(TestCase):
         data = response.json()
         self.assertEqual(data['language'], 'en')
         self.assertTrue(data['private_account'])
-        self.assertFalse(data['notifications_enabled'])
+        self.assertFalse(data['notifications_in_app'])
+        self.assertTrue(data['notifications_email'])
+        self.assertEqual(data['content_language'], 'en')
+        self.assertEqual(data['comment_permission'], 'followers')
 
     def test_patch_is_idempotent(self):
         for _ in range(2):
@@ -249,6 +320,9 @@ class ProfileSettingsViewTest(TestCase):
         data = response.json()
         self.assertIn('language', data)
         self.assertIn('private_account', data)
-        self.assertIn('notifications_enabled', data)
+        self.assertIn('notifications_in_app', data)
+        self.assertIn('notifications_email', data)
+        self.assertIn('content_language', data)
+        self.assertIn('comment_permission', data)
         self.assertNotIn('bio', data)
         self.assertNotIn('token_user', data)
