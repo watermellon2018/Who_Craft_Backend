@@ -14,6 +14,8 @@ import datetime
 import os
 from pathlib import Path
 
+from w_craft_back.services.text_generation.registry import DEFAULT_TEXT_MODEL_ROUTES
+
 # Load environment variables from backend/.env (dev convenience).
 # This makes CHARACTER_STUDIO_IMAGE_PROVIDER / GEMINI_API_KEY available to Character Studio services.
 try:
@@ -268,6 +270,10 @@ LOGGING = {
 
 USER_KEY_ACCESS_TTL = datetime.timedelta(hours=1)
 USER_KEY_REFRESH_TTL = datetime.timedelta(days=30)
+STORYBOARD_SHOT_LIST_THROTTLE_RATE = os.getenv(
+    'STORYBOARD_SHOT_LIST_THROTTLE_RATE',
+    '10/min',
+).strip() or '10/min'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -284,6 +290,7 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '600/min',
         'auth': '10/min',
+        'storyboard_shot_list': STORYBOARD_SHOT_LIST_THROTTLE_RATE,
     },
 }
 
@@ -318,6 +325,28 @@ REFERENCE_ALLOW_MOCK = (
 )
 REFERENCE_PROVIDER_TIMEOUT_SECONDS = int(
     os.getenv("REFERENCE_PROVIDER_TIMEOUT_SECONDS", "90")
+)
+STORYBOARD_SHOT_LIST_MODEL = os.getenv(
+    "STORYBOARD_SHOT_LIST_MODEL",
+    os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"),
+).strip()
+STORYBOARD_SHOT_LIST_MODELS = os.getenv(
+    "STORYBOARD_SHOT_LIST_MODELS",
+    ",".join(
+        (
+            STORYBOARD_SHOT_LIST_MODEL,
+            *DEFAULT_TEXT_MODEL_ROUTES,
+        )
+    ),
+).strip()
+STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS = int(
+    os.getenv("STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS", "60")
+)
+STORYBOARD_PROVIDER_TIMEOUT_SECONDS = int(
+    os.getenv("STORYBOARD_PROVIDER_TIMEOUT_SECONDS", "120")
+)
+STORYBOARD_JOB_LEASE_SECONDS = int(
+    os.getenv("STORYBOARD_JOB_LEASE_SECONDS", "180")
 )
 # Music Studio uses the deterministic provider unless production explicitly
 # selects Stability AI. Paid generation requires the web and worker processes

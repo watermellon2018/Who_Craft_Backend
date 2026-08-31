@@ -555,6 +555,207 @@
           "403": {"$ref": "#/components/responses/ApiError"},
           "404": {"$ref": "#/components/responses/ApiError"}
         }
+      },
+      "post": {
+        "operationId": "initializeSceneStoryboard",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Existing structured storyboard", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}},
+          "201": {"description": "Structured storyboard initialized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/": {
+      "get": {
+        "operationId": "listStoryboardScenes",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Lightweight scene storyboard progress", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardSceneSummary"}}}}},
+          "401": {"$ref": "#/components/responses/ApiError"},
+          "403": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/": {
+      "get": {
+        "operationId": "getStructuredSceneStoryboard",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {"200": {"description": "Structured scene storyboard", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}}
+      },
+      "post": {
+        "operationId": "initializeStructuredSceneStoryboard",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {"200": {"description": "Existing storyboard", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}}, "201": {"description": "Storyboard initialized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shots/": {
+      "get": {
+        "operationId": "getStoryboardShotListOptions",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {"200": {"description": "Allowlisted text models, scene context, and best-effort cost estimates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotListOptions"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}}
+      },
+      "post": {
+        "operationId": "suggestStoryboardShots",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardSuggestShotsRequest"}}}},
+        "responses": {"200": {"description": "Unpersisted structured shot proposal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotProposal"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}, "502": {"$ref": "#/components/responses/ApiError"}, "503": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/preview/": {
+      "get": {
+        "operationId": "getStoryboardPreview",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {"200": {"description": "Storyboard-only preview data", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardPreview"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
+    "/api/projects/{projectId}/storyboard/{storyboardId}/shots/": {
+      "get": {
+        "operationId": "listStoryboardShots",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "storyboardId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "responses": {"200": {"description": "Storyboard shots", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardShot"}}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}}
+      },
+      "post": {
+        "operationId": "createStoryboardShot",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "storyboardId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotCreateMutation"}}}},
+        "responses": {"201": {"description": "Shot with START and END keyframes", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShot"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
+    "/api/projects/{projectId}/storyboard/{storyboardId}/shots/reorder/": {
+      "post": {
+        "operationId": "reorderStoryboardShots",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "storyboardId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotReorder"}}}},
+        "responses": {"200": {"description": "Reordered shots", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}}
+      }
+    },
+    "/api/projects/{projectId}/storyboard/shots/{shotId}/": {
+      "get": {"operationId": "getStoryboardShot", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardShotId"}], "responses": {"200": {"description": "Storyboard shot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShot"}}}}, "404": {"$ref": "#/components/responses/ApiError"}}},
+      "patch": {"operationId": "updateStoryboardShot", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardShotId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotPatchMutation"}}}}, "responses": {"200": {"description": "Updated shot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShot"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "409": {"$ref": "#/components/responses/ApiError"}}},
+      "delete": {"operationId": "deleteStoryboardShot", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardShotId"}], "responses": {"204": {"description": "Shot deleted"}, "404": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/projects/{projectId}/storyboard/shots/{shotId}/duplicate/": {
+      "post": {"operationId": "duplicateStoryboardShot", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardShotId"}], "responses": {"201": {"description": "Settings duplicated without images", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShot"}}}}, "404": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/projects/{projectId}/storyboard/shots/{shotId}/keyframes/": {
+      "post": {"operationId": "createStoryboardIntermediateKeyframe", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardShotId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardKeyframePosition"}}}}, "responses": {"201": {"description": "Intermediate keyframe", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardKeyframe"}}}}, "400": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/": {
+      "get": {"operationId": "getStoryboardKeyframe", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardKeyframeId"}], "responses": {"200": {"description": "Storyboard keyframe", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardKeyframe"}}}}, "404": {"$ref": "#/components/responses/ApiError"}}},
+      "patch": {"operationId": "moveStoryboardKeyframe", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardKeyframeId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardKeyframePosition"}}}}, "responses": {"200": {"description": "Moved keyframe", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardKeyframe"}}}}, "400": {"$ref": "#/components/responses/ApiError"}}},
+      "delete": {"operationId": "deleteStoryboardKeyframe", "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/StoryboardKeyframeId"}], "responses": {"204": {"description": "Intermediate keyframe deleted"}, "400": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/camera-intent/": {
+      "put": {
+        "operationId": "putStoryboardCameraIntent",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/StoryboardKeyframeId"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardCameraIntentMutation"}}}
+        },
+        "responses": {
+          "200": {"description": "Camera intent and adjacent movements", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/suggested-references/": {
+      "get": {
+        "operationId": "getStoryboardSuggestedReferences",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/StoryboardKeyframeId"}
+        ],
+        "responses": {
+          "200": {"description": "Non-persistent continuity suggestions", "content": {"application/json": {"schema": {"type": "object"}}}}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/references/": {
+      "put": {
+        "operationId": "putStoryboardGenerationReferences",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/StoryboardKeyframeId"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGenerationReferencesReplace"}}}
+        },
+        "responses": {
+          "200": {"description": "Selected generation references", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/generate/": {
+      "post": {
+        "operationId": "generateStoryboardKeyframe",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/StoryboardKeyframeId"},
+          {"$ref": "#/components/parameters/IdempotencyKey"}
+        ],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGenerateRequest"}}}},
+        "responses": {
+          "200": {"description": "Idempotent replay of the same generation request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGeneration"}}}},
+          "201": {"description": "Generation queued", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGeneration"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/regenerate/": {
+      "post": {
+        "operationId": "regenerateStoryboardKeyframe",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"$ref": "#/components/parameters/StoryboardKeyframeId"},
+          {"$ref": "#/components/parameters/IdempotencyKey"}
+        ],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGenerateRequest"}}}},
+        "responses": {
+          "200": {"description": "Idempotent replay of the same generation request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGeneration"}}}},
+          "201": {"description": "New generation revision queued", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGeneration"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"},
+          "409": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/transitions/{transitionId}/": {
+      "patch": {
+        "operationId": "updateStoryboardTransition",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "transitionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardTransitionMutation"}}}},
+        "responses": {
+          "200": {"description": "Transition override updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardTransition"}}}}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/generations/{generationId}/": {
+      "get": {
+        "operationId": "getStoryboardGeneration",
+        "parameters": [
+          {"$ref": "#/components/parameters/ProjectId"},
+          {"name": "generationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+        ],
+        "responses": {
+          "200": {"description": "Generation polling state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardGeneration"}}}},
+          "404": {"$ref": "#/components/responses/ApiError"}
+        }
       }
     },
     "/api/projects/{projectId}/scenes/{sceneId}/storyboard/confirm/": {
@@ -1422,6 +1623,18 @@
         "required": true,
         "schema": {"type": "string", "format": "uuid"}
       },
+      "StoryboardShotId": {
+        "name": "shotId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "StoryboardKeyframeId": {
+        "name": "keyframeId",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
       "SceneId": {
         "name": "sceneId",
         "in": "path",
@@ -2255,13 +2468,448 @@
         "required": ["sceneId", "assetId", "sourceSceneVersion", "confirmedSceneVersion", "acceptedSceneVersion", "currentSceneVersion", "needsReview", "updatedAt"],
         "properties": {
           "sceneId": {"type": "integer", "minimum": 1},
-          "assetId": {"type": "integer", "minimum": 1},
+          "assetId": {"type": "integer", "minimum": 1, "nullable": true},
           "sourceSceneVersion": {"type": "integer", "minimum": 1},
           "confirmedSceneVersion": {"type": "integer", "minimum": 1, "nullable": true},
           "acceptedSceneVersion": {"type": "integer", "minimum": 1},
           "currentSceneVersion": {"type": "integer", "minimum": 1},
           "needsReview": {"type": "boolean"},
           "updatedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "StoryboardAzimuth": {
+        "type": "string",
+        "enum": ["front", "front_left", "left", "back_left", "back", "back_right", "right", "front_right"]
+      },
+      "StoryboardElevation": {
+        "type": "string",
+        "enum": ["low", "eye_level", "high", "top"]
+      },
+      "StoryboardDistance": {
+        "type": "string",
+        "enum": ["wide", "medium", "near"]
+      },
+      "StoryboardFraming": {
+        "type": "string",
+        "enum": ["extreme_wide", "wide", "full", "medium", "medium_close", "close", "extreme_close", "ots", "pov"]
+      },
+      "StoryboardMovement": {
+        "type": "string",
+        "enum": ["static", "dolly_in", "dolly_out", "pan_left", "pan_right", "tilt_up", "tilt_down", "orbit_left", "orbit_right", "truck_left", "truck_right", "crane_up", "crane_down", "follow", "custom"]
+      },
+      "StoryboardCameraIntent": {
+        "type": "object",
+        "required": ["id", "target", "azimuth", "elevation", "distance", "framing", "composition", "cameraMetadata", "version", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "target": {"type": "object", "additionalProperties": true},
+          "azimuth": {"$ref": "#/components/schemas/StoryboardAzimuth"},
+          "elevation": {"$ref": "#/components/schemas/StoryboardElevation"},
+          "distance": {"$ref": "#/components/schemas/StoryboardDistance"},
+          "framing": {"$ref": "#/components/schemas/StoryboardFraming"},
+          "lensMm": {"type": "integer", "minimum": 10, "maximum": 300, "nullable": true},
+          "composition": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "cameraMetadata": {"type": "object", "additionalProperties": true},
+          "version": {"type": "integer", "minimum": 1},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StoryboardCameraIntentMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "azimuth", "elevation", "distance", "framing"],
+        "properties": {
+          "expectedVersion": {"type": "integer", "minimum": 1, "description": "Required when replacing an existing camera intent."},
+          "target": {"type": "object", "additionalProperties": true},
+          "azimuth": {"$ref": "#/components/schemas/StoryboardAzimuth"},
+          "elevation": {"$ref": "#/components/schemas/StoryboardElevation"},
+          "distance": {"$ref": "#/components/schemas/StoryboardDistance"},
+          "framing": {"$ref": "#/components/schemas/StoryboardFraming"},
+          "lensMm": {"type": "integer", "minimum": 10, "maximum": 300, "nullable": true},
+          "composition": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "cameraMetadata": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "StoryboardGenerationImage": {
+        "type": "object",
+        "required": ["id", "revision", "status", "url", "outdated", "error"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid", "nullable": true},
+          "revision": {"type": "integer", "minimum": 1, "nullable": true},
+          "status": {"type": "string", "enum": ["empty", "queued", "generating", "ready", "failed"]},
+          "url": {"type": "string", "format": "uri", "nullable": true},
+          "outdated": {"type": "boolean"},
+          "provider": {"type": "string", "nullable": true},
+          "model": {"type": "string", "nullable": true},
+          "error": {"allOf": [{"$ref": "#/components/schemas/StoryboardGenerationError"}], "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "completedAt": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      },
+      "StoryboardGenerationReference": {
+        "type": "object",
+        "required": ["id", "referenceType", "sourceKeyframeId", "visualReferenceId", "characterId", "locationId", "priority", "isPrimary", "label", "missing"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "referenceType": {"type": "string", "enum": ["character", "location", "object", "clothing", "previous_keyframe", "previous_shot", "other_storyboard_keyframe"]},
+          "sourceKeyframeId": {"type": "string", "format": "uuid", "nullable": true},
+          "visualReferenceId": {"type": "string", "format": "uuid", "nullable": true},
+          "characterId": {"type": "string", "format": "uuid", "nullable": true},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "priority": {"type": "integer", "minimum": 0},
+          "isPrimary": {"type": "boolean"},
+          "label": {"type": "string"},
+          "missing": {"type": "boolean"}
+        }
+      },
+      "StoryboardTransition": {
+        "type": "object",
+        "required": ["id", "fromKeyframeId", "toKeyframeId", "detectedMovement", "movementOverride", "effectiveMovement", "metadata"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "fromKeyframeId": {"type": "string", "format": "uuid"},
+          "toKeyframeId": {"type": "string", "format": "uuid"},
+          "detectedMovement": {"$ref": "#/components/schemas/StoryboardMovement"},
+          "movementOverride": {"allOf": [{"$ref": "#/components/schemas/StoryboardMovement"}], "nullable": true},
+          "effectiveMovement": {"$ref": "#/components/schemas/StoryboardMovement"},
+          "metadata": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "StoryboardTransitionMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["movementOverride"],
+        "properties": {
+          "movementOverride": {"allOf": [{"$ref": "#/components/schemas/StoryboardMovement"}], "nullable": true}
+        }
+      },
+      "StoryboardKeyframe": {
+        "type": "object",
+        "required": ["id", "type", "position", "cameraIntent", "image", "latestGeneration", "activeGeneration", "generationReferences", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "type": {"type": "string", "enum": ["start", "intermediate", "end"]},
+          "position": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "cameraIntent": {"allOf": [{"$ref": "#/components/schemas/StoryboardCameraIntent"}], "nullable": true},
+          "image": {"$ref": "#/components/schemas/StoryboardGenerationImage"},
+          "latestGeneration": {"$ref": "#/components/schemas/StoryboardGenerationImage"},
+          "activeGeneration": {"allOf": [{"$ref": "#/components/schemas/StoryboardGenerationImage"}], "nullable": true},
+          "generationReferences": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardGenerationReference"}},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StoryboardKeyframePosition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["position"],
+        "properties": {
+          "position": {"type": "number", "format": "double", "exclusiveMinimum": true, "minimum": 0, "exclusiveMaximum": true, "maximum": 1}
+        }
+      },
+      "StoryboardGenerationError": {
+        "type": "object",
+        "nullable": true,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"}
+        }
+      },
+      "StoryboardShotCharacter": {
+        "type": "object",
+        "required": ["id", "name", "missing"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid", "nullable": true},
+          "name": {"type": "string"},
+          "missing": {"type": "boolean"}
+        }
+      },
+      "StoryboardShotVisualReference": {
+        "type": "object",
+        "required": ["id", "title", "role", "missing"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid", "nullable": true},
+          "title": {"type": "string"},
+          "role": {"type": "string", "enum": ["location", "object", "clothing", "transport", "other"]},
+          "missing": {"type": "boolean"}
+        }
+      },
+      "StoryboardShot": {
+        "type": "object",
+        "required": ["id", "order", "title", "description", "durationSeconds", "location", "characters", "visualReferences", "keyframes", "transitions", "readiness", "version", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "order": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "durationSeconds": {"type": "number", "format": "double", "minimum": 0, "nullable": true},
+          "location": {
+            "type": "object",
+            "nullable": true,
+            "required": ["id", "name"],
+            "properties": {"id": {"type": "integer", "minimum": 1}, "name": {"type": "string"}}
+          },
+          "characters": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardShotCharacter"}},
+          "visualReferences": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardShotVisualReference"}},
+          "keyframes": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardKeyframe"}},
+          "transitions": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardTransition"}},
+          "readiness": {
+            "type": "object",
+            "required": ["ready", "missing"],
+            "properties": {
+              "ready": {"type": "boolean"},
+              "missing": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "version": {"type": "integer", "minimum": 1},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StoryboardShotCreateMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {"type": "string", "maxLength": 255},
+          "description": {"type": "string", "maxLength": 8000},
+          "durationSeconds": {"type": "number", "format": "double", "minimum": 0, "nullable": true},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "characterIds": {"type": "array", "uniqueItems": true, "maxItems": 100, "items": {"type": "string", "format": "uuid"}},
+          "visualReferences": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["referenceId", "role"],
+              "properties": {
+                "referenceId": {"type": "string", "format": "uuid"},
+                "role": {"type": "string", "enum": ["location", "object", "clothing", "transport", "other"]}
+              }
+            }
+          }
+        }
+      },
+      "StoryboardShotPatchMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedVersion"],
+        "properties": {
+          "expectedVersion": {"type": "integer", "minimum": 1},
+          "title": {"type": "string", "maxLength": 255},
+          "description": {"type": "string", "maxLength": 8000},
+          "durationSeconds": {"type": "number", "format": "double", "minimum": 0, "nullable": true},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "characterIds": {"type": "array", "uniqueItems": true, "maxItems": 100, "items": {"type": "string", "format": "uuid"}},
+          "visualReferences": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["referenceId", "role"],
+              "properties": {
+                "referenceId": {"type": "string", "format": "uuid"},
+                "role": {"type": "string", "enum": ["location", "object", "clothing", "transport", "other"]}
+              }
+            }
+          }
+        }
+      },
+      "StoryboardShotReorder": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["shotIds"],
+        "properties": {
+          "shotIds": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}
+        }
+      },
+      "StoryboardSceneSummary": {
+        "type": "object",
+        "required": ["id", "number", "title", "status", "shotsCount", "readyShotsCount", "progress"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "number": {"type": "integer", "minimum": 1},
+          "title": {"type": "string"},
+          "status": {"type": "string", "enum": ["empty", "draft", "completed"]},
+          "shotsCount": {"type": "integer", "minimum": 0},
+          "readyShotsCount": {"type": "integer", "minimum": 0},
+          "progress": {"type": "number", "format": "double", "minimum": 0, "maximum": 1}
+        }
+      },
+      "StoryboardWorkspace": {
+        "type": "object",
+        "required": ["id", "sceneId", "status", "shotsCount", "readyShotsCount", "progress", "sourceSceneVersion", "currentSceneVersion", "needsReview", "legacyAssetId", "shots", "updatedAt"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "sceneId": {"type": "integer", "minimum": 1},
+          "status": {"type": "string", "enum": ["empty", "draft", "completed"]},
+          "shotsCount": {"type": "integer", "minimum": 0},
+          "readyShotsCount": {"type": "integer", "minimum": 0},
+          "progress": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+          "sourceSceneVersion": {"type": "integer", "minimum": 1},
+          "currentSceneVersion": {"type": "integer", "minimum": 1},
+          "needsReview": {"type": "boolean"},
+          "legacyAssetId": {"type": "integer", "minimum": 1, "nullable": true},
+          "shots": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardShot"}},
+          "context": {"type": "object", "additionalProperties": true},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StoryboardShotListModelOption": {
+        "type": "object",
+        "required": ["id", "label", "provider", "available", "unavailableReason", "estimatedCostUsd", "estimatedInputTokens", "estimatedOutputTokens"],
+        "properties": {
+          "id": {"type": "string", "maxLength": 200},
+          "label": {"type": "string"},
+          "provider": {"type": "string"},
+          "available": {"type": "boolean"},
+          "unavailableReason": {"type": "string", "enum": ["dependencyMissing", "credentialMissing", "unsupportedProvider"], "nullable": true},
+          "estimatedCostUsd": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]{1,6})?$", "nullable": true},
+          "estimatedInputTokens": {"type": "integer", "minimum": 1},
+          "estimatedOutputTokens": {"type": "integer", "minimum": 1}
+        }
+      },
+      "StoryboardShotListOptions": {
+        "type": "object",
+        "required": ["defaultModel", "maxShots", "models", "context"],
+        "properties": {
+          "defaultModel": {"type": "string"},
+          "maxShots": {"type": "integer", "minimum": 1, "maximum": 40},
+          "models": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardShotListModelOption"}},
+          "context": {
+            "type": "object",
+            "required": ["sceneTitle", "characters", "locations"],
+            "properties": {
+              "sceneTitle": {"type": "string"},
+              "characters": {"type": "array", "items": {"type": "string"}},
+              "locations": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      },
+      "StoryboardSuggestShotsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model": {"type": "string", "maxLength": 200},
+          "maxShots": {"type": "integer", "minimum": 1, "maximum": 40, "default": 16}
+        }
+      },
+      "StoryboardShotProposal": {
+        "type": "object",
+        "required": ["shots"],
+        "properties": {
+          "shots": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "description", "suggested_characters", "suggested_location", "suggested_assets", "suggested_framing"],
+              "properties": {
+                "title": {"type": "string", "maxLength": 255},
+                "description": {"type": "string", "maxLength": 4000},
+                "suggested_characters": {"type": "array", "items": {"type": "string", "format": "uuid"}},
+                "suggested_location": {"type": "string", "nullable": true},
+                "suggested_assets": {"type": "array", "items": {"type": "string"}},
+                "suggested_framing": {"$ref": "#/components/schemas/StoryboardFraming"}
+              }
+            }
+          }
+        }
+      },
+      "StoryboardGenerationReferenceMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["referenceType"],
+        "properties": {
+          "referenceType": {"type": "string", "enum": ["character", "location", "object", "clothing", "previous_keyframe", "previous_shot", "other_storyboard_keyframe"]},
+          "sourceKeyframeId": {"type": "string", "format": "uuid", "nullable": true},
+          "visualReferenceId": {"type": "string", "format": "uuid", "nullable": true},
+          "characterId": {"type": "string", "format": "uuid", "nullable": true},
+          "locationId": {"type": "integer", "minimum": 1, "nullable": true},
+          "priority": {"type": "integer", "minimum": 0, "maximum": 32767, "default": 0},
+          "isPrimary": {"type": "boolean", "default": false}
+        }
+      },
+      "StoryboardGenerationReferencesReplace": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["references"],
+        "properties": {
+          "references": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardGenerationReferenceMutation"}}
+        }
+      },
+      "StoryboardGenerateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "imageModel": {"type": "string", "maxLength": 128},
+          "routingMode": {"type": "string", "enum": ["manual", "economy", "fast", "balanced", "quality"], "default": "manual"}
+        }
+      },
+      "StoryboardGeneration": {
+        "type": "object",
+        "required": ["generationId", "keyframeId", "revision", "status", "imageUrl", "provider", "model", "error", "createdAt", "startedAt", "completedAt", "billing"],
+        "properties": {
+          "generationId": {"type": "string", "format": "uuid"},
+          "keyframeId": {"type": "string", "format": "uuid"},
+          "revision": {"type": "integer", "minimum": 1},
+          "status": {"type": "string", "enum": ["queued", "generating", "ready", "failed"]},
+          "imageUrl": {"type": "string", "format": "uri", "nullable": true},
+          "provider": {"type": "string", "nullable": true},
+          "model": {"type": "string", "nullable": true},
+          "error": {"allOf": [{"$ref": "#/components/schemas/StoryboardGenerationError"}], "nullable": true},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "startedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "completedAt": {"type": "string", "format": "date-time", "nullable": true},
+          "billing": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "StoryboardPreview": {
+        "type": "object",
+        "required": ["sceneId", "shots"],
+        "properties": {
+          "sceneId": {"type": "integer", "minimum": 1},
+          "shots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "duration", "keyframes", "transitions"],
+              "properties": {
+                "id": {"type": "string", "format": "uuid"},
+                "duration": {"type": "number", "format": "double", "minimum": 0, "nullable": true},
+                "keyframes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "position", "imageUrl"],
+                    "properties": {
+                      "id": {"type": "string", "format": "uuid"},
+                      "position": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+                      "imageUrl": {"type": "string", "format": "uri", "nullable": true}
+                    }
+                  }
+                },
+                "transitions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["from", "to", "movement"],
+                    "properties": {
+                      "from": {"type": "string", "format": "uuid"},
+                      "to": {"type": "string", "format": "uuid"},
+                      "movement": {"$ref": "#/components/schemas/StoryboardMovement"}
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "SceneStoryboardUpdateRequest": {

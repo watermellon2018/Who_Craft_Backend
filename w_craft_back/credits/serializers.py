@@ -33,6 +33,7 @@ class GenerationEstimateSerializer(serializers.Serializer):
             "character",
             "poster",
             "reference",
+            "storyboard",
             "music",
             "sound_effect",
             "model3d",

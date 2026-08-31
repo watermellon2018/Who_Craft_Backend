@@ -542,6 +542,8 @@ class SceneStoryboard(models.Model):
     asset = models.ForeignKey(
         ProjectAsset,
         on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
         related_name="scene_storyboards",
     )
     source_scene_version = models.PositiveIntegerField(

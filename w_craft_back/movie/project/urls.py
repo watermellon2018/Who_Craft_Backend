@@ -82,6 +82,10 @@ urlpatterns = [
         include('w_craft_back.movie.reference_library.urls'),
     ),
     path(
+        '<int:project_id>/storyboard/',
+        include('w_craft_back.movie.storyboard.urls'),
+    ),
+    path(
         '<int:project_id>/music/',
         include('w_craft_back.movie.music.urls'),
     ),

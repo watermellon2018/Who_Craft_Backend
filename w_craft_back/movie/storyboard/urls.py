@@ -1,0 +1,107 @@
+"""Project-scoped Storyboard routes."""
+
+from django.urls import path
+
+from w_craft_back.movie.storyboard.views import (
+    SceneStoryboardDetailView,
+    SceneStoryboardListView,
+    SceneStoryboardPreviewView,
+    SceneStoryboardShotListView,
+    StoryboardCameraIntentView,
+    StoryboardGenerateView,
+    StoryboardGenerationDetailView,
+    StoryboardGenerationReferencesView,
+    StoryboardKeyframeCollectionView,
+    StoryboardKeyframeDetailView,
+    StoryboardShotCollectionView,
+    StoryboardShotDetailView,
+    StoryboardShotDuplicateView,
+    StoryboardShotReorderView,
+    StoryboardSuggestedReferencesView,
+    StoryboardTransitionView,
+)
+
+
+urlpatterns = [
+    path("scenes/", SceneStoryboardListView.as_view(), name="storyboard-scenes"),
+    path(
+        "scenes/<int:scene_id>/",
+        SceneStoryboardDetailView.as_view(),
+        name="storyboard-scene-detail",
+    ),
+    path(
+        "scenes/<int:scene_id>/suggest-shots/",
+        SceneStoryboardShotListView.as_view(),
+        name="storyboard-suggest-shots",
+    ),
+    path(
+        "scenes/<int:scene_id>/preview/",
+        SceneStoryboardPreviewView.as_view(),
+        name="storyboard-preview",
+    ),
+    path(
+        "<int:storyboard_id>/shots/",
+        StoryboardShotCollectionView.as_view(),
+        name="storyboard-shots",
+    ),
+    path(
+        "<int:storyboard_id>/shots/reorder/",
+        StoryboardShotReorderView.as_view(),
+        name="storyboard-shots-reorder",
+    ),
+    path(
+        "shots/<uuid:shot_id>/",
+        StoryboardShotDetailView.as_view(),
+        name="storyboard-shot-detail",
+    ),
+    path(
+        "shots/<uuid:shot_id>/duplicate/",
+        StoryboardShotDuplicateView.as_view(),
+        name="storyboard-shot-duplicate",
+    ),
+    path(
+        "shots/<uuid:shot_id>/keyframes/",
+        StoryboardKeyframeCollectionView.as_view(),
+        name="storyboard-keyframes",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/",
+        StoryboardKeyframeDetailView.as_view(),
+        name="storyboard-keyframe-detail",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/camera-intent/",
+        StoryboardCameraIntentView.as_view(),
+        name="storyboard-camera-intent",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/suggested-references/",
+        StoryboardSuggestedReferencesView.as_view(),
+        name="storyboard-suggested-references",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/references/",
+        StoryboardGenerationReferencesView.as_view(),
+        name="storyboard-generation-references",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/generate/",
+        StoryboardGenerateView.as_view(),
+        name="storyboard-generate",
+    ),
+    path(
+        "keyframes/<uuid:keyframe_id>/regenerate/",
+        StoryboardGenerateView.as_view(),
+        name="storyboard-regenerate",
+    ),
+    path(
+        "transitions/<uuid:transition_id>/",
+        StoryboardTransitionView.as_view(),
+        name="storyboard-transition",
+    ),
+    path(
+        "generations/<uuid:generation_id>/",
+        StoryboardGenerationDetailView.as_view(),
+        name="storyboard-generation-detail",
+    ),
+]

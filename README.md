@@ -26,8 +26,8 @@ Start generation in a separate process:
 python manage.py run_generation_worker --queue all
 ```
 
-Supported queue names are `character`, `poster`, `music`, `sound_effect`, and
-`reference`.
+Supported queue names are `character`, `poster`, `music`, `sound_effect`,
+`reference`, and `storyboard`.
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
 
@@ -67,6 +67,9 @@ operations are unchanged.
 - `GET/PATCH /api/profile/me/` — current profile; `DELETE` closes and
   anonymizes the current account after password confirmation.
 - `/api/projects/` — project aggregate, team, poster, music, references.
+- `/api/projects/{id}/storyboard/` — structured scene shots, keyframes, camera
+  intent, transitions, preview, and asynchronous still-image generations; see
+  [Structured Storyboard](docs/storyboard.md).
 - `/api/projects/{id}/dashboard/` — dashboard and dynamically calculated
   [project readiness](docs/project-readiness.md).
 - `/api/projects/{id}/characters...` — Character Studio.

@@ -1,0 +1,163 @@
+# Structured Storyboard
+
+The Storyboard module turns a screenplay scene into an ordered, editable shot
+plan. It stores scene shots, START/END and optional intermediate keyframes,
+camera intent, inferred transitions, continuity references, and immutable still
+image generation revisions. It does not generate or assemble video.
+
+## API and permissions
+
+Structured routes live under `/api/projects/{project_id}/storyboard/`. The scene
+list is a lightweight progress response; the scene detail returns the full
+workspace and its resolved scene context. `POST .../scenes/{scene_id}/` creates
+the scene aggregate idempotently. Shot, keyframe, camera, transition, reference,
+preview, and generation routes are documented in `docs/openapi.json`.
+
+Project view permission is sufficient for reads and preview. Project content
+edit permission is required for mutations. Image generation additionally uses
+the central generation policy and credit reservation. Every related character,
+location, visual reference, keyframe, and generated asset is resolved through
+the project scope; a UUID from another project is never accepted or disclosed.
+
+The existing `/api/projects/{project_id}/scenes/{scene_id}/storyboard/` endpoint
+remains compatible with legacy storyboard assets. Its GET response includes the
+structured workspace when available, and POST initializes the structured form.
+
+## Authoring lifecycle
+
+Creating a shot atomically creates its START (`position=0`) and END
+(`position=1`) keyframes and the transition between them. Intermediate frames
+must have a unique position strictly between those boundaries. Editing camera
+intent recalculates only adjacent inferred transitions; a user transition
+override remains explicit. Shot readiness is computed from current data: both
+boundary frames need camera intent and a ready selected image revision.
+
+`GET .../suggest-shots/` returns one option per allowlisted text model, its
+selected provider route and availability, scene context, and a best-effort USD
+estimate based on LiteLLM token and route-specific price metadata. The estimate
+is not a reservation or invoice and can be absent when pricing metadata is
+unavailable; a different provider's tariff is never substituted. The option's
+`id` remains the concrete LiteLLM route to send as `model` in the POST, so the
+confirmed provider is not reselected between estimation and generation.
+`POST .../suggest-shots/` asks the selected allowlisted model for strict
+JSON-schema output. The response is an unpersisted proposal: the client must
+review it and create chosen shots through normal mutation endpoints. Provider
+identifiers are validated against the resolved scene context before the
+proposal is returned.
+
+The shot-list request explicitly requires entity IDs, not display names. Its
+JSON schema limits the number of shots to the requested `maxShots` and restricts
+character, location, and visual-asset references to IDs in this scene. Empty
+entity catalogs require empty reference arrays or a null location. Responses
+still undergo server-side field and entity validation because provider schema
+enforcement varies.
+
+Failures emit `storyboard_shot_list_failed` under the same `request_id` as the
+HTTP response. Safe fields include `model`, `provider`, `error_code`, the
+categorical `status`, `exception_type`, and, when available, the upstream
+`status_code`. Categories distinguish timeout, rate limiting, provider rejection,
+truncated/refused/invalid JSON, invalid shot count/fields, and unknown entities.
+Provider exception messages, response bodies, scene text, and credentials are
+never included. Old generic `django_request_error` lines alone cannot establish
+the provider failure's cause.
+
+The HTTP status remains 502 for provider failures. The client distinguishes
+`STORYBOARD_AI_TIMEOUT`, `STORYBOARD_AI_RATE_LIMITED`,
+`STORYBOARD_AI_PROVIDER_REJECTED`, and `STORYBOARD_AI_BAD_RESPONSE`; unknown
+provider errors retain `STORYBOARD_AI_FAILED`. No automatic paid retry is made.
+
+Text model names and default routes live separately from the image and audio
+registries in `w_craft_back/services/text_generation/registry.py`. The initial
+catalog contains Gemini 2.5 Flash (Google or OpenRouter), Qwen3 235B A22B 2507,
+DeepSeek V3.2, and GPT-5.4 mini (the latter three through OpenRouter). Models
+without configured credentials remain visible but disabled. An explicit
+route allowlist can restrict or extend this catalog without changing the UI.
+
+For each model, the server picks the first available route in configuration
+order, with `STORYBOARD_SHOT_LIST_MODEL` first. This is an explicit priority,
+not automatic cheapest-provider selection. For the default Gemini model,
+Google is preferred when both keys are configured; OpenRouter is selected when
+only its key is configured. The dialog shows the selected provider separately
+from the model. If that exact route becomes unavailable after confirmation,
+generation fails instead of silently choosing another route or mock output.
+
+OpenRouter calls require parameter support (`provider.require_parameters=true`)
+for the strict JSON-schema request. App/SDK retries and OpenRouter provider
+fallbacks are disabled for this synchronous paid request. OpenRouter still
+selects the initial compatible endpoint behind its route; this catalog does
+not pin or quote a specific upstream hosting endpoint. Schema support and
+actual usage can differ by endpoint, so responses are still validated on the
+server and the displayed cost remains an estimate. Catalog availability is a
+configuration check, not a paid provider health probe.
+
+## Still-image generation
+
+`POST .../keyframes/{keyframe_id}/generate/` and `/regenerate/` require an
+`Idempotency-Key`. They create immutable request snapshots and queued generation
+revisions; provider calls never run in the HTTP request. Poll
+`GET .../generations/{generation_id}/` for status. Workspace keyframes also
+expose their selected `image`, newest `latestGeneration`, and any queued or
+running `activeGeneration`, so reconnecting does not hide regeneration
+progress. A successful worker result is stored in private project media and
+becomes the keyframe's current revision only if its immutable input is still
+current. Later edits leave the revision in history and make the previous image
+report `outdated=true`.
+
+Run the durable queue with:
+
+```bash
+python manage.py run_generation_worker --queue storyboard
+```
+
+The web and worker processes must share PostgreSQL, private media storage, image
+provider configuration, and credit settings. Recovery uses database leases and
+safe retry semantics. Known provider rejections and pre-provider failures
+release their reservation. A received result or truly ambiguous timeout is
+conservatively captured at the reserved estimate and marked as estimated usage
+for audit and reconciliation.
+
+## Configuration and limits
+
+- `STORYBOARD_SHOT_LIST_MODEL` selects the preferred default LiteLLM text route.
+  The default `gemini-2.5-flash` is normalized to
+  `gemini/gemini-2.5-flash` and uses the direct Gemini API. To route the request
+  through OpenRouter, set an explicit LiteLLM model such as
+  `openrouter/google/gemini-2.5-flash` and configure `OPENROUTER_API_KEY`.
+- `STORYBOARD_SHOT_LIST_MODELS` optionally overrides the comma-separated route
+  allowlist and its priority order. Omit it to use the text catalog. Existing
+  explicit allowlists are respected and do not automatically gain new models;
+  remove the override or append desired routes to enable them. The configured
+  default is always included, but duplicate routes/models are collapsed for UI.
+  Gemini routes require `GEMINI_API_KEY`; OpenRouter routes require
+  `OPENROUTER_API_KEY`. Other provider prefixes are shown as unavailable until
+  Storyboard adds an explicit credential mapping for them. LiteLLM must be
+  installed from `requirements.txt`.
+
+The added OpenRouter route IDs are:
+
+- `openrouter/qwen/qwen3-235b-a22b-2507`
+- `openrouter/deepseek/deepseek-v3.2`
+- `openrouter/openai/gpt-5.4-mini`
+
+Model IDs and JSON-schema capability were checked against the
+[Qwen model](https://openrouter.ai/qwen/qwen3-235b-a22b-2507),
+[DeepSeek model](https://openrouter.ai/deepseek/deepseek-v3.2), and
+[GPT model](https://openrouter.ai/openai/gpt-5.4-mini) catalog entries on
+2026-08-31. See OpenRouter's
+[structured-output limitations](https://openrouter.ai/docs/guides/features/structured-outputs).
+Adding another model on a supported route requires a text registry entry;
+adding an entirely new provider also requires its credential/adapter support.
+
+Other operational settings:
+
+- `STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS` limits a Shot List provider call.
+- `STORYBOARD_SHOT_LIST_THROTTLE_RATE` limits synchronous Shot List requests per
+  authenticated user (default `10/min`).
+- `STORYBOARD_PROVIDER_TIMEOUT_SECONDS` limits a still-image provider call.
+- `STORYBOARD_JOB_LEASE_SECONDS` controls durable worker lease recovery.
+- Still images reuse the image provider registry and Reference Library routing
+  settings; mock output requires the existing explicit mock opt-in.
+
+The module intentionally has no video generation, timeline renderer, or
+automatic persistence of AI proposals. Preview data is a storyboard projection
+for clients to render; it is not a generated video file.

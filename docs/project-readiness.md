@@ -12,8 +12,9 @@ The ratio-based contract is returned under `progress.readiness`:
 - characters: 20%, weighted by distinct scenario appearances and limited to
   significant characters (`replica_count > 5`, `scene_count >= 2`, or a usable
   ready identity asset);
-- storyboard: 25%, from storyboard records accepted for the current scene
-  revision;
+- storyboard: 25%, from either legacy storyboard assets accepted for the
+  current scene revision or structured storyboards whose shots are all complete
+  for the current scene revision;
 - video: 35%, from planned video shots with a selected final video asset.
 
 When no significant character has a positive scene weight, character readiness
@@ -32,7 +33,9 @@ conditions are true:
   Character Studio character;
 - there are no empty scenes under the same content rule used by script
   readiness;
-- every scene has a storyboard accepted for its current scene revision.
+- every scene has either a legacy storyboard accepted for its current scene
+  revision or a structured storyboard whose shots are complete for that
+  revision.
 
 The response contains the actionable missing-character and empty-scene lists,
 missing or stale storyboard scene details, and a `taskCount`. Incomplete
@@ -48,6 +51,12 @@ checks atomically; the GET response is not an authorization token.
 
 ## Storyboard and video lifecycle
 
+- Structured storyboard authoring is available under
+  `/api/projects/{project_id}/storyboard/`. It stores shots, camera keyframes,
+  transitions, and asynchronous still-image revisions; see
+  [Structured Storyboard](storyboard.md). A structured storyboard is ready only
+  when every shot has ready START and END camera frames for the current scene
+  revision.
 - `PUT /api/projects/{project_id}/scenes/{scene_id}/storyboard/` registers a
   storyboard asset and its source scene revision.
 - `POST .../storyboard/confirm/` confirms the current revision and rejects a

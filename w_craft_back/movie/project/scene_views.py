@@ -348,7 +348,39 @@ class SceneStoryboardView(APIView):
                 {"detail": "Not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response(_storyboard_payload(storyboard))
+        from w_craft_back.movie.storyboard import services as storyboard_services
+
+        structured = storyboard_services.get_scene_storyboard(
+            actor=_user,
+            project_id=project_id,
+            scene_id=scene_id,
+            request=request,
+        )
+        return Response({**_storyboard_payload(storyboard), **structured})
+
+    def post(self, request, project_id: int, scene_id: int):
+        user, _scene_obj, err = self._resolve(
+            request,
+            project_id,
+            scene_id,
+            edit=True,
+        )
+        if err:
+            return err
+        from w_craft_back.movie.storyboard import services as storyboard_services
+
+        payload, created = storyboard_services.initialize_storyboard(
+            actor=user,
+            project_id=project_id,
+            scene_id=scene_id,
+            request=request,
+        )
+        return Response(
+            payload,
+            status=(
+                status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            ),
+        )
 
     def put(self, request, project_id: int, scene_id: int):
         user, scene, err = self._resolve(

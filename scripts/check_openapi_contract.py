@@ -102,6 +102,12 @@ def check_contract() -> None:
         "/api/projects/{projectId}/video/preparation/",
         "/api/projects/{projectId}/poster/generate/",
         "/api/projects/{projectId}/team/invitations/",
+        "/api/projects/{projectId}/storyboard/scenes/",
+        "/api/projects/{projectId}/storyboard/scenes/{sceneId}/",
+        "/api/projects/{projectId}/storyboard/{storyboardId}/shots/",
+        "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/generate/",
+        "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/regenerate/",
+        "/api/projects/{projectId}/storyboard/generations/{generationId}/",
         "/api/credits/project-budgets/",
         "/api/credits/project-budgets/{projectId}/",
     }
@@ -179,6 +185,63 @@ def check_contract() -> None:
         "recipientUsername",
         "amount",
         "reason",
+    }
+
+    scene_storyboard = _schema(document, "SceneStoryboard")
+    assert scene_storyboard["properties"]["assetId"]["nullable"] is True
+    storyboard_workspace = _schema(document, "StoryboardWorkspace")
+    assert storyboard_workspace["properties"]["shots"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/StoryboardShot"},
+    }
+    create_shot_operation = document["paths"][
+        "/api/projects/{projectId}/storyboard/{storyboardId}/shots/"
+    ]["post"]
+    assert create_shot_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/StoryboardShotCreateMutation"}
+    patch_shot_operation = document["paths"][
+        "/api/projects/{projectId}/storyboard/shots/{shotId}/"
+    ]["patch"]
+    assert patch_shot_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/StoryboardShotPatchMutation"}
+    assert "expectedVersion" in _schema(
+        document,
+        "StoryboardShotPatchMutation",
+    )["required"]
+    regenerate_operation = document["paths"][
+        "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/regenerate/"
+    ]["post"]
+    assert regenerate_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/StoryboardGenerateRequest"}
+    assert set(_schema(document, "StoryboardAzimuth")["enum"]) == {
+        "front",
+        "front_left",
+        "left",
+        "back_left",
+        "back",
+        "back_right",
+        "right",
+        "front_right",
+    }
+    assert set(_schema(document, "StoryboardMovement")["enum"]) == {
+        "static",
+        "dolly_in",
+        "dolly_out",
+        "pan_left",
+        "pan_right",
+        "tilt_up",
+        "tilt_down",
+        "orbit_left",
+        "orbit_right",
+        "truck_left",
+        "truck_right",
+        "crane_up",
+        "crane_down",
+        "follow",
+        "custom",
     }
 
 

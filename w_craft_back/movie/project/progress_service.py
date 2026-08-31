@@ -9,7 +9,7 @@ from fractions import Fraction
 from typing import Optional
 from uuid import UUID
 
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 
 from w_craft_back.character_studio.models import (
     CharacterAsset,
@@ -27,6 +27,11 @@ from w_craft_back.movie.project.dashboard_models import (
     VideoShot,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.storyboard.domain.readiness import ShotReadinessService
+from w_craft_back.movie.storyboard.models import (
+    StoryboardKeyframe,
+    StoryboardShot,
+)
 
 
 PROJECT_PROGRESS_WEIGHTS = {
@@ -488,11 +493,19 @@ def calculate_video_preparation(
         for scene in scenes
         if not _scene_has_script_content(scene)
     )
+    storyboard_keyframes = StoryboardKeyframe.objects.select_related(
+        "camera_intent",
+        "current_generation",
+    )
+    storyboard_shots = StoryboardShot.objects.prefetch_related(
+        Prefetch("keyframes", queryset=storyboard_keyframes)
+    )
     storyboards = {
         storyboard.scene_id: storyboard
         for storyboard in SceneStoryboard.objects.filter(
             scene__project=project,
-            asset__asset_type=AssetType.STORYBOARD,
+        ).select_related("asset").prefetch_related(
+            Prefetch("shots", queryset=storyboard_shots)
         )
     }
     storyboard_ready_count = 0
@@ -511,15 +524,34 @@ def calculate_video_preparation(
                 )
             )
             continue
-        if storyboard.accepted_scene_version == scene.version:
+        legacy_ready = (
+            storyboard.asset_id is not None
+            and storyboard.asset.asset_type == AssetType.STORYBOARD
+            and storyboard.accepted_scene_version == scene.version
+        )
+        structured_shots = list(storyboard.shots.all())
+        structured_ready = (
+            bool(structured_shots)
+            and storyboard.accepted_scene_version == scene.version
+            and all(
+                ShotReadinessService.evaluate(shot)["ready"]
+                for shot in structured_shots
+            )
+        )
+        if legacy_ready or structured_ready:
             storyboard_ready_count += 1
             continue
+        status = (
+            "stale"
+            if storyboard.accepted_scene_version != scene.version
+            else "missing"
+        )
         storyboard_scenes.append(
             StoryboardPreparationScene(
                 scene_id=scene.id,
                 title=scene.title,
                 order=scene.order,
-                status="stale",
+                status=status,
                 current_version=scene.version,
                 accepted_version=storyboard.accepted_scene_version,
             )
