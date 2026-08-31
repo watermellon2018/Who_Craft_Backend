@@ -15,6 +15,7 @@ from w_craft_back.movie.storyboard.views import (
     SceneStoryboardShotListView,
     StoryboardShotListRateThrottle,
 )
+from w_craft_back.movie.storyboard.source import build_source_snapshot
 from w_craft_back.services.text_generation.registry import DEFAULT_TEXT_MODEL_ROUTES
 
 
@@ -24,6 +25,9 @@ CONTEXT = {
     "locations": [{"id": "pier", "title": "Причал"}],
     "visualAssets": [],
 }
+SOURCE = build_source_snapshot(
+    scene_id=1, scene_version=1, text=CONTEXT["scene"]["text"],
+)
 
 
 @override_settings(
@@ -48,7 +52,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=litellm,
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
 
         self.assertEqual(result["defaultModel"], "gemini/gemini-2.5-flash")
         self.assertEqual(result["context"]["characters"], ["Энгри Дог"])
@@ -87,7 +93,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=litellm,
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
             default_provider = LiteLLMShotListProvider()
 
         self.assertEqual(len(result["models"]), 4)
@@ -109,7 +117,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=SimpleNamespace(model_cost={}),
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
         self.assertEqual(len(result["models"]), 4)
         self.assertEqual(result["models"][0]["id"], result["defaultModel"])
         self.assertEqual(result["models"][0]["provider"], "OpenRouter")
@@ -123,7 +133,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=SimpleNamespace(model_cost={}),
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
         self.assertEqual(len(result["models"]), 1)
         self.assertFalse(result["models"][0]["available"])
 
@@ -139,7 +151,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=litellm,
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
         self.assertIsNone(result["models"][0]["estimatedCostUsd"])
 
     @override_settings(GEMINI_API_KEY="", OPENROUTER_API_KEY="test-openrouter")
@@ -244,7 +258,9 @@ class ShotListModelTests(SimpleTestCase):
             "w_craft_back.movie.storyboard.shot_list._load_litellm",
             return_value=litellm,
         ):
-            result = AIShotListService.options(context=CONTEXT, max_shots=16)
+            result = AIShotListService.options(
+                context=CONTEXT, max_shots=16, source=SOURCE,
+            )
 
         openai_option = next(
             option

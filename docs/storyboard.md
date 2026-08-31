@@ -52,11 +52,39 @@ entity catalogs require empty reference arrays or a null location. Responses
 still undergo server-side field and entity validation because provider schema
 enforcement varies.
 
+Each proposed shot also returns `source_segment_ids`. The server divides the
+canonical scene text into deterministic sentence/line segments while retaining
+every character and whitespace. The model selects only IDs from the supplied
+segments; unknown IDs, duplicate IDs within one shot, and missing attribution
+for nonempty text are rejected. Several shots may cite the same segment, for
+example an establishing shot and a reaction. Source quotations are never
+accepted from the model.
+
+The proposal's `source` contains the authorized `scene_id`, `scene_version`,
+SHA-256 `content_hash` of the full canonical UTF-8 text, ordered `{id, text}`
+segments, and `truncated`. Joining all segment text without separators exactly
+reconstructs the source snapshot. This preserves the server's existing text
+precedence: `script_text`, then script block text, then description/notes.
+Only the first 20,000 source characters are sent to the model, with a segment
+boundary inserted at the limit; those segments replace the raw scene text in
+the prompt rather than duplicating it. If `truncated=true`, the response still
+includes the complete scene, but shots can reference only the supplied prefix.
+The estimate and generation both use the same segmented prompt construction.
+
+This attribution belongs to the unpersisted proposal and its client draft.
+It does not add database fields or change shot mutation endpoints. Clients
+should retain the snapshot with the draft, show original fragments read-only,
+and highlight referenced segments in the full snapshot. If the scene later
+changes, label the snapshot as the generation-time source rather than attaching
+its IDs to new text. Older proposals have no reliable source attribution; do
+not infer exact quotations from generated descriptions or regenerate silently.
+
 Failures emit `storyboard_shot_list_failed` under the same `request_id` as the
 HTTP response. Safe fields include `model`, `provider`, `error_code`, the
 categorical `status`, `exception_type`, and, when available, the upstream
 `status_code`. Categories distinguish timeout, rate limiting, provider rejection,
-truncated/refused/invalid JSON, invalid shot count/fields, and unknown entities.
+truncated/refused/invalid JSON, invalid shot count/fields, unknown entities, and
+invalid source segment references.
 Provider exception messages, response bodies, scene text, and credentials are
 never included. Old generic `django_request_error` lines alone cannot establish
 the provider failure's cause.

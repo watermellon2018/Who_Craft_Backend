@@ -176,6 +176,9 @@ class StoryboardApiTests(TestCase):
     @patch("w_craft_back.movie.storyboard.views.AIShotListService")
     def test_shot_list_endpoint_forwards_selected_model(self, service_class):
         service_class.return_value.suggest.return_value = {"shots": []}
+        self.scene.script_text = "First sentence. " + "x" * 20000 + " Last sentence."
+        self.scene.version = 7
+        self.scene.save(update_fields=["script_text", "version"])
 
         response = self.client.post(
             f"/api/projects/{self.project.id}/storyboard/scenes/"
@@ -195,6 +198,24 @@ class StoryboardApiTests(TestCase):
             service_class.return_value.suggest.call_args.kwargs["max_shots"],
             8,
         )
+        source = service_class.return_value.suggest.call_args.kwargs["source"]
+        self.assertEqual(source["scene_id"], self.scene.id)
+        self.assertEqual(source["scene_version"], self.scene.version)
+        self.assertTrue(source["truncated"])
+        self.assertEqual(
+            "".join(segment["text"] for segment in source["segments"]),
+            self.scene.script_text.strip(),
+        )
+
+    @patch("w_craft_back.movie.storyboard.views.AIShotListService")
+    def test_shot_list_cannot_disclose_source_from_another_project(self, service_class):
+        response = self.client.post(
+            f"/api/projects/{self.other_project.id}/storyboard/scenes/"
+            f"{self.scene.id}/suggest-shots/",
+            {"maxShots": 8}, format="json", **self.token(self.outsider_key),
+        )
+        self.assertEqual(response.status_code, 404)
+        service_class.assert_not_called()
 
     def test_shot_creation_adds_boundaries_and_transition(self):
         shot = self.create_shot()

@@ -194,6 +194,21 @@ def check_contract() -> None:
         "type": "array",
         "items": {"$ref": "#/components/schemas/StoryboardShot"},
     }
+    shot_proposal = _schema(document, "StoryboardShotProposal")
+    assert {"shots", "source"}.issubset(shot_proposal["required"])
+    assert shot_proposal["properties"]["source"] == {
+        "$ref": "#/components/schemas/StoryboardShotListSource",
+    }
+    proposed_shot = shot_proposal["properties"]["shots"]["items"]
+    assert "source_segment_ids" in proposed_shot["required"]
+    assert proposed_shot["properties"]["source_segment_ids"]["uniqueItems"] is True
+    shot_source = _schema(document, "StoryboardShotListSource")
+    assert set(shot_source["required"]) == {
+        "scene_id", "scene_version", "content_hash", "segments", "truncated",
+    }
+    assert shot_source["properties"]["segments"]["items"] == {
+        "$ref": "#/components/schemas/StoryboardSourceSegment",
+    }
     create_shot_operation = document["paths"][
         "/api/projects/{projectId}/storyboard/{storyboardId}/shots/"
     ]["post"]

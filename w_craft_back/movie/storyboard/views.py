@@ -34,6 +34,7 @@ from w_craft_back.movie.storyboard.serializers import (
     TransitionPatchSerializer,
 )
 from w_craft_back.movie.storyboard.shot_list import AIShotListService
+from w_craft_back.movie.storyboard.source import source_from_scene
 
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,9 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
         )
         scene = services._scene(project, scene_id)
         context = services.SceneStoryboardContextService.build(scene)
-        return Response(AIShotListService.options(context=context, max_shots=16))
+        return Response(AIShotListService.options(
+            context=context, max_shots=16, source=source_from_scene(scene),
+        ))
 
     @handle_storyboard_errors
     def post(self, request, project_id: int, scene_id: int):
@@ -184,6 +187,7 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
             AIShotListService(model=data.get("model")).suggest(
                 context=context,
                 max_shots=data["maxShots"],
+                source=source_from_scene(scene),
             )
         )
 

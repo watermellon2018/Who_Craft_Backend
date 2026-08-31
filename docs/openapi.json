@@ -2798,10 +2798,32 @@
           "maxShots": {"type": "integer", "minimum": 1, "maximum": 40, "default": 16}
         }
       },
+      "StoryboardSourceSegment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"type": "string", "description": "Opaque deterministic ID within the source snapshot."},
+          "text": {"type": "string", "description": "Exact canonical screenplay text, including whitespace."}
+        }
+      },
+      "StoryboardShotListSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scene_id", "scene_version", "content_hash", "segments", "truncated"],
+        "properties": {
+          "scene_id": {"type": "integer", "minimum": 1},
+          "scene_version": {"type": "integer", "minimum": 1},
+          "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 of the full canonical scene text encoded as UTF-8."},
+          "segments": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardSourceSegment"}, "description": "Ordered complete source snapshot. Joining text values without separators reconstructs the canonical scene text exactly."},
+          "truncated": {"type": "boolean", "description": "The model received only the first 20,000 characters; the response still contains the complete source snapshot."}
+        }
+      },
       "StoryboardShotProposal": {
         "type": "object",
-        "required": ["shots"],
+        "required": ["shots", "source"],
         "properties": {
+          "source": {"$ref": "#/components/schemas/StoryboardShotListSource"},
           "shots": {
             "type": "array",
             "minItems": 1,
@@ -2809,10 +2831,11 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["title", "description", "suggested_characters", "suggested_location", "suggested_assets", "suggested_framing"],
+              "required": ["title", "description", "source_segment_ids", "suggested_characters", "suggested_location", "suggested_assets", "suggested_framing"],
               "properties": {
                 "title": {"type": "string", "maxLength": 255},
                 "description": {"type": "string", "maxLength": 4000},
+                "source_segment_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}, "description": "IDs of supplied source segments depicted by this shot. Nonempty when source text exists. Each ID may be reused by other shots."},
                 "suggested_characters": {"type": "array", "items": {"type": "string", "format": "uuid"}},
                 "suggested_location": {"type": "string", "nullable": true},
                 "suggested_assets": {"type": "array", "items": {"type": "string"}},

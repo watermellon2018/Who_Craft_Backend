@@ -13,6 +13,7 @@ from w_craft_back.movie.storyboard.shot_list import (
     LiteLLMShotListProvider,
     SHOT_LIST_SCHEMA,
 )
+from w_craft_back.movie.storyboard.source import build_source_snapshot
 from w_craft_back.observability import JsonLogFormatter
 
 
@@ -24,9 +25,13 @@ CONTEXT = {
     "locations": [{"id": "pier", "name": "Pier"}],
     "visualAssets": [],
 }
+SOURCE = build_source_snapshot(
+    scene_id=1, scene_version=1, text=CONTEXT["scene"]["text"],
+)
 SHOT = {
     "title": "Arrival",
     "description": "The character arrives at the pier.",
+    "source_segment_ids": [SOURCE["segments"][0]["id"]],
     "suggested_characters": ["dog"],
     "suggested_location": "pier",
     "suggested_assets": [],
@@ -105,7 +110,8 @@ class ShotListDiagnosticsTests(SimpleTestCase):
         }))
         service = AIShotListService(provider=provider)
         self.assertEqual(
-            service.suggest(context=CONTEXT, max_shots=16), {"shots": [SHOT]},
+            service.suggest(context=CONTEXT, max_shots=16, source=SOURCE),
+            {"shots": [SHOT], "source": SOURCE},
         )
         first_schema = provider.suggest.call_args.kwargs["schema"]
         self.assertEqual(first_schema["properties"]["shots"]["maxItems"], 16)
@@ -118,8 +124,12 @@ class ShotListDiagnosticsTests(SimpleTestCase):
         )
         provider.suggest.return_value = {"shots": [dict(
             SHOT, suggested_characters=[], suggested_location=None,
+            source_segment_ids=[],
         )]}
-        service.suggest(context={}, max_shots=3)
+        service.suggest(
+            context={}, max_shots=3,
+            source=build_source_snapshot(scene_id=1, scene_version=1, text=""),
+        )
         fields = provider.suggest.call_args.kwargs["schema"][
             "properties"]["shots"]["items"]["properties"]
         self.assertEqual(fields["suggested_characters"]["maxItems"], 0)
@@ -143,7 +153,7 @@ class ShotListDiagnosticsTests(SimpleTestCase):
                 with self.assertLogs(LOGGER, level="WARNING") as logs:
                     with self.assertRaises(StoryboardError) as captured:
                         AIShotListService(provider=provider).suggest(
-                            context=CONTEXT, max_shots=16,
+                            context=CONTEXT, max_shots=16, source=SOURCE,
                         )
                 self.assertEqual(captured.exception.code, "STORYBOARD_AI_BAD_RESPONSE")
                 self.assertEqual(logs.records[0].status, reason)
