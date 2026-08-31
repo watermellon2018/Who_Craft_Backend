@@ -20,6 +20,26 @@ from w_craft_back.movie.project.dashboard_models import (
 from w_craft_back.movie.reference_library.models import ProjectReference
 
 
+class SceneStoryboardEditorDraft(models.Model):
+    """Durable editable working copy, separate from rendered storyboard history."""
+
+    scene = models.OneToOneField(
+        "w_craft_back.Scene",
+        on_delete=models.CASCADE,
+        related_name="storyboard_editor_draft",
+    )
+    payload = models.JSONField()
+    revision = models.PositiveIntegerField(default=1)
+    last_mutation_id = models.UUIDField()
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class StoryboardKeyframeType(models.TextChoices):
     START = "start", "Start"
     INTERMEDIATE = "intermediate", "Intermediate"

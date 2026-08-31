@@ -594,10 +594,32 @@
         "responses": {"200": {"description": "Existing storyboard", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}}, "201": {"description": "Storyboard initialized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardWorkspace"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}}
       }
     },
+    "/api/projects/{projectId}/storyboard/editor-drafts/": {
+      "get": {
+        "operationId": "getStoryboardEditorDrafts",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {
+          "200": {"description": "Authorized scene working copies; does not create drafts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardEditorDraftList"}}}},
+          "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/editor-draft/": {
+      "put": {
+        "operationId": "saveStoryboardEditorDraft",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardEditorDraftMutation"}}}},
+        "responses": {
+          "200": {"description": "Saved working copy or identical retry of the most recent mutation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardEditorDraft"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"description": "STORYBOARD_DRAFT_CONFLICT; errors.currentRevision identifies the saved revision. No overwrite is performed.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorEnvelope"}}}}
+        }
+      }
+    },
     "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shots/": {
       "get": {
         "operationId": "getStoryboardShotListOptions",
-        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}, {"name": "language", "in": "query", "required": false, "schema": {"type": "string", "enum": ["ru", "en"]}, "description": "Interface language for the estimated generation prompt; defaults to the user profile language, then ru."}],
         "responses": {"200": {"description": "Allowlisted text models, scene context, and best-effort cost estimates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotListOptions"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}}
       },
       "post": {
@@ -2794,8 +2816,149 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "language": {"type": "string", "enum": ["ru", "en"], "description": "Generated titles and descriptions use this interface language; defaults to the user profile language, then ru. Source quotes and entity IDs remain unchanged."},
           "model": {"type": "string", "maxLength": 200},
           "maxShots": {"type": "integer", "minimum": 1, "maximum": 40, "default": 16}
+        }
+      },
+      "StoryboardEditorDraftId": {
+        "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+      },
+      "StoryboardEditorDraftSourceDocument": {
+        "type": "object", "additionalProperties": false,
+        "required": ["contentHash", "sceneId", "sceneVersion", "segments", "truncated"],
+        "properties": {
+          "contentHash": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 of joined segment text, UTF-8. Verified on every save."},
+          "sceneId": {"type": "integer", "minimum": 1},
+          "sceneVersion": {"type": "integer", "minimum": 1},
+          "truncated": {"type": "boolean"},
+          "segments": {"type": "array", "maxItems": 20000, "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "text"],
+            "properties": {"id": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}, "text": {"type": "string", "maxLength": 500000}}
+          }}
+        }
+      },
+      "StoryboardEditorDraftSource": {
+        "type": "object", "additionalProperties": false, "required": ["document", "segmentIds"],
+        "properties": {
+          "document": {"$ref": "#/components/schemas/StoryboardEditorDraftSourceDocument"},
+          "origin": {"type": "string", "enum": ["manual", "ai"]},
+          "segmentIds": {"type": "array", "uniqueItems": true, "maxItems": 20000, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}},
+          "ranges": {"type": "array", "maxItems": 1000, "description": "Offsets in Unicode code points within joined segment text; start inclusive, end exclusive. Overlaps between or within shots are permitted.", "items": {
+            "type": "object", "additionalProperties": false, "required": ["start", "end"],
+            "properties": {"start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 1}}
+          }}
+        }
+      },
+      "StoryboardEditorDraftCameraIntent": {
+        "type": "object", "additionalProperties": false, "required": ["azimuth", "elevation", "distance", "framing"],
+        "properties": {
+          "azimuth": {"type": "string", "enum": ["front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right"]},
+          "elevation": {"type": "string", "enum": ["low", "eye-level", "high", "top"]},
+          "distance": {"type": "string", "enum": ["wide", "medium", "near"]},
+          "framing": {"type": "string", "enum": ["extreme-wide", "wide", "full", "medium", "medium-close", "close", "extreme-close", "ots", "pov"]},
+          "lens": {"type": "number", "minimum": 1, "maximum": 2000},
+          "targetId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "composition": {"type": "array", "maxItems": 100, "description": "Editor rectangle coordinates and dimensions are percentages, 0 through 100; persisted without rescaling.", "items": {
+            "type": "object", "additionalProperties": false, "required": ["subjectId", "x", "y", "width", "height"],
+            "properties": {
+              "subjectId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+              "x": {"type": "number", "minimum": 0, "maximum": 100}, "y": {"type": "number", "minimum": 0, "maximum": 100},
+              "width": {"type": "number", "minimum": 0, "maximum": 100}, "height": {"type": "number", "minimum": 0, "maximum": 100}
+            }
+          }},
+          "ots": {
+            "type": "object", "additionalProperties": false, "required": ["shoulder"],
+            "properties": {
+              "shoulder": {"type": "string", "enum": ["left", "right"]},
+              "foregroundSubjectId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+              "targetId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}
+            }
+          }
+        }
+      },
+      "StoryboardEditorDraftReference": {
+        "type": "object", "additionalProperties": false, "required": ["id", "title", "type"],
+        "description": "Reference metadata only; image URLs, credentials and media binaries must not be persisted.",
+        "properties": {
+          "id": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "title": {"type": "string", "maxLength": 500},
+          "type": {"type": "string", "enum": ["character", "location", "object", "clothing", "other", "previous-keyframe", "previous-shot"]},
+          "primary": {"type": "boolean"},
+          "sourceKeyframeId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "sourceShotId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}
+        }
+      },
+      "StoryboardEditorDraftKeyframe": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "shotId", "position", "type", "generationStatus", "cameraIntent"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "shotId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "position": {"type": "number", "minimum": 0, "maximum": 1},
+          "type": {"type": "string", "enum": ["start", "intermediate", "end"]},
+          "generationStatus": {"type": "string", "enum": ["idle", "ready", "failed"], "description": "Transient loading state must be normalized to idle before saving."},
+          "cameraIntent": {"$ref": "#/components/schemas/StoryboardEditorDraftCameraIntent"},
+          "generationReferences": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftReference"}}
+        }
+      },
+      "StoryboardEditorDraftTransition": {
+        "type": "object", "additionalProperties": false, "required": ["id", "fromKeyframeId", "toKeyframeId"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "fromKeyframeId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "toKeyframeId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "movementOverride": {"type": "string", "enum": ["Static", "Dolly In", "Dolly Out", "Pan", "Pan Left", "Pan Right", "Tilt Up", "Tilt Down", "Orbit Left", "Orbit Right", "Truck Left", "Truck Right", "Crane Up", "Crane Down", "Follow", "Custom"]}
+        }
+      },
+      "StoryboardEditorDraftShot": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "sceneId", "title", "description", "order", "characterIds", "referenceIds", "keyframes", "transitions"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "sceneId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "title": {"type": "string", "maxLength": 255},
+          "description": {"type": "string", "maxLength": 8000},
+          "order": {"type": "integer", "minimum": 1, "maximum": 500},
+          "duration": {"type": "number", "minimum": 0, "maximum": 86400},
+          "characterIds": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}},
+          "referenceIds": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}},
+          "locationId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "keyframes": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftKeyframe"}},
+          "transitions": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftTransition"}},
+          "source": {"$ref": "#/components/schemas/StoryboardEditorDraftSource"}
+        }
+      },
+      "StoryboardEditorDraftPayload": {
+        "type": "object", "additionalProperties": false, "required": ["schemaVersion", "stage", "shots"],
+        "description": "Durable editable working copy, limited to 2 MiB JSON. Does not replace structured shot records or rendered history. IDs are unique within the scene, shot order is contiguous. URLs containing credentials and embedded media are rejected. Stale source snapshots are preserved, current-version source text must match the scene.",
+        "properties": {
+          "schemaVersion": {"type": "integer", "enum": [1]},
+          "stage": {"type": "string", "enum": ["selection", "builder", "editor"]},
+          "shots": {"type": "array", "maxItems": 500, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftShot"}}
+        }
+      },
+      "StoryboardEditorDraft": {
+        "type": "object", "additionalProperties": false, "required": ["sceneId", "revision", "payload"],
+        "properties": {
+          "sceneId": {"type": "integer", "minimum": 1},
+          "revision": {"type": "integer", "minimum": 1},
+          "payload": {"$ref": "#/components/schemas/StoryboardEditorDraftPayload"}
+        }
+      },
+      "StoryboardEditorDraftList": {
+        "type": "object", "additionalProperties": false, "required": ["userId", "canEdit", "drafts"],
+        "properties": {
+          "userId": {"type": "integer", "minimum": 1}, "canEdit": {"type": "boolean"},
+          "drafts": {"type": "array", "items": {"$ref": "#/components/schemas/StoryboardEditorDraft"}}
+        }
+      },
+      "StoryboardEditorDraftMutation": {
+        "type": "object", "additionalProperties": false, "required": ["expectedRevision", "mutationId", "payload"],
+        "properties": {
+          "expectedRevision": {"type": "integer", "minimum": 0, "description": "0 for a first save. Must match the latest saved revision; stale writes return 409."},
+          "mutationId": {"type": "string", "format": "uuid", "description": "Reuse for an identical retry. Reusing the most recent ID with different payload is rejected."},
+          "payload": {"$ref": "#/components/schemas/StoryboardEditorDraftPayload"}
         }
       },
       "StoryboardSourceSegment": {

@@ -209,6 +209,37 @@ def check_contract() -> None:
     assert shot_source["properties"]["segments"]["items"] == {
         "$ref": "#/components/schemas/StoryboardSourceSegment",
     }
+    draft_payload = _schema(document, "StoryboardEditorDraftPayload")
+    assert set(draft_payload["required"]) == {"schemaVersion", "stage", "shots"}
+    assert draft_payload["additionalProperties"] is False
+    assert draft_payload["properties"]["shots"]["maxItems"] == 500
+    assert draft_payload["properties"]["stage"]["enum"] == [
+        "selection", "builder", "editor",
+    ]
+    draft_mutation = _schema(document, "StoryboardEditorDraftMutation")
+    assert set(draft_mutation["required"]) == {
+        "expectedRevision", "mutationId", "payload",
+    }
+    assert draft_mutation["properties"]["mutationId"]["format"] == "uuid"
+    assert "imageUrl" not in _schema(document, "StoryboardEditorDraftKeyframe")[
+        "properties"
+    ]
+    assert "imageUrl" not in _schema(document, "StoryboardEditorDraftReference")[
+        "properties"
+    ]
+    draft_composition = _schema(document, "StoryboardEditorDraftCameraIntent")[
+        "properties"
+    ]["composition"]["items"]["properties"]
+    for coordinate in ("x", "y", "width", "height"):
+        assert draft_composition[coordinate]["minimum"] == 0
+        assert draft_composition[coordinate]["maximum"] == 100
+    draft_path = document["paths"][
+        "/api/projects/{projectId}/storyboard/scenes/{sceneId}/editor-draft/"
+    ]["put"]
+    assert "409" in draft_path["responses"]
+    assert _schema(document, "StoryboardSuggestShotsRequest")["properties"][
+        "language"
+    ]["enum"] == ["ru", "en"]
     create_shot_operation = document["paths"][
         "/api/projects/{projectId}/storyboard/{storyboardId}/shots/"
     ]["post"]

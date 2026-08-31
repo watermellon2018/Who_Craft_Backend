@@ -24,6 +24,29 @@ class ShotListSourceTests(SimpleTestCase):
     def source(self, text: str) -> ShotListSource:
         return build_source_snapshot(scene_id=42, scene_version=3, text=text)
 
+    def test_language_is_explicit_in_prompt_and_schema_without_translating_source(self):
+        source = self.source('Анна говорит: «Hello!»')
+        for language, target in (("ru", "Russian"), ("en", "English")):
+            with self.subTest(language=language):
+                provider = SimpleNamespace(suggest=Mock(return_value={
+                    "shots": [self.shot([source["segments"][0]["id"]])],
+                }))
+                result = AIShotListService(provider=provider).suggest(
+                    context={}, max_shots=1, source=source, language=language,
+                )
+                request = provider.suggest.call_args.kwargs
+                self.assertIn(
+                    f"Write every title and description in {target} ({language})",
+                    request["prompt"],
+                )
+                fields = request["schema"]["properties"]["shots"]["items"][
+                    "properties"
+                ]
+                self.assertIn(target, fields["title"]["description"])
+                self.assertIn(target, fields["description"]["description"])
+                self.assertEqual(result["source"], source)
+                provider.suggest.assert_called_once()
+
     def test_snapshot_preserves_unicode_whitespace_and_repeated_sentences(self) -> None:
         text = '  Он сказал: «Привет!»  Она ответила: «Привет!»\r\n\r\nУход. Уход.\t'
         source = self.source(text)

@@ -4,10 +4,12 @@ from django.urls import path
 
 from w_craft_back.movie.storyboard.views import (
     SceneStoryboardDetailView,
+    SceneStoryboardEditorDraftView,
     SceneStoryboardListView,
     SceneStoryboardPreviewView,
     SceneStoryboardShotListView,
     StoryboardCameraIntentView,
+    StoryboardEditorDraftListView,
     StoryboardGenerateView,
     StoryboardGenerationDetailView,
     StoryboardGenerationReferencesView,
@@ -23,6 +25,16 @@ from w_craft_back.movie.storyboard.views import (
 
 
 urlpatterns = [
+    path(
+        "editor-drafts/",
+        StoryboardEditorDraftListView.as_view(),
+        name="storyboard-editor-drafts",
+    ),
+    path(
+        "scenes/<int:scene_id>/editor-draft/",
+        SceneStoryboardEditorDraftView.as_view(),
+        name="storyboard-scene-editor-draft",
+    ),
     path("scenes/", SceneStoryboardListView.as_view(), name="storyboard-scenes"),
     path(
         "scenes/<int:scene_id>/",

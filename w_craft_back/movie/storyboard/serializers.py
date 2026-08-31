@@ -203,6 +203,7 @@ class GenerateKeyframeSerializer(serializers.Serializer):
 
 
 class ShotListSuggestSerializer(serializers.Serializer):
+    language = serializers.ChoiceField(choices=("ru", "en"), required=False)
     model = serializers.CharField(
         required=False,
         allow_blank=False,

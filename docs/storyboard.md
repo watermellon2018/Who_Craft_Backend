@@ -40,10 +40,19 @@ unavailable; a different provider's tariff is never substituted. The option's
 `id` remains the concrete LiteLLM route to send as `model` in the POST, so the
 confirmed provider is not reselected between estimation and generation.
 `POST .../suggest-shots/` asks the selected allowlisted model for strict
-JSON-schema output. The response is an unpersisted proposal: the client must
-review it and create chosen shots through normal mutation endpoints. Provider
+JSON-schema output. The response is an unpersisted proposal: the browser saves
+the editable result through the editor-draft endpoint described below. Structured
+shot mutation endpoints remain available for the render pipeline. Provider
 identifiers are validated against the resolved scene context before the
 proposal is returned.
+
+Both requests accept optional `language=ru|en` (query parameter for GET, JSON
+field for POST). The explicit interface language takes precedence; otherwise the
+saved `UserProfile.language` is used, with `ru` as the fallback. The prompt and
+per-field schema explicitly require generated titles and descriptions in that
+language. `content_language` is not used. Entity IDs, proper names, source text,
+and verbatim dialogue remain unchanged. Existing English drafts are not silently
+translated or regenerated; changing language affects subsequent generations.
 
 The shot-list request explicitly requires entity IDs, not display names. Its
 JSON schema limits the number of shots to the requested `maxShots` and restricts
@@ -71,13 +80,54 @@ the prompt rather than duplicating it. If `truncated=true`, the response still
 includes the complete scene, but shots can reference only the supplied prefix.
 The estimate and generation both use the same segmented prompt construction.
 
-This attribution belongs to the unpersisted proposal and its client draft.
-It does not add database fields or change shot mutation endpoints. Clients
-should retain the snapshot with the draft, show original fragments read-only,
-and highlight referenced segments in the full snapshot. If the scene later
+This attribution belongs to the proposal and its durable editor working copy.
+It does not change structured shot mutation endpoints. Clients retain the
+snapshot with the draft and highlight referenced segments in the full screenplay
+viewer. If the scene later
 changes, label the snapshot as the generation-time source rather than attaching
 its IDs to new text. Older proposals have no reliable source attribution; do
 not infer exact quotations from generated descriptions or regenerate silently.
+
+## Durable editor working copies
+
+Migration `0065_storyboard_editor_drafts` creates one `SceneStoryboardEditorDraft`
+per scene. It stores the editable shot list, manual selections, camera intent,
+keyframe/reference metadata, and authoring stage (`selection`, `builder`, or
+`editor`). Partially marked-up scenes with confirmed shots and an empty shot list
+are valid drafts. An unconfirmed browser text selection or unfinished form is
+not included until the user adds the shot.
+These working copies are shared by project collaborators; they do not overwrite
+structured shot records, generated stills, immutable revisions, or legacy assets.
+Deleting a scene cascades to its working copy.
+
+`GET .../editor-drafts/` requires project view permission and returns
+`{userId, canEdit, drafts}` without creating records. Each entry is
+`{sceneId, revision, payload}`. `PUT .../scenes/{scene_id}/editor-draft/` requires
+content edit permission and accepts `{expectedRevision, mutationId, payload}`.
+The payload is `{schemaVersion:1, stage, shots}`. Use revision zero on a first
+save. Writes lock the scene row, so concurrent first saves and subsequent edits
+cannot silently overwrite one another. A stale revision returns HTTP 409,
+`STORYBOARD_DRAFT_CONFLICT`, and `errors.currentRevision`. An identical retry of
+the most recent mutation UUID returns the original successful entry without
+incrementing its revision; the same UUID with changed content is rejected.
+Older retries after another mutation are handled as stale writes.
+
+Payload validation whitelists nested fields, limits each copy to 2 MiB JSON,
+500 shots, and 100 keyframes per shot. Shot/keyframe IDs must be unique, shot
+order contiguous, and transitions must reference frames in their own shot.
+Editor composition coordinates and dimensions use percentages from 0 to 100
+and are saved without conversion; keyframe positions remain fractions from 0 to 1.
+The editor must strip image URLs and normalize transient `loading` status to
+`idle` before saving. Embedded `data:`, `blob:`, `mock:` media and credential URLs
+are not accepted. Metadata is JSON only; media binaries remain in private storage.
+
+Each shot can retain an optional `source` with `document`, `segmentIds`, optional
+`origin` (`manual` or `ai`), and optional `ranges`. Manual ranges index Unicode
+code points in the joined snapshot text, with an inclusive start and exclusive
+end; overlapping ranges and sharing source text among shots are allowed. The
+server checks bounds, SHA-256, scene identity, and current-version canonical text.
+Older internally valid source snapshots survive script changes and must be shown
+as older text by the client. Saving/reopening working copies never invokes AI.
 
 Failures emit `storyboard_shot_list_failed` under the same `request_id` as the
 HTTP response. Safe fields include `model`, `provider`, `error_code`, the

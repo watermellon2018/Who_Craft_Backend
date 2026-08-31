@@ -16,7 +16,8 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from w_craft_back.movie.project import policy
-from w_craft_back.movie.storyboard import generation, services
+from w_craft_back.movie.storyboard import editor_drafts, generation, services
+from w_craft_back.movie.storyboard.editor_drafts import EditorDraftPutSerializer
 from w_craft_back.movie.storyboard.errors import (
     StoryboardError,
     validation_error,
@@ -122,6 +123,34 @@ class SceneStoryboardListView(StoryboardAuthedView):
         )
 
 
+class StoryboardEditorDraftListView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def get(self, request, project_id: int):
+        return Response(editor_drafts.list_editor_drafts(
+            actor=self.actor(request), project_id=project_id,
+        ))
+
+
+class SceneStoryboardEditorDraftView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def put(self, request, project_id: int, scene_id: int):
+        actor = self.actor(request)
+        data = _validated(EditorDraftPutSerializer, request.data)
+        return Response(editor_drafts.save_editor_draft(
+            actor=actor, project_id=project_id, scene_id=scene_id,
+            expected_revision=data["expectedRevision"],
+            mutation_id=data["mutationId"], payload=data["payload"],
+        ))
+
+
+def _shot_list_language(actor: Any, requested: str | None) -> str:
+    """Explicit UI language wins; otherwise honor the saved interface locale."""
+    if requested is not None:
+        return requested
+    language = getattr(getattr(actor, "profile", None), "language", "ru")
+    return language if language in ("ru", "en") else "ru"
+
+
 class SceneStoryboardDetailView(StoryboardAuthedView):
     @handle_storyboard_errors
     def get(self, request, project_id: int, scene_id: int):
@@ -160,6 +189,7 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
 
     @handle_storyboard_errors
     def get(self, request, project_id: int, scene_id: int):
+        data = _validated(ShotListSuggestSerializer, request.query_params)
         actor = self.actor(request)
         project = services._require_project(
             actor=actor,
@@ -170,6 +200,7 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
         context = services.SceneStoryboardContextService.build(scene)
         return Response(AIShotListService.options(
             context=context, max_shots=16, source=source_from_scene(scene),
+            language=_shot_list_language(actor, data.get("language")),
         ))
 
     @handle_storyboard_errors
@@ -188,6 +219,7 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
                 context=context,
                 max_shots=data["maxShots"],
                 source=source_from_scene(scene),
+                language=_shot_list_language(actor, data.get("language")),
             )
         )
 
