@@ -18,6 +18,282 @@
     "projectPosterMaxBytes": 5242880
   },
   "paths": {
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/shot-list-jobs/": {
+      "post": {
+        "operationId": "createStoryboardShotListJob",
+        "description": "Persist a shot-list request and immediately return its durable status. Reuses active work in the same scene. No provider call runs in this HTTP request.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Persist a shot-list request and immediately return its durable status. Reuses active work in the same scene. No provider call runs in this HTTP request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryboardShotListJobCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/shot-list-jobs/": {
+      "get": {
+        "operationId": "listStoryboardShotListJobs",
+        "description": "Latest durable shot-list job per scene. Requires project view permission.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest durable shot-list job per scene. Requires project view permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListJobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/shot-list-jobs/{jobId}/": {
+      "get": {
+        "operationId": "getStoryboardShotListJob",
+        "description": "Read durable shot-list progress and the saved editor proposal.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read durable shot-list progress and the saved editor proposal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/shot-list-jobs/{jobId}/apply/": {
+      "post": {
+        "operationId": "applyStoryboardShotListJob",
+        "description": "Adopt a pending saved proposal only at the supplied editor revision. Replays of an already applied job do not overwrite later edits.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Adopt a pending saved proposal only at the supplied editor revision. Replays of an already applied job do not overwrite later edits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryboardShotListJobApply"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/shot-list-jobs/{jobId}/dismiss/": {
+      "post": {
+        "operationId": "dismissStoryboardShotListJob",
+        "description": "Dismiss a proposal or suppress automatic adoption of active work without deleting its eventual result or cancelling paid work.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dismiss a proposal or suppress automatic adoption of active work without deleting its eventual result or cancelling paid work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
     "/api/schema/openapi.json": {
       "get": {
         "operationId": "getOpenApiSchema",
@@ -624,6 +900,7 @@
       },
       "post": {
         "operationId": "suggestStoryboardShots",
+        "description": "Legacy synchronous unpersisted proposal endpoint. Interactive editors should use shot-list-jobs so leaving or reloading the page cannot discard generation.",
         "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
         "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardSuggestShotsRequest"}}}},
         "responses": {"200": {"description": "Unpersisted structured shot proposal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotProposal"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}, "502": {"$ref": "#/components/responses/ApiError"}, "503": {"$ref": "#/components/responses/ApiError"}}
@@ -1687,6 +1964,175 @@
       }
     },
     "schemas": {
+      "StoryboardShotListJob": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobId",
+          "sceneId",
+          "status",
+          "resultState",
+          "createdAt",
+          "startedAt",
+          "finishedAt",
+          "estimatedSeconds",
+          "expectedRevision",
+          "model",
+          "language",
+          "result",
+          "appliedRevision",
+          "errorCode"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sceneId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "resultState": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "applied",
+              "dismissed"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "estimatedSeconds": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 3600
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "ru",
+              "en"
+            ]
+          },
+          "result": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StoryboardEditorDraftPayload"
+              }
+            ],
+            "nullable": true
+          },
+          "appliedRevision": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "StoryboardShotListJobList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoryboardShotListJob"
+            }
+          }
+        }
+      },
+      "StoryboardShotListJobCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "ru",
+              "en"
+            ],
+            "description": "Generated titles and descriptions use this interface language; defaults to the user profile language, then ru. Source quotes and entity IDs remain unchanged."
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "maxShots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40,
+            "default": 16
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable UUID for retries of this request. Scoped to the project and requester, including requests that reuse an active scene job."
+          },
+          "estimatedSeconds": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 3600,
+            "default": 60,
+            "description": "Display estimate only, not a execution deadline."
+          }
+        }
+      },
+      "StoryboardShotListJobApply": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision",
+          "mutationId"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mutationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "ProfileSettings": {
         "type": "object",
         "additionalProperties": false,

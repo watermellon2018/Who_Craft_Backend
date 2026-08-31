@@ -15,7 +15,6 @@ from w_craft_back.movie.storyboard.models import (
 
 class StoryboardMigrationRollbackTests(TransactionTestCase):
     migrate_from = ("w_craft_back", "0062_project_progress_sources")
-    migrate_to = ("w_craft_back", "0063_storyboard_domain")
 
     def test_reverse_removes_structured_storyboard_without_legacy_asset(self):
         owner = User.objects.create_user(username="storyboard-migration-owner")
@@ -74,8 +73,9 @@ class StoryboardMigrationRollbackTests(TransactionTestCase):
             reserved_amount=1,
         )
 
+        executor = MigrationExecutor(connection)
+        restore_targets = executor.loader.graph.leaf_nodes()
         try:
-            executor = MigrationExecutor(connection)
             executor.migrate([self.migrate_from])
             old_apps = executor.loader.project_state([self.migrate_from]).apps
             OldSceneStoryboard = old_apps.get_model(
@@ -99,4 +99,4 @@ class StoryboardMigrationRollbackTests(TransactionTestCase):
             self.assertEqual(rolled_back_account.available_balance, 10)
             self.assertEqual(rolled_back_account.reserved_balance, 0)
         finally:
-            MigrationExecutor(connection).migrate([self.migrate_to])
+            MigrationExecutor(connection).migrate(restore_targets)

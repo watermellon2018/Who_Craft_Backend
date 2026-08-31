@@ -39,9 +39,9 @@ is not a reservation or invoice and can be absent when pricing metadata is
 unavailable; a different provider's tariff is never substituted. The option's
 `id` remains the concrete LiteLLM route to send as `model` in the POST, so the
 confirmed provider is not reselected between estimation and generation.
-`POST .../suggest-shots/` asks the selected allowlisted model for strict
-JSON-schema output. The response is an unpersisted proposal: the browser saves
-the editable result through the editor-draft endpoint described below. Structured
+The legacy `POST .../suggest-shots/` asks the selected allowlisted model for strict
+JSON-schema output synchronously and returns an unpersisted proposal. Interactive
+editors use the durable `shot-list-jobs` endpoints below instead. Structured
 shot mutation endpoints remain available for the render pipeline. Provider
 identifiers are validated against the resolved scene context before the
 proposal is returned.
@@ -89,6 +89,64 @@ its IDs to new text. Older proposals have no reliable source attribution; do
 not infer exact quotations from generated descriptions or regenerate silently.
 
 ## Durable editor working copies
+
+### Shot-list generation survives navigation and closed tabs
+
+Migration `0066_storyboard_shot_list_jobs` adds durable scene text-generation
+jobs and request receipts. `POST .../scenes/{scene_id}/shot-list-jobs/` requires
+generation permission and accepts `requestId` (UUID), optional `model`, `maxShots`,
+`language`, and `estimatedSeconds` (5–3600, default 60). It commits the job and
+immediately returns HTTP 202 without calling the provider. The estimate is only
+for the progress display; it is neither a deadline nor a guarantee. The request
+captures the canonical source, resolved scene context, concrete provider/model
+route, language, and current saved editor revision. Clients should finish any
+pending editor save before enqueueing.
+
+Retries with the same project/requester/request UUID and identical parameters
+return the same job. Changed parameters for that UUID are rejected. Concurrent
+requests for a scene reuse its active job; each request receipt remembers the
+shared job even after it finishes, preventing a late HTTP retry from paying for
+the same work again. A new request UUID after completion intentionally starts
+new work. Browser navigation does not cancel a job.
+
+`GET .../shot-list-jobs/` returns `{jobs:[...]}` with the latest job for every
+scene. `GET .../shot-list-jobs/{job_id}/` also reads older jobs. Both require
+project view permission, scope all identifiers to that project, and expose
+`queued`, `running`, `succeeded`, or `failed` status, start/finish timestamps,
+the display estimate, safe error code, and the saved editor proposal. Proposal
+IDs, START/END keyframes, transitions, source attribution, and generated language
+are stable across reconnects. No provider credentials or raw errors are exposed.
+
+The worker commits each validated result before attempting to adopt it as the
+scene's editor draft. Adoption is automatic only while the captured editor
+revision, source version/hash, and content-edit permission still match, and the
+proposal has not been dismissed. A reset, concurrent edit, source change, or
+permission change leaves the completed result saved with `resultState=pending`;
+it does not overwrite newer work. `resultState=applied` includes the resulting
+`appliedRevision`. A process interruption after result persistence but before
+adoption also leaves a recoverable pending result.
+
+`POST .../shot-list-jobs/{job_id}/apply/` accepts `{expectedRevision, mutationId}`
+and requires content-edit permission. A stale revision returns the existing
+`STORYBOARD_DRAFT_CONFLICT` (409). Replaying an already applied job returns its
+recorded result without overwriting any subsequent edits.
+`POST .../shot-list-jobs/{job_id}/dismiss/` is idempotent, requires content-edit
+permission, and marks the result dismissed without deleting it. Dismissing active
+work suppresses adoption but does not cancel a provider call. Dismissed proposals
+cannot be applied; start new work if needed.
+
+The existing `run_generation_worker --queue storyboard` (or `--queue all`)
+process handles these text jobs alongside keyframe images. Restart the worker
+after upgrading, and run migrations before enabling the new client. Web and
+worker must share PostgreSQL and the same text-provider settings. Without a
+running worker, requests remain queued. Text execution reuses
+`STORYBOARD_JOB_LEASE_SECONDS`; the actual lease is always at least the shot-list
+provider timeout plus 60 seconds. A lost lease before the provider starts may be
+retried up to three claims. After the provider starts, an expired lease becomes
+`STORYBOARD_AI_OUTCOME_UNKNOWN`; there is no automatic paid retry. Provider errors
+are saved as failed jobs, so returning users see the outcome without resubmission.
+
+### Saved editor data
 
 Migration `0065_storyboard_editor_drafts` creates one `SceneStoryboardEditorDraft`
 per scene. It stores the editable shot list, manual selections, camera intent,
@@ -161,7 +219,7 @@ generation fails instead of silently choosing another route or mock output.
 
 OpenRouter calls require parameter support (`provider.require_parameters=true`)
 for the strict JSON-schema request. App/SDK retries and OpenRouter provider
-fallbacks are disabled for this synchronous paid request. OpenRouter still
+fallbacks are disabled for each paid request. OpenRouter still
 selects the initial compatible endpoint behind its route; this catalog does
 not pin or quote a specific upstream hosting endpoint. Schema support and
 actual usage can differ by endpoint, so responses are still validated on the
@@ -229,13 +287,13 @@ adding an entirely new provider also requires its credential/adapter support.
 Other operational settings:
 
 - `STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS` limits a Shot List provider call.
-- `STORYBOARD_SHOT_LIST_THROTTLE_RATE` limits synchronous Shot List requests per
+- `STORYBOARD_SHOT_LIST_THROTTLE_RATE` limits Shot List start requests per
   authenticated user (default `10/min`).
 - `STORYBOARD_PROVIDER_TIMEOUT_SECONDS` limits a still-image provider call.
 - `STORYBOARD_JOB_LEASE_SECONDS` controls durable worker lease recovery.
 - Still images reuse the image provider registry and Reference Library routing
   settings; mock output requires the existing explicit mock opt-in.
 
-The module intentionally has no video generation, timeline renderer, or
-automatic persistence of AI proposals. Preview data is a storyboard projection
+The module intentionally has no video generation or timeline renderer.
+Preview data is a storyboard projection
 for clients to render; it is not a generated video file.

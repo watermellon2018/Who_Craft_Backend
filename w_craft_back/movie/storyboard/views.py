@@ -16,7 +16,9 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from w_craft_back.movie.project import policy
-from w_craft_back.movie.storyboard import editor_drafts, generation, services
+from w_craft_back.movie.storyboard import (
+    editor_drafts, generation, services, shot_list_jobs,
+)
 from w_craft_back.movie.storyboard.editor_drafts import EditorDraftPutSerializer
 from w_craft_back.movie.storyboard.errors import (
     StoryboardError,
@@ -30,6 +32,8 @@ from w_craft_back.movie.storyboard.serializers import (
     KeyframePatchSerializer,
     ShotCreateSerializer,
     ShotListSuggestSerializer,
+    ShotListJobCreateSerializer,
+    ShotListJobApplySerializer,
     ShotPatchSerializer,
     ShotReorderSerializer,
     TransitionPatchSerializer,
@@ -222,6 +226,56 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
                 language=_shot_list_language(actor, data.get("language")),
             )
         )
+
+
+class SceneStoryboardShotListJobView(StoryboardAuthedView):
+    throttle_classes = [StoryboardShotListRateThrottle]
+
+    @handle_storyboard_errors
+    def post(self, request, project_id: int, scene_id: int):
+        actor = self.actor(request)
+        data = _validated(ShotListJobCreateSerializer, request.data)
+        return Response(shot_list_jobs.enqueue_shot_list(
+            actor=actor, project_id=project_id, scene_id=scene_id,
+            request_id=data["requestId"], model=data.get("model"),
+            max_shots=data["maxShots"], estimated_seconds=data["estimatedSeconds"],
+            language=_shot_list_language(actor, data.get("language")),
+        ), status=status.HTTP_202_ACCEPTED)
+
+
+class StoryboardShotListJobListView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def get(self, request, project_id: int):
+        return Response(shot_list_jobs.list_shot_list_jobs(
+            actor=self.actor(request), project_id=project_id,
+        ))
+
+
+class StoryboardShotListJobDetailView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def get(self, request, project_id: int, job_id):
+        return Response(shot_list_jobs.get_shot_list_job(
+            actor=self.actor(request), project_id=project_id, job_id=job_id,
+        ))
+
+
+class StoryboardShotListJobApplyView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def post(self, request, project_id: int, job_id):
+        actor = self.actor(request)
+        data = _validated(ShotListJobApplySerializer, request.data)
+        return Response(shot_list_jobs.apply_shot_list_job(
+            actor=actor, project_id=project_id, job_id=job_id,
+            expected_revision=data["expectedRevision"], mutation_id=data["mutationId"],
+        ))
+
+
+class StoryboardShotListJobDismissView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def post(self, request, project_id: int, job_id):
+        return Response(shot_list_jobs.dismiss_shot_list_job(
+            actor=self.actor(request), project_id=project_id, job_id=job_id,
+        ))
 
 
 class SceneStoryboardPreviewView(StoryboardAuthedView):

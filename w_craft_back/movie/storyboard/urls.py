@@ -8,6 +8,11 @@ from w_craft_back.movie.storyboard.views import (
     SceneStoryboardListView,
     SceneStoryboardPreviewView,
     SceneStoryboardShotListView,
+    SceneStoryboardShotListJobView,
+    StoryboardShotListJobListView,
+    StoryboardShotListJobDetailView,
+    StoryboardShotListJobApplyView,
+    StoryboardShotListJobDismissView,
     StoryboardCameraIntentView,
     StoryboardEditorDraftListView,
     StoryboardGenerateView,
@@ -25,6 +30,28 @@ from w_craft_back.movie.storyboard.views import (
 
 
 urlpatterns = [
+    path(
+        "shot-list-jobs/", StoryboardShotListJobListView.as_view(),
+        name="storyboard-shot-list-jobs",
+    ),
+    path(
+        "shot-list-jobs/<uuid:job_id>/", StoryboardShotListJobDetailView.as_view(),
+        name="storyboard-shot-list-job",
+    ),
+    path(
+        "shot-list-jobs/<uuid:job_id>/apply/", StoryboardShotListJobApplyView.as_view(),
+        name="storyboard-shot-list-job-apply",
+    ),
+    path(
+        "shot-list-jobs/<uuid:job_id>/dismiss/",
+        StoryboardShotListJobDismissView.as_view(),
+        name="storyboard-shot-list-job-dismiss",
+    ),
+    path(
+        "scenes/<int:scene_id>/shot-list-jobs/",
+        SceneStoryboardShotListJobView.as_view(),
+        name="storyboard-scene-shot-list-jobs",
+    ),
     path(
         "editor-drafts/",
         StoryboardEditorDraftListView.as_view(),

@@ -40,6 +40,82 @@ class SceneStoryboardEditorDraft(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class ShotListJobStatus(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    SUCCEEDED = "succeeded", "Succeeded"
+    FAILED = "failed", "Failed"
+
+
+class ShotListResultState(models.TextChoices):
+    PENDING = "pending", "Pending"
+    APPLIED = "applied", "Applied"
+    DISMISSED = "dismissed", "Dismissed"
+
+
+class SceneStoryboardShotListJob(models.Model):
+    """Durable text generation and its independently saved editor proposal."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scene = models.ForeignKey(
+        "w_craft_back.Scene", on_delete=models.CASCADE,
+        related_name="storyboard_shot_list_jobs",
+    )
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    request_snapshot = models.JSONField()
+    expected_revision = models.PositiveIntegerField()
+    estimated_seconds = models.PositiveIntegerField(default=60)
+    status = models.CharField(
+        max_length=16, choices=ShotListJobStatus.choices,
+        default=ShotListJobStatus.QUEUED,
+    )
+    result_state = models.CharField(
+        max_length=16, choices=ShotListResultState.choices,
+        default=ShotListResultState.PENDING,
+    )
+    result = models.JSONField(null=True)
+    applied_revision = models.PositiveIntegerField(null=True)
+    apply_mutation_id = models.UUIDField(null=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    lease_token = models.UUIDField(null=True)
+    lease_expires_at = models.DateTimeField(null=True)
+    provider_started_at = models.DateTimeField(null=True)
+    error_code = models.CharField(max_length=128, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True)
+    finished_at = models.DateTimeField(null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["scene", "-created_at"]),
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["status", "lease_expires_at"]),
+        ]
+        constraints = [models.UniqueConstraint(
+            fields=["scene"], condition=models.Q(status__in=("queued", "running")),
+            name="uniq_storyboard_active_shot_list",
+        )]
+
+
+class SceneStoryboardShotListRequest(models.Model):
+    """Remember every enqueue retry, including requests sharing an active job."""
+
+    project = models.ForeignKey("w_craft_back.Project", on_delete=models.CASCADE)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    request_id = models.UUIDField()
+    job = models.ForeignKey(
+        SceneStoryboardShotListJob, on_delete=models.CASCADE, related_name="requests",
+    )
+    parameters = models.JSONField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["project", "actor", "request_id"],
+            name="uniq_storyboard_shot_list_request",
+        )]
+
+
 class StoryboardKeyframeType(models.TextChoices):
     START = "start", "Start"
     INTERMEDIATE = "intermediate", "Intermediate"

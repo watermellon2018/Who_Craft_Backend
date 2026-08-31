@@ -240,6 +240,27 @@ def check_contract() -> None:
     assert _schema(document, "StoryboardSuggestShotsRequest")["properties"][
         "language"
     ]["enum"] == ["ru", "en"]
+    shot_list_job = _schema(document, "StoryboardShotListJob")
+    assert shot_list_job["properties"]["status"]["enum"] == [
+        "queued", "running", "succeeded", "failed",
+    ]
+    assert shot_list_job["properties"]["resultState"]["enum"] == [
+        "pending", "applied", "dismissed",
+    ]
+    assert {"jobId", "result", "appliedRevision", "expectedRevision"}.issubset(
+        shot_list_job["required"]
+    )
+    shot_list_start = _schema(document, "StoryboardShotListJobCreate")
+    assert shot_list_start["required"] == ["requestId"]
+    assert shot_list_start["properties"]["requestId"]["format"] == "uuid"
+    assert shot_list_start["properties"]["estimatedSeconds"]["maximum"] == 3600
+    shot_list_start_path = document["paths"][
+        "/api/projects/{projectId}/storyboard/scenes/{sceneId}/shot-list-jobs/"
+    ]["post"]
+    assert "202" in shot_list_start_path["responses"]
+    assert set(_schema(document, "StoryboardShotListJobApply")["required"]) == {
+        "expectedRevision", "mutationId",
+    }
     create_shot_operation = document["paths"][
         "/api/projects/{projectId}/storyboard/{storyboardId}/shots/"
     ]["post"]

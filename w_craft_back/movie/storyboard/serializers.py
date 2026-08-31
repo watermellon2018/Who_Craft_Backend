@@ -6,6 +6,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from w_craft_back.movie.storyboard.editor_drafts import StrictSerializer
+
 from w_craft_back.movie.storyboard.models import (
     CameraAzimuth,
     CameraDistance,
@@ -215,3 +217,15 @@ class ShotListSuggestSerializer(serializers.Serializer):
         max_value=40,
         default=16,
     )
+
+
+class ShotListJobCreateSerializer(ShotListSuggestSerializer, StrictSerializer):
+    requestId = serializers.UUIDField()
+    estimatedSeconds = serializers.IntegerField(
+        min_value=5, max_value=3600, required=False, default=60,
+    )
+
+
+class ShotListJobApplySerializer(StrictSerializer):
+    expectedRevision = serializers.IntegerField(min_value=0)
+    mutationId = serializers.UUIDField()
