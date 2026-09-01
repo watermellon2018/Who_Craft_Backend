@@ -10,6 +10,7 @@ from w_craft_back.management.commands.run_generation_worker import Command
 
 
 class GenerationWorkerQueueTests(SimpleTestCase):
+    @patch.object(Command, "_poll_storyboard_jobs", return_value=1)
     @patch.object(Command, "_poll_reference_jobs", return_value=1)
     @patch.object(Command, "_poll_sound_effect_jobs", return_value=1)
     @patch.object(Command, "_poll_music_jobs", return_value=1)
@@ -22,6 +23,7 @@ class GenerationWorkerQueueTests(SimpleTestCase):
         music,
         sound_effect,
         reference,
+        storyboard,
     ):
         output = StringIO()
         call_command("run_generation_worker", once=True, queue="all", stdout=output)
@@ -30,7 +32,8 @@ class GenerationWorkerQueueTests(SimpleTestCase):
         music.assert_called_once_with(10)
         sound_effect.assert_called_once_with(10)
         reference.assert_called_once_with(10)
-        self.assertIn("Processed 5", output.getvalue())
+        storyboard.assert_called_once_with(10)
+        self.assertIn("Processed 6", output.getvalue())
 
     @patch.object(Command, "_poll_music_jobs", return_value=1)
     @patch.object(Command, "_poll_poster_jobs", return_value=1)

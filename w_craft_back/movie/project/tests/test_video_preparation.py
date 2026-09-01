@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -24,6 +26,12 @@ from w_craft_back.movie.project.dashboard_models import (
     SceneStoryboard,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.storyboard.models import (
+    CameraIntent,
+    StoryboardKeyframe,
+    StoryboardKeyframeGeneration,
+    StoryboardShot,
+)
 
 
 class VideoPreparationApiTests(TestCase):
@@ -282,3 +290,55 @@ class VideoPreparationApiTests(TestCase):
             dashboard["progress"]["readiness"]["videoPreparation"],
             {"ready": preparation["ready"], "taskCount": preparation["taskCount"]},
         )
+
+    def test_confirm_restores_structured_storyboard_after_scene_edit(self):
+        scene = self._scene("Structured", 1)
+        storyboard = SceneStoryboard.objects.create(
+            scene=scene,
+            source_scene_version=scene.version,
+            created_by=self.owner,
+            updated_by=self.owner,
+        )
+        shot = StoryboardShot.objects.create(
+            storyboard=storyboard,
+            order=1,
+            title="Structured shot",
+        )
+        for frame_type, position in (("start", "0"), ("end", "1")):
+            keyframe = StoryboardKeyframe.objects.create(
+                shot=shot,
+                type=frame_type,
+                position=Decimal(position),
+            )
+            CameraIntent.objects.create(
+                keyframe=keyframe,
+                target={"type": "description", "label": "Action"},
+            )
+            generation = StoryboardKeyframeGeneration.objects.create(
+                keyframe=keyframe,
+                actor=self.owner,
+                request_snapshot={"keyframeId": str(keyframe.pk)},
+                request_fingerprint="0" * 64,
+                status="ready",
+            )
+            keyframe.current_generation = generation
+            keyframe.save(update_fields=["current_generation", "updated_at"])
+
+        self.assertTrue(self._get().json()["storyboard"]["ready"])
+        Scene.objects.filter(pk=scene.pk).update(version=2)
+        scene.refresh_from_db()
+        stale = self._get().json()["storyboard"]
+        self.assertFalse(stale["ready"])
+        self.assertEqual(stale["staleCount"], 1)
+
+        confirmed = self.client.post(
+            f"/api/projects/{self.project.id}/scenes/{scene.id}/"
+            "storyboard/confirm/",
+            {"expectedSceneVersion": scene.version},
+            format="json",
+            **self._token(self.owner_key),
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        restored = self._get().json()["storyboard"]
+        self.assertTrue(restored["ready"])
+        self.assertEqual(restored["readyCount"], 1)

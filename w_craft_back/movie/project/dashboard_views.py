@@ -54,6 +54,7 @@ from w_craft_back.movie.project.serializers import (
     VideoShotCreateSerializer,
     VideoShotUpdateSerializer,
 )
+from w_craft_back.movie.storyboard.models import StoryboardKeyframeGeneration
 from w_craft_back.movie.project.serializers import SceneWorkspaceCreateSerializer
 from w_craft_back.movie.project.services import (
     build_project_dashboard,
@@ -789,7 +790,10 @@ class ProjectAssetDetailView(_ProjectScopedView):
                 getattr(exc, "restricted_objects", ()),
             )
             used_by_progress = any(
-                isinstance(obj, (SceneStoryboard, VideoShot))
+                isinstance(
+                    obj,
+                    (SceneStoryboard, VideoShot, StoryboardKeyframeGeneration),
+                )
                 for obj in related_objects
             )
             return Response(

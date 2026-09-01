@@ -121,13 +121,17 @@ class ResolveProviderTest(TestCase):
         self.assertIsInstance(provider, OpenRouterImagesProvider)
         self.assertEqual(
             provider.model_id,
-            "google/gemini-3.1-flash-image-preview",
+            "google/gemini-3.1-flash-image",
         )
 
     def test_require_edit_filters_imagen(self):
         with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "x"}):
             with self.assertRaises(ImageProviderError):
-                resolve_provider_for_user(None, override="gemini-imagen-4", require_edit=True)
+                resolve_provider_for_user(
+                    None,
+                    override="gemini-imagen-4",
+                    require_edit=True,
+                )
 
     def test_provider_from_dynamic_spec_does_not_resolve_catalog(self):
         spec = ModelSpec(

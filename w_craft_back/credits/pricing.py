@@ -16,6 +16,18 @@ from w_craft_back.services.image_generation.registry import (
 from .services import MONEY_QUANTUM, money
 
 
+_CATALOG_BILLABLE_ALIASES = {
+    "output_image": ("output_image", "image", "request"),
+    "input_text_token": ("input_text_token", "input_text", "prompt", "input"),
+    "input_image": ("input_image", "input_reference"),
+}
+_CATALOG_ACCEPTED_UNITS = {
+    "output_image": {"image"},
+    "input_text_token": {"token"},
+    "input_image": {"image"},
+}
+
+
 @dataclass(frozen=True)
 class GenerationEstimate:
     provider: str
@@ -38,14 +50,13 @@ def _decimal(value: Any) -> Decimal | None:
 
 
 def _catalog_unit_price(pricing: Mapping[str, Any], billable: str) -> Decimal | None:
-    aliases = {
-        "output_image": ("output_image", "image", "request"),
-        "input_text_token": ("input_text_token", "prompt", "input"),
-    }[billable]
+    aliases = _CATALOG_BILLABLE_ALIASES[billable]
     for key in aliases:
         value = _decimal(pricing.get(key))
         if value is not None:
             return value
+    accepted_units = _CATALOG_ACCEPTED_UNITS[billable]
+    values: list[Decimal] = []
     rows = pricing.get("catalog")
     if isinstance(rows, list):
         for row in rows:
@@ -53,10 +64,31 @@ def _catalog_unit_price(pricing: Mapping[str, Any], billable: str) -> Decimal | 
                 continue
             if str(row.get("billable") or "") not in aliases:
                 continue
+            unit = str(row.get("unit") or "").strip().lower()
+            if unit and unit not in accepted_units:
+                continue
             value = _decimal(row.get("cost_usd", row.get("price")))
             if value is not None:
-                return value
-    return None
+                values.append(value)
+    return max(values) if values else None
+
+
+def _catalog_has_unsupported_unit(
+    pricing: Mapping[str, Any],
+    billable: str,
+) -> bool:
+    aliases = _CATALOG_BILLABLE_ALIASES[billable]
+    accepted_units = _CATALOG_ACCEPTED_UNITS[billable]
+    rows = pricing.get("catalog")
+    if not isinstance(rows, list):
+        return False
+    return any(
+        isinstance(row, Mapping)
+        and str(row.get("billable") or "") in aliases
+        and bool(unit := str(row.get("unit") or "").strip().lower())
+        and unit not in accepted_units
+        for row in rows
+    )
 
 
 def estimate_for_spec(
@@ -67,10 +99,12 @@ def estimate_for_spec(
     prompt: str = "",
     prompt_length: int | None = None,
     resolution: str = "1K",
+    reference_count: int = 0,
 ) -> GenerationEstimate:
     """Estimate the original provider's USD price for the selected operation."""
 
     count = max(1, min(int(variant_count or 1), 100))
+    references = max(0, min(int(reference_count or 0), 100))
     length = max(0, int(prompt_length if prompt_length is not None else len(prompt)))
     prompt_tokens = int(math.ceil(length / 4))
     pricing = dict(spec.provider_pricing or {})
@@ -78,6 +112,7 @@ def estimate_for_spec(
     if spec.backend == "mock" or spec.key == "mock":
         output_price = Decimal("0")
         input_price = Decimal("0")
+        input_image_price = Decimal("0")
     else:
         operation_prefix = "edit_" if operation == "edit" else "generate_"
         output_price = _decimal(pricing.get(f"{operation_prefix}output_image"))
@@ -90,18 +125,40 @@ def estimate_for_spec(
                     or by_resolution.get("1K")
                 )
         if output_price is None:
-            output_price = _catalog_unit_price(pricing, "output_image")
+            if not _catalog_has_unsupported_unit(pricing, "output_image"):
+                output_price = _catalog_unit_price(pricing, "output_image")
         input_price = _decimal(pricing.get(f"{operation_prefix}input_text_token"))
         if input_price is None:
             input_price = _catalog_unit_price(pricing, "input_text_token")
+        input_image_price = _decimal(
+            pricing.get(f"{operation_prefix}input_image")
+        )
+        if input_image_price is None:
+            if not _catalog_has_unsupported_unit(pricing, "input_image"):
+                input_image_price = _catalog_unit_price(pricing, "input_image")
     if output_price is None:
         from .services import GenerationPriceUnavailable
 
         raise GenerationPriceUnavailable(
-            "Провайдер не сообщил тариф выбранной модели. Генерация временно недоступна."
+            "Провайдер не сообщил тариф выбранной модели. "
+            "Генерация временно недоступна."
         )
     input_price = input_price or Decimal("0")
-    estimated = money(output_price * count + input_price * prompt_tokens)
+    if references and input_image_price is None and _catalog_has_unsupported_unit(
+        pricing, "input_image"
+    ):
+        from .services import GenerationPriceUnavailable
+
+        raise GenerationPriceUnavailable(
+            "Провайдер не сообщил сопоставимый тариф входных изображений. "
+            "Генерация с референсами временно недоступна."
+        )
+    input_image_price = input_image_price or Decimal("0")
+    estimated = money(
+        output_price * count
+        + input_price * prompt_tokens
+        + input_image_price * references
+    )
     snapshot = {
         "currency": "USD",
         "source": source,
@@ -111,8 +168,10 @@ def estimate_for_spec(
         "variantCount": count,
         "resolution": resolution,
         "promptTokensEstimate": prompt_tokens,
+        "referenceCount": references,
         "outputImageUnitCost": str(output_price.quantize(MONEY_QUANTUM)),
         "inputTextTokenUnitCost": str(input_price),
+        "inputImageUnitCost": str(input_image_price),
         "markup": "0",
         "creditUsdRate": "1",
     }

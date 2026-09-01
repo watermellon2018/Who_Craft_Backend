@@ -90,12 +90,15 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         key="openrouter-flash-image",
         label="Gemini 3.1 Flash Image via OpenRouter",
         backend="openrouter-images",
-        model_id="google/gemini-3.1-flash-image-preview",
+        model_id="google/gemini-3.1-flash-image",
         mode="images",
         supports_generate=True,
         supports_edit=True,
         supports_reference=True,
-        description="Gemini image generation through the dedicated OpenRouter Images API.",
+        description=(
+            "Gemini image generation through the dedicated "
+            "OpenRouter Images API."
+        ),
         supported_parameters={
             "resolution": {
                 "type": "enum",
