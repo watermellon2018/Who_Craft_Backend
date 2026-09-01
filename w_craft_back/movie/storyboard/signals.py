@@ -14,6 +14,7 @@ from w_craft_back.movie.storyboard.lifecycle import (
     settle_failed_storyboard_generation,
 )
 from w_craft_back.movie.storyboard.models import (
+    StoryboardEditorFrameJob,
     StoryboardKeyframe,
     StoryboardKeyframeGeneration,
     StoryboardShot,
@@ -21,6 +22,19 @@ from w_craft_back.movie.storyboard.models import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(pre_delete, sender=StoryboardEditorFrameJob)
+def release_deleted_editor_frame(sender, instance, **kwargs) -> None:
+    current = StoryboardEditorFrameJob.objects.select_for_update().filter(
+        pk=instance.pk,
+    ).first() or instance
+    settle_failed_storyboard_generation(
+        current, reason="storyboard_editor_frame_deleted",
+        outcome_unknown=bool(
+            current.status == "running" and current.provider_started_at
+        ),
+    )
 
 
 @receiver(pre_delete, sender=StoryboardKeyframeGeneration)
@@ -59,6 +73,7 @@ def release_deleted_storyboard_generation(sender, instance, **kwargs) -> None:
 
 
 @receiver(post_delete, sender=StoryboardKeyframeGeneration)
+@receiver(post_delete, sender=StoryboardEditorFrameJob)
 def delete_generated_storyboard_asset(sender, instance, **kwargs) -> None:
     """Remove a generation-owned ProjectAsset after the deletion commits."""
 

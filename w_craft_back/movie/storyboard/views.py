@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from w_craft_back.movie.project import policy
 from w_craft_back.movie.storyboard import (
-    editor_drafts, generation, services, shot_list_jobs,
+    editor_drafts, editor_frames, generation, services, shot_list_jobs,
 )
 from w_craft_back.movie.storyboard.editor_drafts import EditorDraftPutSerializer
 from w_craft_back.movie.storyboard.errors import (
@@ -145,6 +145,36 @@ class SceneStoryboardEditorDraftView(StoryboardAuthedView):
             expected_revision=data["expectedRevision"],
             mutation_id=data["mutationId"], payload=data["payload"],
         ))
+
+
+class SceneStoryboardEditorFrameOptionsView(StoryboardAuthedView):
+    @handle_storyboard_errors
+    def get(self, request, project_id: int, scene_id: int):
+        return Response(editor_frames.frame_options(
+            actor=self.actor(request), project_id=project_id, scene_id=scene_id,
+        ))
+
+
+class SceneStoryboardEditorFrameJobsView(StoryboardAuthedView):
+    def get_throttles(self):
+        if self.request.method == "POST":
+            return [StoryboardShotListRateThrottle()]
+        return []
+
+    @handle_storyboard_errors
+    def get(self, request, project_id: int, scene_id: int):
+        return Response(editor_frames.list_frame_jobs(
+            actor=self.actor(request), project_id=project_id,
+            scene_id=scene_id, request=request,
+        ))
+
+    @handle_storyboard_errors
+    def post(self, request, project_id: int, scene_id: int):
+        data = _validated(editor_frames.EditorFrameCreateSerializer, request.data)
+        return Response(editor_frames.enqueue_frame(
+            actor=self.actor(request), project_id=project_id, scene_id=scene_id,
+            data=data, request=request,
+        ), status=202)
 
 
 def _shot_list_language(actor: Any, requested: str | None) -> str:

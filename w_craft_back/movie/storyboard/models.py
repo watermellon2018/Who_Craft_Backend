@@ -53,6 +53,77 @@ class ShotListResultState(models.TextChoices):
     DISMISSED = "dismissed", "Dismissed"
 
 
+class StoryboardEditorFrameJob(models.Model):
+    """Paid images for local draft frame IDs, without manufacturing render shots."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scene = models.ForeignKey("w_craft_back.Scene", on_delete=models.CASCADE,
+                              related_name="storyboard_editor_frame_jobs")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    shot_id = models.CharField(max_length=256)
+    keyframe_id = models.CharField(max_length=256)
+    request_id = models.UUIDField()
+    request_parameters = models.JSONField()
+    expected_revision = models.PositiveIntegerField()
+    input_fingerprint = models.CharField(max_length=64)
+    request_snapshot = models.JSONField()
+    provider_snapshot = models.JSONField()
+    model = models.CharField(max_length=256)
+    asset = models.ForeignKey(ProjectAsset, on_delete=models.RESTRICT, null=True,
+                              related_name="storyboard_editor_frame_results")
+    status = models.CharField(max_length=16, choices=ShotListJobStatus.choices,
+                              default=ShotListJobStatus.QUEUED)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    lease_token = models.UUIDField(null=True)
+    lease_expires_at = models.DateTimeField(null=True)
+    provider_started_at = models.DateTimeField(null=True)
+    provider_result_received_at = models.DateTimeField(null=True)
+    error_code = models.CharField(max_length=128, default="", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True)
+    finished_at = models.DateTimeField(null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["scene", "-created_at"]),
+                   models.Index(fields=["status", "created_at"]),
+                   models.Index(fields=["status", "lease_expires_at"])]
+        constraints = [
+            models.UniqueConstraint(fields=["scene", "actor", "request_id"],
+                                    name="uniq_editor_frame_request"),
+            models.UniqueConstraint(fields=["scene", "keyframe_id"],
+                                    condition=models.Q(
+                                        status__in=("queued", "running")),
+                                    name="uniq_editor_frame_active"),
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        immutable = ("scene_id", "actor_id", "shot_id", "keyframe_id", "request_id",
+                     "request_parameters", "expected_revision", "input_fingerprint",
+                     "request_snapshot", "provider_snapshot", "model")
+        if not self._state.adding:
+            original = type(self).objects.filter(pk=self.pk).values(*immutable).first()
+            current = {name: getattr(self, name) for name in immutable}
+            if original and original != current:
+                raise ValidationError("Editor image request is immutable.")
+        if self.asset_id and self.asset.project_id != self.scene.project_id:
+            raise ValidationError("Editor image belongs to another project.")
+        return super().save(*args, **kwargs)
+
+
+class StoryboardEditorFrameInput(models.Model):
+    """Protect pinned source assets while a generated revision refers to them."""
+
+    job = models.ForeignKey(StoryboardEditorFrameJob, on_delete=models.CASCADE,
+                            related_name="input_assets")
+    project_asset = models.ForeignKey(
+        ProjectAsset, on_delete=models.RESTRICT, null=True,
+    )
+    character_asset = models.ForeignKey(
+        "w_craft_back.CharacterAsset", on_delete=models.RESTRICT, null=True,
+    )
+
+
 class SceneStoryboardShotListJob(models.Model):
     """Durable text generation and its independently saved editor proposal."""
 

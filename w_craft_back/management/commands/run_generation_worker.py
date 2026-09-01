@@ -46,6 +46,9 @@ from w_craft_back.movie.storyboard.models import (
     StoryboardKeyframeGeneration,
 )
 from w_craft_back.movie.storyboard.worker import execute_storyboard_generation
+from w_craft_back.movie.storyboard.editor_frames import (
+    execute_frame_job, recover_stale_frame_jobs,
+)
 from w_craft_back.movie.storyboard.shot_list_jobs import (
     execute_shot_list_job,
     recover_stale_shot_list_jobs,
@@ -208,6 +211,13 @@ class Command(BaseCommand):
 
     @staticmethod
     def _poll_storyboard_jobs(batch_size: int) -> int:
+        recover_stale_frame_jobs(limit=batch_size)
+        frame_processed = 0
+        while frame_processed < batch_size:
+            job = execute_frame_job()
+            if job is None:
+                break
+            frame_processed += 1
         recover_stale_shot_list_jobs(limit=batch_size)
         text_processed = 0
         while text_processed < batch_size:
@@ -232,4 +242,4 @@ class Command(BaseCommand):
             ).values_list("status", flat=True).first()
             if current_status != StoryboardGenerationStatus.QUEUED:
                 processed += 1
-        return processed + text_processed
+        return processed + text_processed + frame_processed

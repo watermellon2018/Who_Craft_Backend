@@ -139,8 +139,9 @@ class ShotListJobTests(TestCase):
             shot["keyframes"][0]["cameraIntent"]["framing"], "medium-close",
         )
         self.assertEqual(shot["source"]["document"]["sceneId"], self.scene.pk)
-        self.assertEqual(len(shot["keyframes"]), 2)
-        self.assertEqual(len(shot["transitions"]), 1)
+        self.assertEqual(len(shot["keyframes"]), 1)
+        self.assertEqual(shot["keyframes"][0]["type"], "start")
+        self.assertEqual(shot["transitions"], [])
         self.assertIn("Russian (ru)", self.provider.call_args.kwargs["prompt"])
         self.assertIsNone(execute_shot_list_job(job.pk))
         self.provider.assert_called_once()

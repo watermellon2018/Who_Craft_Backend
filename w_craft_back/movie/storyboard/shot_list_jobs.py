@@ -276,7 +276,7 @@ def _editor_result(job: SceneStoryboardShotListJob, proposal: dict) -> dict:
     shots = []
     for index, suggestion in enumerate(proposal["shots"], start=1):
         shot_id = str(uuid.uuid5(job.pk, f"shot-{index}"))
-        start_id, end_id = f"{shot_id}-start", f"{shot_id}-end"
+        start_id = f"{shot_id}-start"
         shot = {
             "id": shot_id, "sceneId": str(job.scene_id), "order": index,
             "title": suggestion["title"], "description": suggestion["description"],
@@ -292,12 +292,9 @@ def _editor_result(job: SceneStoryboardShotListJob, proposal: dict) -> dict:
                     "framing": suggestion["suggested_framing"].replace("_", "-"),
                 },
             } for frame_id, position, frame_type in (
-                (start_id, 0, "start"), (end_id, 1, "end"),
+                (start_id, 0, "start"),
             )],
-            "transitions": [{
-                "id": f"{shot_id}-transition", "fromKeyframeId": start_id,
-                "toKeyframeId": end_id,
-            }],
+            "transitions": [],
             "source": {
                 "document": deepcopy(document), "origin": "ai",
                 "segmentIds": suggestion["source_segment_ids"],

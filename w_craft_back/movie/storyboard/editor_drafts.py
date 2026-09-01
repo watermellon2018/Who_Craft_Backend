@@ -128,6 +128,118 @@ class DraftReferenceSerializer(StrictSerializer):
     primary = serializers.BooleanField(required=False)
     sourceKeyframeId = IdentifierField(required=False)
     sourceShotId = IdentifierField(required=False)
+    versionId = IdentifierField(required=False)
+    assetId = IdentifierField(required=False)
+
+
+class CanvasPointSerializer(StrictSerializer):
+    x = FiniteFloatField(min_value=0, max_value=100)
+    y = FiniteFloatField(min_value=0, max_value=100)
+
+
+class CanvasEntitySerializer(StrictSerializer):
+    id = IdentifierField()
+    type = serializers.ChoiceField(choices=(
+        "character", "location", "object", "clothing", "other",
+    ))
+    title = serializers.CharField(max_length=2000, allow_blank=True)
+    versionId = IdentifierField(required=False)
+    assetId = IdentifierField(required=False)
+
+
+class CanvasMotionSerializer(StrictSerializer):
+    type = serializers.ChoiceField(choices=("static", "path"))
+    points = CanvasPointSerializer(many=True, max_length=8)
+    start = FiniteFloatField(min_value=0, max_value=86400)
+    end = FiniteFloatField(min_value=0, max_value=86400)
+    facing = serializers.CharField(max_length=2000, allow_blank=True)
+
+    def validate(self, attrs: dict) -> dict:
+        if attrs["end"] < attrs["start"]:
+            raise serializers.ValidationError("Motion end precedes its start.")
+        return attrs
+
+
+class CanvasObjectSerializer(CanvasPointSerializer):
+    id = IdentifierField()
+    kind = serializers.ChoiceField(choices=(
+        "person", "animal", "prop", "rectangle", "ellipse", "line",
+    ))
+    width = FiniteFloatField(min_value=0.1, max_value=100)
+    height = FiniteFloatField(min_value=0.1, max_value=100)
+    rotation = FiniteFloatField(min_value=-360, max_value=360)
+    flipX = serializers.BooleanField()
+    hidden = serializers.BooleanField()
+    locked = serializers.BooleanField()
+    title = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+    description = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+    comment = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+    pose = serializers.ChoiceField(choices=("front", "profile", "back", "sitting"))
+    entity = CanvasEntitySerializer(required=False)
+    motion = CanvasMotionSerializer()
+
+
+class CanvasMarkerSerializer(CanvasPointSerializer):
+    id = IdentifierField()
+    text = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+
+
+class CanvasCameraMotionSerializer(StrictSerializer):
+    type = serializers.ChoiceField(choices=(*MOVEMENTS, "Zoom In", "Zoom Out"))
+    targetId = IdentifierField(required=False)
+    intensity = serializers.ChoiceField(choices=("low", "medium", "high"))
+    points = CanvasPointSerializer(
+        many=True, required=False, default=list, max_length=8,
+    )
+    start = FiniteFloatField(min_value=0, max_value=86400)
+    end = FiniteFloatField(min_value=0, max_value=86400)
+
+    def validate(self, attrs: dict) -> dict:
+        if attrs["end"] < attrs["start"]:
+            raise serializers.ValidationError("Motion end precedes its start.")
+        return attrs
+
+
+class CanvasLightingSerializer(StrictSerializer):
+    preset = serializers.ChoiceField(choices=("daylight", "studio", "night", "custom"))
+    direction = serializers.ChoiceField(choices=(
+        "front", "left", "right", "top-left", "top-right", "back", "top",
+    ))
+    softness = serializers.ChoiceField(choices=("soft", "hard"))
+    temperature = serializers.ChoiceField(choices=("warm", "neutral", "cool"))
+    contrast = serializers.ChoiceField(choices=("low", "medium", "high"))
+    notes = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+
+
+class CanvasDocumentSerializer(StrictSerializer):
+    version = serializers.ChoiceField(choices=(1,))
+    aspectRatio = serializers.ChoiceField(choices=("16:9", "9:16", "1:1"))
+    objects = CanvasObjectSerializer(many=True, max_length=80)
+    cameraMotion = CanvasCameraMotionSerializer()
+    lighting = CanvasLightingSerializer()
+    notes = serializers.CharField(
+        max_length=2000, allow_blank=True, trim_whitespace=False,
+    )
+    markers = CanvasMarkerSerializer(many=True, max_length=30)
+
+    def validate(self, attrs: dict) -> dict:
+        ids = [item["id"] for item in (*attrs["objects"], *attrs["markers"])]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("Canvas IDs must be unique.")
+        target = attrs["cameraMotion"].get("targetId")
+        if target and target not in {item["id"] for item in attrs["objects"]}:
+            raise serializers.ValidationError("Unknown camera motion target.")
+        return attrs
 
 
 class DraftKeyframeSerializer(StrictSerializer):
@@ -137,6 +249,7 @@ class DraftKeyframeSerializer(StrictSerializer):
     type = serializers.ChoiceField(choices=("start", "intermediate", "end"))
     generationStatus = serializers.ChoiceField(choices=("idle", "ready", "failed"))
     cameraIntent = DraftCameraIntentSerializer()
+    canvas = CanvasDocumentSerializer(required=False)
     generationReferences = DraftReferenceSerializer(
         many=True, required=False, max_length=100,
     )

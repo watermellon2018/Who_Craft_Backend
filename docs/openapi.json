@@ -1845,6 +1845,170 @@
           "400": {"$ref": "#/components/responses/ReferenceError"}, "401": {"$ref": "#/components/responses/ReferenceError"}, "403": {"$ref": "#/components/responses/ReferenceError"}, "404": {"$ref": "#/components/responses/ReferenceError"}, "409": {"$ref": "#/components/responses/ReferenceError"}
         }
       }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/editor-frame-options/": {
+      "get": {
+        "operationId": "getStoryboardEditorFrameOptions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved editor frame generation data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardEditorFrameOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/editor-frame-jobs/": {
+      "get": {
+        "operationId": "listStoryboardEditorFrameJobs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved editor frame generation data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardEditorFrameJobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createStoryboardEditorFrameJob",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Saved editor frame generation data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardEditorFrameJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryboardEditorFrameCreate"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3332,7 +3496,13 @@
           "type": {"type": "string", "enum": ["character", "location", "object", "clothing", "other", "previous-keyframe", "previous-shot"]},
           "primary": {"type": "boolean"},
           "sourceKeyframeId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
-          "sourceShotId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"}
+          "sourceShotId": {"$ref": "#/components/schemas/StoryboardEditorDraftId"},
+          "versionId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          },
+          "assetId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          }
         }
       },
       "StoryboardEditorDraftKeyframe": {
@@ -3345,7 +3515,10 @@
           "type": {"type": "string", "enum": ["start", "intermediate", "end"]},
           "generationStatus": {"type": "string", "enum": ["idle", "ready", "failed"], "description": "Transient loading state must be normalized to idle before saving."},
           "cameraIntent": {"$ref": "#/components/schemas/StoryboardEditorDraftCameraIntent"},
-          "generationReferences": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftReference"}}
+          "generationReferences": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/StoryboardEditorDraftReference"}},
+          "canvas": {
+            "$ref": "#/components/schemas/StoryboardCanvasDocument"
+          }
         }
       },
       "StoryboardEditorDraftTransition": {
@@ -4612,6 +4785,608 @@
         "properties": {
           "expectedSceneVersion": {"type": "integer", "minimum": 1},
           "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/SceneReferenceRequest"}}
+        }
+      },
+      "StoryboardCanvasDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "aspectRatio": {
+            "type": "string",
+            "enum": [
+              "16:9",
+              "9:16",
+              "1:1"
+            ]
+          },
+          "objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "id": {
+                  "$ref": "#/components/schemas/StoryboardEditorDraftId"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "person",
+                    "animal",
+                    "prop",
+                    "rectangle",
+                    "ellipse",
+                    "line"
+                  ]
+                },
+                "width": {
+                  "type": "number",
+                  "minimum": 0.1,
+                  "maximum": 100
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 0.1,
+                  "maximum": 100
+                },
+                "rotation": {
+                  "type": "number",
+                  "minimum": -360,
+                  "maximum": 360
+                },
+                "flipX": {
+                  "type": "boolean"
+                },
+                "hidden": {
+                  "type": "boolean"
+                },
+                "locked": {
+                  "type": "boolean"
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "comment": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "pose": {
+                  "type": "string",
+                  "enum": [
+                    "front",
+                    "profile",
+                    "back",
+                    "sitting"
+                  ]
+                },
+                "entity": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/StoryboardEditorDraftId"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "character",
+                        "location",
+                        "object",
+                        "clothing",
+                        "other"
+                      ]
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "versionId": {
+                      "$ref": "#/components/schemas/StoryboardEditorDraftId"
+                    },
+                    "assetId": {
+                      "$ref": "#/components/schemas/StoryboardEditorDraftId"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "type",
+                    "title"
+                  ]
+                },
+                "motion": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "static",
+                        "path"
+                      ]
+                    },
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "x": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "y": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "required": [
+                          "x",
+                          "y"
+                        ]
+                      },
+                      "maxItems": 8
+                    },
+                    "start": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 86400
+                    },
+                    "end": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 86400
+                    },
+                    "facing": {
+                      "type": "string",
+                      "maxLength": 2000
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "points",
+                    "start",
+                    "end",
+                    "facing"
+                  ]
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "id",
+                "kind",
+                "width",
+                "height",
+                "rotation",
+                "flipX",
+                "hidden",
+                "locked",
+                "title",
+                "description",
+                "comment",
+                "pose",
+                "motion"
+              ]
+            },
+            "maxItems": 80
+          },
+          "cameraMotion": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Static",
+                  "Dolly In",
+                  "Dolly Out",
+                  "Pan",
+                  "Pan Left",
+                  "Pan Right",
+                  "Tilt Up",
+                  "Tilt Down",
+                  "Orbit Left",
+                  "Orbit Right",
+                  "Truck Left",
+                  "Truck Right",
+                  "Crane Up",
+                  "Crane Down",
+                  "Follow",
+                  "Custom",
+                  "Zoom In",
+                  "Zoom Out"
+                ]
+              },
+              "targetId": {
+                "$ref": "#/components/schemas/StoryboardEditorDraftId"
+              },
+              "intensity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "points": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "x": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "y": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y"
+                  ]
+                },
+                "maxItems": 8
+              },
+              "start": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 86400
+              },
+              "end": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 86400
+              }
+            },
+            "required": [
+              "type",
+              "intensity",
+              "start",
+              "end"
+            ]
+          },
+          "lighting": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "preset": {
+                "type": "string",
+                "enum": [
+                  "daylight",
+                  "studio",
+                  "night",
+                  "custom"
+                ]
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "front",
+                  "left",
+                  "right",
+                  "top-left",
+                  "top-right",
+                  "back",
+                  "top"
+                ]
+              },
+              "softness": {
+                "type": "string",
+                "enum": [
+                  "soft",
+                  "hard"
+                ]
+              },
+              "temperature": {
+                "type": "string",
+                "enum": [
+                  "warm",
+                  "neutral",
+                  "cool"
+                ]
+              },
+              "contrast": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "notes": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "preset",
+              "direction",
+              "softness",
+              "temperature",
+              "contrast",
+              "notes"
+            ]
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "markers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "id": {
+                  "$ref": "#/components/schemas/StoryboardEditorDraftId"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "id",
+                "text"
+              ]
+            },
+            "maxItems": 30
+          }
+        },
+        "required": [
+          "version",
+          "aspectRatio",
+          "objects",
+          "cameraMotion",
+          "lighting",
+          "notes",
+          "markers"
+        ]
+      },
+      "StoryboardEditorFrameCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "shotId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          },
+          "keyframeId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "imageModel": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "routingMode": {
+            "type": "string",
+            "enum": [
+              "manual"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "shotId",
+          "keyframeId",
+          "expectedRevision",
+          "imageModel",
+          "requestId"
+        ]
+      },
+      "StoryboardEditorFrameModelOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "available",
+          "supportsReferences",
+          "maxReferenceImages",
+          "estimatedCost",
+          "currency"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "supportsReferences": {
+            "type": "boolean"
+          },
+          "maxReferenceImages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "estimatedCost": {
+            "type": "string",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          }
+        }
+      },
+      "StoryboardEditorFrameOptions": {
+        "type": "object",
+        "required": [
+          "models",
+          "defaultModel",
+          "canGenerate"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoryboardEditorFrameModelOption"
+            }
+          },
+          "defaultModel": {
+            "type": "string",
+            "nullable": true
+          },
+          "canGenerate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "StoryboardEditorFrameJob": {
+        "type": "object",
+        "required": [
+          "jobId",
+          "sceneId",
+          "shotId",
+          "keyframeId",
+          "status",
+          "model",
+          "expectedRevision",
+          "inputFingerprint",
+          "matchesCurrentDraft",
+          "assetId",
+          "imageUrl",
+          "createdAt",
+          "startedAt",
+          "finishedAt",
+          "estimatedSeconds",
+          "errorCode",
+          "billing"
+        ],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sceneId": {
+            "type": "integer"
+          },
+          "shotId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          },
+          "keyframeId": {
+            "$ref": "#/components/schemas/StoryboardEditorDraftId"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer"
+          },
+          "inputFingerprint": {
+            "type": "string"
+          },
+          "matchesCurrentDraft": {
+            "type": "boolean"
+          },
+          "assetId": {
+            "type": "string",
+            "nullable": true
+          },
+          "imageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "finishedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "estimatedSeconds": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 300,
+            "description": "Display estimate based on recent successful jobs for this project and model; not a provider SLA."
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "billing": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true
+          }
+        }
+      },
+      "StoryboardEditorFrameJobList": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoryboardEditorFrameJob"
+            }
+          }
         }
       }
     }

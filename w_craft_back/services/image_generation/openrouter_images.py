@@ -10,7 +10,10 @@ import os
 import re
 import threading
 import time
+from dataclasses import replace
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterator, Mapping
+from urllib.parse import quote
 
 import requests
 
@@ -37,6 +40,13 @@ OPENROUTER_CATALOG_TTL_SECONDS = 10 * 60
 OPENROUTER_CATALOG_FAILURE_TTL_SECONDS = 30
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 _CATALOG_TIMEOUT_SECONDS = 15.0
+_MODEL_ENDPOINT_TIMEOUT_SECONDS = 5.0
+_CATALOG_PRICING_BUDGET_SECONDS = 15.0
+_CATALOG_REFRESH_WAIT_SECONDS = (
+    _CATALOG_TIMEOUT_SECONDS + _CATALOG_PRICING_BUDGET_SECONDS + 1.0
+)
+_TRANSIENT_RESPONSE_STATUSES = frozenset({429, 502, 503, 529})
+_TRANSIENT_RESPONSE_DELAYS_SECONDS = (0.5, 1.0)
 
 _FORWARD_PARAMETER_NAMES = (
     "resolution",
@@ -528,6 +538,97 @@ def _parse_catalog(payload: Any) -> list[ModelSpec]:
     return specs
 
 
+def _endpoint_pricing_catalog(payload: Any) -> list[dict[str, str]]:
+    """Normalize definitive per-endpoint pricing into a bounded safe catalog."""
+
+    if not isinstance(payload, Mapping):
+        return []
+    endpoints = payload.get("endpoints")
+    if not isinstance(endpoints, list):
+        return []
+    result: list[dict[str, str]] = []
+    for endpoint in endpoints[:50]:
+        if not isinstance(endpoint, Mapping):
+            continue
+        provider = endpoint.get("provider_slug") or endpoint.get("provider_name")
+        pricing = endpoint.get("pricing")
+        if not isinstance(pricing, list):
+            continue
+        for row in pricing[:100]:
+            if not isinstance(row, Mapping):
+                continue
+            billable = row.get("billable")
+            unit = row.get("unit")
+            if not isinstance(billable, str) or not billable.strip():
+                continue
+            if not isinstance(unit, str) or not unit.strip():
+                continue
+            try:
+                cost = Decimal(str(row.get("cost_usd")))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if not cost.is_finite() or cost < 0:
+                continue
+            normalized = {
+                "billable": billable.strip()[:100],
+                "unit": unit.strip().lower()[:50],
+                "cost_usd": format(cost, "f"),
+            }
+            variant = row.get("variant")
+            if isinstance(variant, str) and variant.strip():
+                normalized["variant"] = variant.strip()[:100]
+            if isinstance(provider, str) and provider.strip():
+                normalized["provider"] = provider.strip()[:100]
+            result.append(normalized)
+    return result
+
+
+def _model_endpoint_url(model_id: str) -> str | None:
+    parts = model_id.split("/", 1)
+    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
+        return None
+    encoded = "/".join(quote(part, safe="") for part in parts)
+    return f"{_base_url()}/images/models/{encoded}/endpoints"
+
+
+def _fetch_model_pricing(
+    client: requests.Session,
+    model_id: str,
+    *,
+    timeout: float = _MODEL_ENDPOINT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Fetch one model's pricing without making catalog discovery fail closed."""
+
+    url = _model_endpoint_url(model_id)
+    if url is None:
+        return {}
+    try:
+        response = client.get(url, timeout=timeout)
+    except requests.RequestException:
+        logger.info("OpenRouter image pricing unavailable for %s", model_id)
+        return {}
+    if response.status_code != 200:
+        logger.info(
+            "OpenRouter image pricing returned status %s for %s",
+            response.status_code,
+            model_id,
+        )
+        return {}
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        logger.info("OpenRouter image pricing returned invalid JSON for %s", model_id)
+        return {}
+    rows = _endpoint_pricing_catalog(payload)
+    if not rows:
+        return {}
+    return {
+        "currency": "USD",
+        "source": "openrouter",
+        "catalog": rows,
+    }
+
+
 def _fetch_catalog(session: requests.Session | None = None) -> list[ModelSpec]:
     client = session or requests.Session()
     client.headers.update(_request_headers(require_key=False))
@@ -550,7 +651,23 @@ def _fetch_catalog(session: requests.Session | None = None) -> list[ModelSpec]:
             provider_status=response.status_code,
             provider_body=_response_body(response),
         ) from exc
-    return _parse_catalog(payload)
+    specs = _parse_catalog(payload)
+    enriched: list[ModelSpec] = []
+    pricing_deadline = time.monotonic() + _CATALOG_PRICING_BUDGET_SECONDS
+    for spec in specs:
+        pricing = spec.provider_pricing
+        if not pricing and spec.supports_generate:
+            remaining = pricing_deadline - time.monotonic()
+            if remaining > 0:
+                pricing = _fetch_model_pricing(
+                    client,
+                    spec.model_id,
+                    timeout=min(_MODEL_ENDPOINT_TIMEOUT_SECONDS, remaining),
+                )
+        enriched.append(
+            replace(spec, provider_pricing=pricing) if pricing else spec
+        )
+    return enriched
 
 
 def discover_openrouter_image_models(
@@ -598,7 +715,7 @@ def discover_openrouter_image_models(
                 return list(_catalog_specs)
             _catalog_condition.wait_for(
                 lambda: not _catalog_refreshing,
-                timeout=_CATALOG_TIMEOUT_SECONDS + 1,
+                timeout=_CATALOG_REFRESH_WAIT_SECONDS,
             )
             if _catalog_specs:
                 return list(_catalog_specs)
@@ -862,28 +979,58 @@ class OpenRouterImagesProvider:
                 message="Таймаут генерации должен быть от 0 до 600 секунд.",
                 http_status=400,
             )
-        try:
-            response = self.session.post(
-                f"{_base_url()}/images",
-                json=payload,
-                timeout=float(request_timeout),
-            )
-        except requests.RequestException as exc:
-            raise _network_error() from exc
-        if response.status_code != 200:
+        deadline = time.monotonic() + float(request_timeout)
+        response: requests.Response | None = None
+        for attempt in range(len(_TRANSIENT_RESPONSE_DELAYS_SECONDS) + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ImageProviderError(
+                    code=CODE_UNAVAILABLE,
+                    message="OpenRouter Images не ответил вовремя.",
+                    http_status=504,
+                )
+            try:
+                response = self.session.post(
+                    f"{_base_url()}/images",
+                    json=payload,
+                    timeout=remaining,
+                )
+            except requests.RequestException as exc:
+                # A transport error can happen after the provider accepted a
+                # paid request. Retrying it could create a second charge.
+                logger.warning(
+                    "OpenRouter Images transport failed: model=%s error_type=%s",
+                    self.model_id,
+                    type(exc).__name__,
+                )
+                raise _network_error() from exc
+            if response.status_code == 200:
+                break
             error = _http_error(response)
             error_type, provider_code = _provider_error_tokens(response)
             logger.warning(
                 "OpenRouter Images request rejected: model=%s status=%s "
-                "error_type=%s provider_code=%s body_length=%s body_hash=%s",
+                "attempt=%s error_type=%s provider_code=%s "
+                "body_length=%s body_hash=%s",
                 self.model_id,
                 error.provider_status,
+                attempt + 1,
                 error_type or "unknown",
                 provider_code or "unknown",
                 error.provider_body_length,
                 error.provider_body_hash,
             )
-            raise error
+            if (
+                response.status_code not in _TRANSIENT_RESPONSE_STATUSES
+                or attempt >= len(_TRANSIENT_RESPONSE_DELAYS_SECONDS)
+            ):
+                raise error
+            delay = _TRANSIENT_RESPONSE_DELAYS_SECONDS[attempt]
+            if time.monotonic() + delay >= deadline:
+                raise error
+            time.sleep(delay)
+        if response is None:
+            raise _network_error()
         try:
             response_payload = response.json()
         except (TypeError, ValueError) as exc:
@@ -897,7 +1044,13 @@ class OpenRouterImagesProvider:
         usage = normalized_response_usage(response_payload)
         if usage:
             self._usage_events.append(usage)
-        return _extract_image_api(response_payload)
+        try:
+            return _extract_image_api(response_payload)
+        except ImageProviderError as error:
+            # The request succeeded upstream even when image decoding failed.
+            # Durable callers need this boundary to avoid refunding paid output.
+            error.provider_status = response.status_code
+            raise
 
     def generate(
         self,
@@ -942,30 +1095,47 @@ class OpenRouterImagesProvider:
         timeout: float | None = None,
         **kwargs: Any,
     ) -> list[bytes]:
+        return self.generate_with_references(
+            prompt, [image_bytes], variant_count=variant_count,
+            timeout=timeout, **kwargs,
+        )
+
+    def generate_with_references(
+        self, prompt: str, images: list[bytes], *, variant_count: int = 1,
+        timeout: float | None = None, **kwargs: Any,
+    ) -> list[bytes]:
         if not self.spec.supports_reference:
             raise ImageProviderError(
                 code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
                 message=f"Модель '{self.spec.label}' не поддерживает референсы.",
                 http_status=400,
             )
+        maximum = _number_bound(
+            self.spec.supported_parameters.get("input_references"), "max",
+        )
+        if not images or len(images) > (maximum if maximum is not None else 1):
+            raise ImageProviderError(
+                code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+                message="Количество референсов превышает возможности модели.",
+                http_status=400,
+            )
         try:
-            normalized = normalize_image_bytes(image_bytes)
+            normalized_images = [normalize_image_bytes(image) for image in images]
         except StorageGatewayError as exc:
             raise ImageProviderError(
                 code=CODE_BAD_RESPONSE,
                 message="Референс не является допустимым изображением.",
                 http_status=400,
             ) from exc
-        data_url = (
-            f"data:{normalized.mime_type};base64,"
-            f"{base64.b64encode(normalized.data).decode('ascii')}"
-        )
         n = _variant_count(self.spec, variant_count)
         payload: dict[str, Any] = {
             "model": self.model_id,
             "prompt": prompt.strip() if isinstance(prompt, str) else prompt,
             "input_references": [
-                {"type": "image_url", "image_url": {"url": data_url}}
+                {"type": "image_url", "image_url": {"url": (
+                    f"data:{image.mime_type};base64,"
+                    f"{base64.b64encode(image.data).decode('ascii')}"
+                )}} for image in normalized_images
             ],
         }
         if n > 1:

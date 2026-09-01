@@ -70,7 +70,7 @@ class RegistryTest(TestCase):
         self.assertEqual(spec.mode, "images")
         self.assertEqual(
             spec.model_id,
-            "google/gemini-3.1-flash-image-preview",
+            "google/gemini-3.1-flash-image",
         )
         self.assertEqual(spec.supported_parameters["n"]["max"], 1)
 

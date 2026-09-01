@@ -90,6 +90,91 @@ not infer exact quotations from generated descriptions or regenerate silently.
 
 ## Durable editor working copies
 
+### Camera-view canvas and durable editor images
+
+Editor drafts support an optional `keyframes[].canvas` version-1 document:
+ordered primitive objects, normalized camera-view geometry, pinned library
+links, object paths, camera motion, lighting and annotations. Validation limits
+each frame to 80 objects, 30 markers, eight points per object or custom camera
+path and 2,000 characters per canvas text field. Values must be finite; unknown fields, media binaries
+and credential URLs are rejected. Existing drafts without canvas remain valid.
+New AI shot lists have one initial keyframe; final and intermediate images are
+optional in this editor. This does not change the older structured render API's
+START/END contract.
+
+Migration `0067_storyboard_editor_frame_jobs` adds image jobs attached to a scene
+and the saved draft's local shot/keyframe IDs. Saving a draft never creates
+hidden structured shots. `GET .../scenes/{sceneId}/editor-frame-options/` uses the
+existing image registry and returns configured models, input reference limits
+and an indicative USD price for one image. A clean canvas condition counts as
+one input image. Models whose adapters cannot receive every requested reference
+are rejected; references are never silently discarded. Only manual explicit
+provider routing is supported by this endpoint. Unlike the reference-library
+development mode, editor image jobs never use a mock provider.
+
+The built-in OpenRouter Gemini alias targets the stable
+`google/gemini-3.1-flash-image` Images API model. The adapter retries only
+explicit transient HTTP responses (`429`, `502`, `503`, `529`) within the
+original timeout. It does not retry transport failures because the first paid
+request may already have reached the provider even when its response was lost.
+
+The image registry loads OpenRouter's current image-model catalog and enriches
+models with definitive per-endpoint pricing, cached in-process for ten minutes.
+Models with a safe per-image reservation are enabled automatically when
+`OPENROUTER_API_KEY` is configured. Models billed by output token or megapixel,
+or lacking a usable provider price, remain visible but disabled until the editor
+can calculate their requested output size or token budget without guessing.
+
+`POST .../scenes/{sceneId}/editor-frame-jobs/` requires `shotId`, `keyframeId`,
+`expectedRevision`, `imageModel` and UUID `requestId`. Save the draft first.
+The server locks that revision, resolves project-scoped character/library
+assets, snapshots the complete input and provider route, reserves credits and
+commits HTTP 202 before any provider call. Matching request retries return the
+same job; another active request for that keyframe is rejected. A worker
+(`python manage.py run_generation_worker --queue storyboard`) executes it after
+navigation or tab closure. Safe failures release credits; uncertain provider
+outcomes are settled conservatively and never blindly retried.
+
+The worker renders a clean PNG from primitives, omitting editor controls,
+markers and movement arrows. It supplies the condition plus all pinned identity
+references. Each numbered reference is mapped to the exact visible canvas object
+IDs that use its pinned entity link; object title, description, pose and motion
+remain in the structured prompt. The legacy per-object `comment` key remains
+accepted for draft compatibility but is not exposed or sent to the model.
+References without object IDs provide
+global scene or continuity guidance. Shapes provide artistic composition
+guidance, not pixel-exact, optical, lighting or motion simulation. Camera/object
+movement remains saved direction for a future video workflow, not a video
+generation feature. Character links pin a specific asset; library links pin a
+version/asset. Foreign or missing image references are rejected. Legacy location
+records without an immutable visual-library image remain description-only and
+cannot be supplied as pinned image references.
+
+For camera movement, the persisted `intensity` field is retained for draft/API
+compatibility but represents tempo in the editor (`low` slow, `medium` medium,
+`high` fast). `Custom` camera movement can include normalized `points`; these
+points remain editable and are passed as structured generation guidance.
+
+`GET .../scenes/{sceneId}/editor-frame-jobs/` returns the latest job of each status
+for each local frame still in the saved draft, plus active jobs, including fresh
+authorized image URLs. Reset/deleted-frame history stays in storage without
+inflating workspace reload responses. It retains the
+last success while a new request runs or fails. `matchesCurrentDraft` compares
+render input only; transient generation status, canvas lock state, marker notes,
+editor stage and sibling changes do not make an image stale. Completed images
+are private `ProjectAsset` records with immutable request provenance. Completion
+never overwrites the current draft, including a draft reset while work ran.
+Old results remain separate and can be presented with a stale-input warning.
+
+Each editor image job exposes an `estimatedSeconds` display estimate. The first
+request uses a conservative default; later requests use the median duration of
+up to ten recent successful jobs for the same project and model, bounded to
+10–300 seconds. The editor shows this estimate and a bounded progress indicator
+inside the image canvas. It remains an approximation rather than a provider
+deadline. The selected Schema/Image view is kept while moving between frames in
+the same scene.
+No signed image URLs or binary output are written into the draft JSON.
+
 ### Shot-list generation survives navigation and closed tabs
 
 Migration `0066_storyboard_shot_list_jobs` adds durable scene text-generation
