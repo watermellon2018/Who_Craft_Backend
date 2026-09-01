@@ -13,6 +13,7 @@ from typing import Optional
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -20,17 +21,40 @@ from rest_framework.views import APIView
 
 from w_craft_back.movie.project import policy, project_mutations
 from w_craft_back.movie.project.dashboard_models import (
+    AssetType,
     Location,
+    ProjectAsset,
     Scene,
+    SceneStoryboard,
 )
 from w_craft_back.movie.project.models import Project
 from w_craft_back.movie.project.script_workspace import (
     scene_payload,
     scenes_queryset,
 )
-from w_craft_back.movie.project.serializers import SceneWorkspaceUpdateSerializer
+from w_craft_back.movie.project.serializers import (
+    SceneReorderSerializer,
+    SceneStoryboardConfirmSerializer,
+    SceneStoryboardUpdateSerializer,
+    SceneWorkspaceUpdateSerializer,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _storyboard_payload(storyboard: SceneStoryboard) -> dict:
+    return {
+        "sceneId": storyboard.scene_id,
+        "assetId": storyboard.asset_id,
+        "sourceSceneVersion": storyboard.source_scene_version,
+        "confirmedSceneVersion": storyboard.confirmed_scene_version,
+        "acceptedSceneVersion": storyboard.accepted_scene_version,
+        "currentSceneVersion": storyboard.scene.version,
+        "needsReview": storyboard.needs_review,
+        "updatedAt": (
+            storyboard.updated_at.isoformat() if storyboard.updated_at else None
+        ),
+    }
 
 
 def _resolve_user(request) -> Optional[User]:
@@ -235,6 +259,251 @@ class SceneDetailView(_VersionedEntityView):
         ) as exc:
             return _mutation_error_response(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SceneReorderView(APIView):
+    """Atomically update the complete scene order and act placement."""
+
+    def patch(self, request, project_id):
+        user = _resolve_user(request)
+        if user is None:
+            return Response(
+                {"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        serializer = SceneReorderSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "validation error", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            scenes = project_mutations.reorder_scenes(
+                actor=user,
+                action=policy.Action.EDIT_CONTENT,
+                project_id=project_id,
+                placements=serializer.validated_data["scenes"],
+            )
+        except (
+            ObjectDoesNotExist,
+            project_mutations.ProjectMutationForbidden,
+            project_mutations.VersionConflict,
+            ValidationError,
+        ) as exc:
+            return _mutation_error_response(exc)
+
+        return Response(
+            {
+                "scenes": [
+                    {
+                        "id": scene.pk,
+                        "order": scene.order,
+                        "act": scene.act,
+                        "version": scene.version,
+                        "updatedAt": (
+                            scene.updated_at.isoformat() if scene.updated_at else ""
+                        ),
+                    }
+                    for scene in scenes
+                ]
+            }
+        )
+
+
+class SceneStoryboardView(APIView):
+    def _resolve(self, request, project_id: int, scene_id: int, *, edit=False):
+        user = _resolve_user(request)
+        if user is None:
+            return None, None, Response(
+                {"detail": "Unauthorized"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        project = get_object_or_404(Project, pk=project_id)
+        allowed = (
+            policy.can_edit(user, project)
+            if edit
+            else policy.can_view(user, project)
+        )
+        if not allowed:
+            return None, None, Response(
+                {"detail": "Forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        scene = Scene.objects.filter(pk=scene_id, project=project).first()
+        if scene is None:
+            return None, None, Response(
+                {"detail": "Not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return user, scene, None
+
+    def get(self, request, project_id: int, scene_id: int):
+        _user, scene, err = self._resolve(request, project_id, scene_id)
+        if err:
+            return err
+        storyboard = SceneStoryboard.objects.filter(scene=scene).first()
+        if storyboard is None:
+            return Response(
+                {"detail": "Not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        from w_craft_back.movie.storyboard import services as storyboard_services
+
+        structured = storyboard_services.get_scene_storyboard(
+            actor=_user,
+            project_id=project_id,
+            scene_id=scene_id,
+            request=request,
+        )
+        return Response({**_storyboard_payload(storyboard), **structured})
+
+    def post(self, request, project_id: int, scene_id: int):
+        user, _scene_obj, err = self._resolve(
+            request,
+            project_id,
+            scene_id,
+            edit=True,
+        )
+        if err:
+            return err
+        from w_craft_back.movie.storyboard import services as storyboard_services
+
+        payload, created = storyboard_services.initialize_storyboard(
+            actor=user,
+            project_id=project_id,
+            scene_id=scene_id,
+            request=request,
+        )
+        return Response(
+            payload,
+            status=(
+                status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            ),
+        )
+
+    def put(self, request, project_id: int, scene_id: int):
+        user, scene, err = self._resolve(
+            request,
+            project_id,
+            scene_id,
+            edit=True,
+        )
+        if err:
+            return err
+        serializer = SceneStoryboardUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "validation error", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        data = serializer.validated_data
+        asset = ProjectAsset.objects.filter(
+            pk=data["assetId"],
+            project_id=project_id,
+            asset_type=AssetType.STORYBOARD,
+        ).first()
+        if asset is None:
+            return Response(
+                {"detail": "Storyboard asset not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            with transaction.atomic():
+                locked_scene = Scene.objects.select_for_update().get(pk=scene.pk)
+                if data["sourceSceneVersion"] > locked_scene.version:
+                    return Response(
+                        {
+                            "detail": (
+                                "sourceSceneVersion cannot be newer than the scene"
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                storyboard = (
+                    SceneStoryboard.objects.select_for_update()
+                    .filter(scene=locked_scene)
+                    .first()
+                )
+                created = storyboard is None
+                if created:
+                    storyboard = SceneStoryboard.objects.create(
+                        scene=locked_scene,
+                        asset=asset,
+                        source_scene_version=data["sourceSceneVersion"],
+                        created_by=user,
+                        updated_by=user,
+                    )
+                else:
+                    storyboard.asset = asset
+                    storyboard.source_scene_version = data["sourceSceneVersion"]
+                    storyboard.confirmed_scene_version = None
+                    storyboard.updated_by = user
+                    storyboard.save()
+        except ValidationError as exc:
+            return _mutation_error_response(exc)
+        return Response(
+            _storyboard_payload(storyboard),
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class SceneStoryboardConfirmView(APIView):
+    def post(self, request, project_id: int, scene_id: int):
+        user = _resolve_user(request)
+        if user is None:
+            return Response(
+                {"detail": "Unauthorized"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        project = get_object_or_404(Project, pk=project_id)
+        if not policy.can_edit(user, project):
+            return Response(
+                {"detail": "Forbidden"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = SceneStoryboardConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "validation error", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            scene = (
+                Scene.objects.select_for_update()
+                .filter(pk=scene_id, project=project)
+                .first()
+            )
+            if scene is None:
+                return Response(
+                    {"detail": "Not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            expected = serializer.validated_data["expectedSceneVersion"]
+            if expected != scene.version:
+                return _conflict(scene.version)
+            storyboard = (
+                SceneStoryboard.objects.select_for_update()
+                .filter(scene=scene)
+                .first()
+            )
+            if storyboard is None:
+                return Response(
+                    {"detail": "Storyboard not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            storyboard.confirmed_scene_version = scene.version
+            storyboard.updated_by = user
+            storyboard.save(
+                update_fields=[
+                    "confirmed_scene_version",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+        return Response(_storyboard_payload(storyboard))
 
 
 class LocationDetailView(_VersionedEntityView):

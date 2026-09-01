@@ -13,10 +13,20 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.movie.project.dashboard_models import Scene, SceneCharacter
 from w_craft_back.movie.project.models import Project
+from w_craft_back.movie.project.progress_service import analyze_missing_characters
 from w_craft_back.storage_gateway import signed_url_for_asset
 
 
 CHARACTER_ROLE_LABELS = dict(CharacterRole.choices)
+
+
+def missing_characters_payload(project: Project) -> dict:
+    return {
+        "characters": [
+            character.as_payload()
+            for character in analyze_missing_characters(project)
+        ]
+    }
 
 
 def _absolute_image_url(request, raw_url: Optional[str]) -> Optional[str]:

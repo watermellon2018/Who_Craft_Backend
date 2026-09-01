@@ -119,8 +119,14 @@ class DashboardShapeTests(TestCase):
         data = self._get()
         for k in ("overall", "script", "visual", "audio", "postproduction"):
             self.assertEqual(data["progress"][k], 0)
+        readiness = data["progress"]["readiness"]
+        for k in ("overall", "script", "storyboard", "video"):
+            self.assertEqual(readiness[k], 0)
+        self.assertIsNone(readiness["characters"])
+        self.assertEqual(readiness["storyboardNeedsReview"], 0)
+        self.assertEqual(readiness["storyboardReviewScenes"], [])
 
-    def test_progress_uses_db_values(self):
+    def test_readiness_ignores_legacy_cache_but_keeps_audio_compatibility(self):
         ProjectProgress.objects.update_or_create(
             project=self.project,
             defaults={
@@ -132,8 +138,10 @@ class DashboardShapeTests(TestCase):
             },
         )
         data = self._get()
-        self.assertEqual(data["progress"]["overall"], 58)
-        self.assertEqual(data["progress"]["script"], 80)
+        self.assertEqual(data["progress"]["overall"], 0)
+        self.assertEqual(data["progress"]["script"], 0)
+        self.assertEqual(data["progress"]["audio"], 67)
+        self.assertEqual(data["progress"]["readiness"]["overall"], 0)
 
     def test_empty_collections_are_arrays(self):
         data = self._get()
@@ -398,6 +406,20 @@ class ProjectCrudTests(TestCase):
             list(ProjectTag.objects.filter(project_id=project_id).values_list("name", flat=True)),
             ["Драма"],
         )
+
+    def test_stale_inactive_user_cannot_create_project(self):
+        self.owner.is_active = False
+        self.owner.save(update_fields=["is_active"])
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            "/api/projects/",
+            data={"title": "Must not exist"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Project.objects.filter(title="Must not exist").exists())
 
     def test_create_project_keeps_synopsis_separate_from_summary(self):
         response = self.client.post(

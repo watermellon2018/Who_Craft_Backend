@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from typing import Iterable
 
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
@@ -35,6 +37,35 @@ class UnsupportedMediaType(UnsupportedMedia):
     """Profile upload is not a decodable supported image."""
 
 
+class InvalidCurrentPassword(Exception):
+    """The account-closing password confirmation did not match."""
+
+
+class AccountHasOwnedProjects(Exception):
+    """Account closure is blocked until all owned projects are transferred."""
+
+    def __init__(self, owned_projects_count: int) -> None:
+        self.owned_projects_count = owned_projects_count
+        super().__init__('account owns projects')
+
+
+class InactiveAccount(Exception):
+    """A stale authenticated request reached a deactivated account."""
+
+
+def lock_active_user(user: User) -> User:
+    """Lock one user row and reject account mutations after deactivation."""
+
+    locked_user = (
+        User.objects.select_for_update()
+        .filter(pk=user.pk)
+        .first()
+    )
+    if locked_user is None or not locked_user.is_active:
+        raise InactiveAccount()
+    return locked_user
+
+
 def _normalize_interest_name(name: str) -> tuple[str, str]:
     clean = name.strip()
     slug = slugify(clean, allow_unicode=True) or clean.lower()
@@ -60,6 +91,7 @@ def _resolve_interest(clean: str, slug: str) -> Interest:
 
 @transaction.atomic
 def replace_user_interests(user, names: Iterable[str]) -> list[Interest]:
+    user = lock_active_user(user)
     seen_keys: set[str] = set()
     interests: list[Interest] = []
     for raw in names:
@@ -81,6 +113,7 @@ def replace_user_interests(user, names: Iterable[str]) -> list[Interest]:
 
 @transaction.atomic
 def replace_user_socials(user, items: Iterable[dict]) -> list[UserSocialLink]:
+    user = lock_active_user(user)
     UserSocialLink.objects.filter(user=user).delete()
     rows: list[UserSocialLink] = []
     for idx, item in enumerate(items):
@@ -96,8 +129,89 @@ def replace_user_socials(user, items: Iterable[dict]) -> list[UserSocialLink]:
     return rows
 
 
-def save_uploaded_image(user, django_file, asset_type: str) -> UserAsset:
-    """Normalize an image before a short metadata transaction."""
+@transaction.atomic
+def close_user_account(user: User, current_password: str) -> None:
+    """Deactivate and anonymize an account while preserving audit history."""
+
+    from w_craft_back.auth.models import UserKey
+    from w_craft_back.movie.project.comment_models import VideoShotComment
+    from w_craft_back.movie.project.dashboard_models import ProjectMember
+    from w_craft_back.movie.project.models import Project
+    from w_craft_back.movie.project.team_models import ProjectInvitation
+    from w_craft_back.notifications.models import (
+        EmailNotificationDelivery,
+        Notification,
+    )
+    from w_craft_back.subscriptions.services import remove_user_subscriptions
+
+    locked_user = User.objects.select_for_update().get(pk=user.pk)
+    if not locked_user.check_password(current_password):
+        raise InvalidCurrentPassword()
+
+    owned_projects_count = Project.objects.filter(owner=locked_user).count()
+    if owned_projects_count:
+        raise AccountHasOwnedProjects(owned_projects_count)
+
+    # Mark the account inactive before removing its personal relations. The
+    # change becomes visible atomically with the rest of the closure.
+    locked_user.is_active = False
+    locked_user.save(update_fields=['is_active'])
+
+    remove_user_subscriptions(locked_user)
+    ProjectMember.objects.filter(user=locked_user).delete()
+    ProjectInvitation.objects.filter(invited_user=locked_user).delete()
+    ProjectInvitation.objects.filter(invited_by=locked_user).update(
+        invited_by=None,
+    )
+    ProjectInvitation.objects.filter(accepted_by=locked_user).update(
+        accepted_by=None,
+    )
+    VideoShotComment.objects.filter(author=locked_user).delete()
+    Notification.objects.filter(recipient=locked_user).delete()
+    EmailNotificationDelivery.objects.filter(recipient=locked_user).delete()
+
+    # Delete the profile first so UserAsset deletion can remove media after the
+    # final profile reference disappears. Storage cleanup is scheduled by the
+    # existing post-delete signals after this transaction commits.
+    UserProfile.objects.filter(user=locked_user).delete()
+    UserAsset.objects.filter(user=locked_user).delete()
+    UserInterest.objects.filter(user=locked_user).delete()
+    UserSocialLink.objects.filter(user=locked_user).delete()
+    UserKey.objects.filter(user=locked_user).delete()
+
+    locked_user.username = (
+        f'deleted_user_{locked_user.pk}_{uuid.uuid4().hex}'
+    )
+    locked_user.email = ''
+    locked_user.first_name = ''
+    locked_user.last_name = ''
+    locked_user.last_login = None
+    locked_user.is_staff = False
+    locked_user.is_superuser = False
+    locked_user.set_unusable_password()
+    locked_user.save(
+        update_fields=[
+            'username',
+            'email',
+            'first_name',
+            'last_name',
+            'last_login',
+            'is_active',
+            'is_staff',
+            'is_superuser',
+            'password',
+        ],
+    )
+    locked_user.groups.clear()
+    locked_user.user_permissions.clear()
+
+
+def save_uploaded_image(
+    user: User,
+    django_file,
+    asset_type: str,
+) -> tuple[UserAsset, UserProfile]:
+    """Store profile media while serialized against account closure."""
 
     if asset_type == UserAsset.AVATAR:
         max_bytes = AVATAR_MAX_BYTES
@@ -110,19 +224,21 @@ def save_uploaded_image(user, django_file, asset_type: str) -> UserAsset:
     else:
         raise ValueError(f'unsupported asset_type: {asset_type}')
 
-    try:
-        stored = store_image_upload(
-            django_file,
-            namespace=f'profiles/{user.id}/{asset_type}',
-            max_bytes=max_bytes,
-        )
-    except MediaTooLarge as exc:
-        raise FileTooLarge(exc.message) from exc
-    except StorageGatewayError as exc:
-        raise UnsupportedMediaType(exc.message) from exc
-
+    stored = None
     try:
         with transaction.atomic():
+            user = lock_active_user(user)
+            try:
+                stored = store_image_upload(
+                    django_file,
+                    namespace=f'profiles/{user.id}/{asset_type}',
+                    max_bytes=max_bytes,
+                )
+            except MediaTooLarge as exc:
+                raise FileTooLarge(exc.message) from exc
+            except StorageGatewayError as exc:
+                raise UnsupportedMediaType(exc.message) from exc
+
             profile, _ = UserProfile.objects.select_for_update().get_or_create(
                 user=user
             )
@@ -147,12 +263,13 @@ def save_uploaded_image(user, django_file, asset_type: str) -> UserAsset:
             setattr(profile, link_field, asset)
             profile.save(update_fields=[link_field])
     except Exception:
-        delete_storage_key(stored.storage_key)
+        if stored is not None:
+            delete_storage_key(stored.storage_key)
         raise
-    return asset
+    return asset, profile
 
 
-def delete_image(user, asset_type: str) -> None:
+def delete_image(user: User, asset_type: str) -> UserProfile:
     """Detach profile media; cleanup runs only after transaction commit."""
 
     if asset_type == UserAsset.AVATAR:
@@ -165,13 +282,12 @@ def delete_image(user, asset_type: str) -> None:
         raise ValueError(f'unsupported asset_type: {asset_type}')
 
     with transaction.atomic():
-        profile = (
-            UserProfile.objects.select_for_update()
-            .filter(user=user)
-            .first()
+        user = lock_active_user(user)
+        profile, _ = (
+            UserProfile.objects.select_for_update().get_or_create(
+                user=user,
+            )
         )
-        if profile is None:
-            return
         setattr(profile, field_name, None)
         setattr(profile, link_field, None)
         profile.save(update_fields=[field_name, link_field])
@@ -182,3 +298,4 @@ def delete_image(user, asset_type: str) -> None:
         ).update(deleted_at=timezone.now())
         # The pre_save hook records the replaced key and performs a
         # reference-aware delete after this transaction commits.
+        return profile

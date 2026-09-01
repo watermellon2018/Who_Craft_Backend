@@ -38,11 +38,19 @@ from w_craft_back.movie.music.prompt_compiler import (
     compile_music_prompt,
     normalize_music_brief,
 )
-from w_craft_back.movie.music.providers import get_music_provider
+from w_craft_back.movie.music.providers import (
+    MusicProviderError,
+    get_music_provider,
+    pricing_from_snapshot,
+    resolve_audio_model,
+    resolve_legacy_audio_route,
+    resolved_from_snapshot,
+)
 from w_craft_back.movie.project.dashboard_models import MusicTrack, Scene
 from w_craft_back.movie.project.models import Project
 from w_craft_back.credits.services import (
     capture_generation,
+    generation_charge_payload,
     release_generation,
     reserve_generation,
 )
@@ -149,7 +157,10 @@ def music_job_lease_seconds() -> int:
     return max(10, min(value, 3600))
 
 
-def _scene_context(project: Project, normalized_brief: Mapping[str, Any]) -> dict | None:
+def _scene_context(
+    project: Project,
+    normalized_brief: Mapping[str, Any],
+) -> dict | None:
     context = normalized_brief.get("context") or {}
     if context.get("type") != "scene":
         return None
@@ -181,9 +192,37 @@ def _fingerprint(
     variant_count: int,
     target_track: MusicTrack | None,
     reference_asset: MusicAsset | None,
+    model_key: str,
+) -> str:
+    intent = {
+        "projectId": project.pk,
+        "brief": normalized_brief,
+        "variantCount": variant_count,
+        "targetTrackId": target_track.pk if target_track else None,
+        "referenceAssetId": str(reference_asset.pk) if reference_asset else None,
+        "modelKey": model_key,
+    }
+    payload = json.dumps(
+        intent,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _legacy_provider_fingerprint(
+    *,
+    project: Project,
+    normalized_brief: Mapping[str, Any],
+    variant_count: int,
+    target_track: MusicTrack | None,
+    reference_asset: MusicAsset | None,
     provider_name: str,
     model_name: str,
 ) -> str:
+    """Reproduce the pre-catalog fingerprint for queued-job compatibility."""
+
     intent = {
         "projectId": project.pk,
         "brief": normalized_brief,
@@ -210,7 +249,7 @@ def _validate_intent(
     variant_count: int,
     target_track: MusicTrack | None,
     reference_asset: MusicAsset | None,
-    provider,
+    capabilities,
 ) -> None:
     if actor is None or not getattr(actor, "pk", None):
         raise MusicLifecycleError(
@@ -245,16 +284,22 @@ def _validate_intent(
                 code="MUSIC_REFERENCE_INVALID",
                 http_status=400,
             )
-    capabilities = provider.capabilities()
     mode = normalized_brief["content"]["mode"]
     duration = normalized_brief["durationSeconds"]
-    if mode not in capabilities.content_modes or variant_count not in capabilities.variant_counts:
+    if (
+        mode not in capabilities.content_modes
+        or variant_count not in capabilities.variant_counts
+    ):
         raise MusicLifecycleError(
             "The selected provider does not support this music request.",
             code="MUSIC_CAPABILITY_UNSUPPORTED",
             http_status=400,
         )
-    if not capabilities.min_duration_seconds <= duration <= capabilities.max_duration_seconds:
+    if not (
+        capabilities.min_duration_seconds
+        <= duration
+        <= capabilities.max_duration_seconds
+    ):
         raise MusicLifecycleError(
             "The requested duration is unsupported.",
             code="MUSIC_CAPABILITY_UNSUPPORTED",
@@ -266,11 +311,27 @@ def _validate_intent(
             code="MUSIC_CAPABILITY_UNSUPPORTED",
             http_status=400,
         )
+    if "seed" in normalized_brief and not capabilities.supports_seed:
+        raise MusicLifecycleError(
+            "The selected provider does not support an explicit seed.",
+            code="MUSIC_CAPABILITY_UNSUPPORTED",
+            http_status=400,
+        )
     if mode == "song":
         language = normalized_brief["content"].get("lyricsLanguage")
         if language not in capabilities.lyrics_languages:
             raise MusicLifecycleError(
                 "The selected provider does not support this lyrics language.",
+                code="MUSIC_LYRICS_UNSUPPORTED",
+                http_status=400,
+            )
+        lyrics_chars = sum(
+            len(str(section.get("text") or ""))
+            for section in normalized_brief["content"].get("sections", [])
+        )
+        if lyrics_chars > capabilities.max_lyrics_chars:
+            raise MusicLifecycleError(
+                "Lyrics exceed the selected provider limit.",
                 code="MUSIC_LYRICS_UNSUPPORTED",
                 http_status=400,
             )
@@ -287,6 +348,8 @@ def enqueue_music_job(
     reference_asset: MusicAsset | None = None,
     provider_name: str | None = None,
     model_name: str = "",
+    model_key: str | None = None,
+    provider_snapshot: Mapping[str, Any] | None = None,
 ) -> tuple[MusicGenerationJob, bool]:
     """Create a durable queued job or return its idempotent replay.
 
@@ -307,8 +370,103 @@ def enqueue_music_job(
         raise MusicLifecycleError(
             str(exc), code=exc.code, http_status=exc.http_status
         ) from exc
-    provider = get_music_provider(provider_name)
-    effective_model = str(model_name or provider.model_name)
+    persisted_snapshot = dict(provider_snapshot or {})
+    if persisted_snapshot:
+        intent_model_key = str(persisted_snapshot.get("modelKey") or "").strip()
+    elif model_key:
+        intent_model_key = str(model_key).strip().lower()
+    elif provider_name:
+        intent_model_key = (
+            f"legacy:{str(provider_name).strip().lower()}:"
+            f"{str(model_name).strip().lower()}"
+        )
+    else:
+        # An omitted selector is part of the caller's intent. Keeping it empty
+        # makes a replay independent from later default-model configuration.
+        intent_model_key = ""
+    fingerprint = _fingerprint(
+        project=project,
+        normalized_brief=normalized,
+        variant_count=int(variant_count),
+        target_track=target_track,
+        reference_asset=reference_asset,
+        model_key=intent_model_key,
+    )
+    with transaction.atomic():
+        existing = (
+            MusicGenerationJob.objects.select_for_update()
+            .filter(project=project, actor=actor, idempotency_key=key)
+            .first()
+        )
+        if existing is not None:
+            matches = existing.request_fingerprint == fingerprint
+            if not matches and not model_key and not persisted_snapshot:
+                matches = existing.request_fingerprint == _legacy_provider_fingerprint(
+                    project=project,
+                    normalized_brief=normalized,
+                    variant_count=int(variant_count),
+                    target_track=target_track,
+                    reference_asset=reference_asset,
+                    provider_name=existing.provider,
+                    model_name=existing.model_name,
+                )
+            if not matches:
+                raise MusicLifecycleError(
+                    "Idempotency key was already used for another request.",
+                    code="MUSIC_IDEMPOTENCY_CONFLICT",
+                    http_status=409,
+                )
+            return existing, True
+    if persisted_snapshot:
+        restored = resolved_from_snapshot(persisted_snapshot)
+        if (
+            restored.route.backend_name == "mock"
+            and not restored.route.configured()
+        ):
+            raise MusicProviderError(
+                "The mock audio model is disabled.",
+                code="MUSIC_MODEL_NOT_CONFIGURED",
+                http_status=503,
+                retryable=False,
+            )
+        effective_provider = restored.route.backend_name
+        effective_model = restored.route.model_id
+        capabilities = restored.model.capabilities
+        pricing = pricing_from_snapshot(persisted_snapshot)
+        provider = get_music_provider(
+            effective_provider,
+            model_name=effective_model,
+        )
+    else:
+        resolved = (
+            resolve_audio_model(model_key)
+            if model_key or not provider_name
+            else resolve_legacy_audio_route(
+                provider_name,
+                model_name,
+                require_configured=True,
+            )
+        )
+        effective_provider = resolved.route.backend_name
+        effective_model = resolved.route.model_id
+        provider = get_music_provider(
+            effective_provider,
+            model_name=effective_model,
+        )
+        capabilities = resolved.model.capabilities
+        pricing = resolved.pricing(
+            int(variant_count),
+            duration_seconds=int(normalized["durationSeconds"]),
+        )
+        persisted_snapshot = resolved.snapshot(
+            int(variant_count),
+            duration_seconds=int(normalized["durationSeconds"]),
+        )
+        # Preserve dependency-injected providers used by existing integrations/tests.
+        if provider.name != effective_provider:
+            pricing = provider.pricing(int(variant_count))
+            persisted_snapshot["pricing"] = dict(pricing.snapshot)
+            persisted_snapshot["estimatedCostUsd"] = str(pricing.estimated_cost)
     _validate_intent(
         project=project,
         actor=actor,
@@ -316,16 +474,7 @@ def enqueue_music_job(
         variant_count=int(variant_count),
         target_track=target_track,
         reference_asset=reference_asset,
-        provider=provider,
-    )
-    fingerprint = _fingerprint(
-        project=project,
-        normalized_brief=normalized,
-        variant_count=int(variant_count),
-        target_track=target_track,
-        reference_asset=reference_asset,
-        provider_name=provider.name,
-        model_name=effective_model,
+        capabilities=capabilities,
     )
     scene_context = _scene_context(project, normalized)
     try:
@@ -365,32 +514,22 @@ def enqueue_music_job(
                     reference_asset=reference_asset,
                     brief=normalized,
                     compiled_request=compiled,
-                    provider=provider.name,
+                    provider=effective_provider,
                     model_name=effective_model,
+                    provider_snapshot=persisted_snapshot,
                     variant_count=int(variant_count),
                     idempotency_key=key,
                     request_fingerprint=fingerprint,
                 )
-                if provider.name != "mock":
-                    raise MusicLifecycleError(
-                        "The selected music provider does not expose billing data.",
-                        code="GENERATION_PRICE_UNAVAILABLE",
-                        http_status=503,
-                    )
                 reserve_generation(
                     user=actor,
                     domain="music",
                     job_id=str(job.id),
-                    provider=provider.name,
+                    provider=effective_provider,
                     model_name=effective_model,
-                    estimated_cost=Decimal("0"),
-                    reservation_amount=Decimal("0"),
-                    pricing_snapshot={
-                        "currency": "USD",
-                        "source": "local",
-                        "markup": "0",
-                        "creditUsdRate": "1",
-                    },
+                    estimated_cost=pricing.estimated_cost,
+                    reservation_amount=pricing.estimated_cost,
+                    pricing_snapshot=dict(pricing.snapshot),
                     project=project,
                     operation="generate",
                 )
@@ -542,6 +681,42 @@ def request_music_cancellation(
     return job
 
 
+def _settle_failed_music_job(job: MusicGenerationJob) -> None:
+    """Settle paid work conservatively when provider cost may exist."""
+
+    provider_result_received = bool(
+        isinstance(job.provider_metadata, Mapping)
+        and job.provider_metadata.get("resultReceived")
+    )
+    outcome_unknown = job.error_code == "MUSIC_PROVIDER_OUTCOME_UNKNOWN"
+    if not (provider_result_received or outcome_unknown):
+        release_generation(
+            domain="music",
+            job_id=str(job.id),
+            reason=job.error_code,
+        )
+        return
+    charge = generation_charge_payload("music", str(job.id)) or {}
+    estimated_cost = Decimal(str(charge.get("estimatedCost") or "0"))
+    capture_generation(
+        domain="music",
+        job_id=str(job.id),
+        actual_cost=estimated_cost,
+        provider_usage={
+            "costSource": (
+                "outcome-unknown-reservation"
+                if outcome_unknown
+                else "confirmed-provider-result"
+            ),
+            "costUsd": str(estimated_cost),
+            "selectedProvider": job.provider,
+            "selectedModel": job.model_name,
+            "settlementReason": job.error_code,
+        },
+        cost_is_estimate=outcome_unknown,
+    )
+
+
 @transaction.atomic
 def recover_stale_music_jobs(*, limit: int = 100) -> dict[str, list[uuid.UUID]]:
     """Recover expired leases without automatically duplicating unknown work."""
@@ -597,11 +772,7 @@ def recover_stale_music_jobs(*, limit: int = 100) -> dict[str, list[uuid.UUID]]:
         job.lease_expires_at = None
         job.save()
         if job.status == MusicJobStatus.FAILED:
-            release_generation(
-                domain="music",
-                job_id=str(job.id),
-                reason=job.error_code,
-            )
+            _settle_failed_music_job(job)
     return {"recovered": recovered, "failed": failed}
 
 
@@ -691,6 +862,21 @@ def release_music_job_for_poll(
 
 
 @transaction.atomic
+def mark_music_provider_result_received(
+    claimed: MusicGenerationJob,
+) -> MusicGenerationJob:
+    """Persist the paid-result boundary before local validation and storage."""
+
+    locked = _locked_owned_job(claimed)
+    metadata = dict(locked.provider_metadata or {})
+    metadata["resultReceived"] = True
+    locked.provider_metadata = metadata
+    locked.save(update_fields=("provider_metadata", "updated_at"))
+    claimed.provider_metadata = metadata
+    return locked
+
+
+@transaction.atomic
 def finalize_music_job(
     claimed: MusicGenerationJob,
     candidates: Sequence[PersistedAudioCandidate],
@@ -755,11 +941,20 @@ def finalize_music_job(
     locked.error_http_status = None
     locked.error_retryable = None
     locked.save()
+    charge = generation_charge_payload("music", str(locked.id)) or {}
+    actual_cost = Decimal(str(charge.get("estimatedCost") or "0"))
     capture_generation(
         domain="music",
         job_id=str(locked.id),
-        actual_cost=Decimal("0"),
-        provider_usage={"costSource": "local", "costUsd": "0"},
+        actual_cost=actual_cost,
+        provider_usage={
+            "costSource": (
+                "local" if locked.provider == "mock" else "fixed-provider-price"
+            ),
+            "costUsd": str(actual_cost),
+            "selectedProvider": locked.provider,
+            "selectedModel": locked.model_name,
+        },
         cost_is_estimate=False,
     )
     return locked
@@ -773,6 +968,7 @@ def fail_music_job(
     detail: str,
     http_status: int = 502,
     retryable: bool = False,
+    cost_incurred: bool = False,
 ) -> bool:
     """Persist a safe failure only if the supplied lease fence is current."""
 
@@ -788,17 +984,17 @@ def fail_music_job(
     locked.error_detail = str(detail)[:500]
     locked.error_http_status = max(400, min(int(http_status), 599))
     locked.error_retryable = bool(retryable)
+    if cost_incurred:
+        metadata = dict(locked.provider_metadata or {})
+        metadata["resultReceived"] = True
+        locked.provider_metadata = metadata
     locked.completed_at = now
     locked.heartbeat_at = now
     locked.lease_token = None
     locked.lease_expires_at = None
     locked.next_poll_at = None
     locked.save()
-    release_generation(
-        domain="music",
-        job_id=str(locked.id),
-        reason=locked.error_code,
-    )
+    _settle_failed_music_job(locked)
     return True
 
 
@@ -870,6 +1066,8 @@ def retry_music_job(
             reference_asset=locked.reference_asset,
             provider_name=locked.provider,
             model_name=locked.model_name,
+            model_key=str((locked.provider_snapshot or {}).get("modelKey") or ""),
+            provider_snapshot=locked.provider_snapshot,
         )
         retry.retry_of = locked
         retry.max_attempts = locked.max_attempts

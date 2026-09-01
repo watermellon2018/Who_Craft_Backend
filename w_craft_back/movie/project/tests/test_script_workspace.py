@@ -83,6 +83,10 @@ class ScriptWorkspaceApiTests(TestCase):
     def characters_url(self) -> str:
         return f"/api/projects/{self.project.id}/characters/"
 
+    @property
+    def missing_characters_url(self) -> str:
+        return f"/api/projects/{self.project.id}/scenes/missing-characters/"
+
     def token(self, key: UserKey) -> dict:
         return {"HTTP_X_USER_TOKEN": str(key.key)}
 
@@ -236,6 +240,220 @@ class ScriptWorkspaceApiTests(TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()["code"], "VERSION_CONFLICT")
 
+    def test_reorder_scenes_updates_order_and_acts_atomically(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            act=1,
+            updated_by=self.owner,
+        )
+        third = Scene.objects.create(
+            project=self.project,
+            title="Street",
+            order=3,
+            act=3,
+            updated_by=self.owner,
+        )
+
+        response = self.client.patch(
+            f"{self.scenes_url}reorder/",
+            {
+                "scenes": [
+                    {
+                        "id": second.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                    {
+                        "id": first.id,
+                        "order": 2,
+                        "act": 2,
+                        "version": first.version,
+                    },
+                    {
+                        "id": third.id,
+                        "order": 3,
+                        "act": 3,
+                        "version": third.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [
+                (item["id"], item["order"], item["act"])
+                for item in response.json()["scenes"]
+            ],
+            [(second.id, 1, 1), (first.id, 2, 2), (third.id, 3, 3)],
+        )
+        first.refresh_from_db()
+        second.refresh_from_db()
+        third.refresh_from_db()
+        self.assertEqual(first.version, first_payload["version"] + 1)
+        self.assertEqual(second.version, 2)
+        self.assertEqual(third.version, 1)
+        self.assertEqual(second.updated_by, self.editor)
+
+    def test_reorder_scenes_rejects_invalid_or_stale_payload_without_changes(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            updated_by=self.owner,
+        )
+        reorder_url = f"{self.scenes_url}reorder/"
+
+        duplicate_order = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {"id": first.id, "order": 1, "act": 1, "version": first.version},
+                    {"id": second.id, "order": 1, "act": 1, "version": second.version},
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(duplicate_order.status_code, 400)
+
+        incomplete = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    }
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(incomplete.status_code, 400)
+
+        stale = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {"id": second.id, "order": 1, "act": 1, "version": 999},
+                    {"id": first.id, "order": 2, "act": 2, "version": first.version},
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["code"], "VERSION_CONFLICT")
+        self.assertEqual(
+            list(
+                Scene.objects.filter(project=self.project)
+                .order_by("order")
+                .values_list("id", "order")
+            ),
+            [(first.id, 1), (second.id, 2)],
+        )
+
+        forbidden = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    },
+                    {
+                        "id": second.id,
+                        "order": 2,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        unauthorized = self.client.patch(
+            reorder_url,
+            {
+                "scenes": [
+                    {
+                        "id": first.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": first.version,
+                    },
+                    {
+                        "id": second.id,
+                        "order": 2,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(unauthorized.status_code, 401)
+
+    def test_reorder_uses_safe_temporary_orders_for_legacy_large_values(self):
+        first_payload = self.create_scene()
+        first = Scene.objects.get(pk=first_payload["id"])
+        Scene.objects.filter(pk=first.id).update(order=2_147_483_647)
+        first.refresh_from_db()
+        second = Scene.objects.create(
+            project=self.project,
+            title="Hall",
+            order=2,
+            updated_by=self.owner,
+        )
+
+        response = self.client.patch(
+            f"{self.scenes_url}reorder/",
+            {
+                "scenes": [
+                    {
+                        "id": second.id,
+                        "order": 1,
+                        "act": 1,
+                        "version": second.version,
+                    },
+                    {
+                        "id": first.id,
+                        "order": 2,
+                        "act": 2,
+                        "version": first.version,
+                    },
+                ]
+            },
+            format="json",
+            **self.token(self.editor_key),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            list(
+                Scene.objects.filter(project=self.project)
+                .order_by("order")
+                .values_list("id", "order")
+            ),
+            [(second.id, 1), (first.id, 2)],
+        )
+
     def test_legacy_script_text_serializes_as_fallback_block(self):
         scene = Scene.objects.create(
             project=self.project,
@@ -325,3 +543,263 @@ class ScriptWorkspaceApiTests(TestCase):
             ).json()["characters"]
         ]
         self.assertIn("Quick", visible_names)
+
+    def test_missing_characters_access_uses_project_view_permission(self):
+        self.assertEqual(self.client.get(self.missing_characters_url).status_code, 401)
+        self.assertEqual(
+            self.client.get(
+                self.missing_characters_url,
+                **self.token(self.outsider_key),
+            ).status_code,
+            403,
+        )
+        response = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"characters": []})
+
+    def test_missing_characters_dialogue_boundary_and_automatic_refresh(self):
+        blocks = [
+            {"id": "mira", "type": "character", "text": "  Ｍira\t Ivanova  "},
+            *[
+                {"id": f"line-{index}", "type": "dialogue", "text": "Line"}
+                for index in range(4)
+            ],
+            {"id": "remark", "type": "remark", "text": "quietly"},
+            {"id": "line-5", "type": "dialogue", "text": "Fifth line"},
+            {"id": "reset", "type": "action", "text": "Mira leaves"},
+            {"id": "orphan", "type": "dialogue", "text": "Not Mira's line"},
+        ]
+        scene = Scene.objects.create(
+            project=self.project,
+            title="Boundary",
+            script_blocks=blocks,
+            updated_by=self.owner,
+        )
+
+        first = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json(), {"characters": []})
+
+        draft = StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Mira Ivanova",
+            role=CharacterRole.MAIN,
+            status=CharacterStatus.DRAFT,
+        )
+        draft_is_significant = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(
+            draft_is_significant.json(),
+            {
+                "characters": [
+                    {"name": "Mira Ivanova", "dialogueCount": 5, "sceneCount": 1}
+                ]
+            },
+        )
+
+        scene.script_blocks = [
+            *blocks,
+            {"id": "other", "type": "character", "text": "Other"},
+            {
+                "id": "line-6",
+                "type": "dialogue",
+                "text": "Explicit Mira line",
+                "characterId": str(draft.character_id),
+            },
+        ]
+        scene.save(update_fields=["script_blocks"])
+        refreshed = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(
+            refreshed.json(),
+            {
+                "characters": [
+                    {"name": "Mira Ivanova", "dialogueCount": 6, "sceneCount": 1}
+                ]
+            },
+        )
+
+        draft.status = CharacterStatus.ACTIVE
+        draft.save(update_fields=["status"])
+        resolved = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(resolved.json(), {"characters": []})
+
+    def test_missing_character_in_two_scenes_is_significant_and_names_collapse(self):
+        Scene.objects.create(
+            project=self.project,
+            title="First ghost scene",
+            order=1,
+            script_blocks=[
+                {"id": "ghost-1", "type": "character", "text": "  GHOST   VOICE "}
+            ],
+            updated_by=self.owner,
+        )
+        Scene.objects.create(
+            project=self.project,
+            title="Second ghost scene",
+            order=2,
+            script_blocks=[
+                {"id": "ghost-2", "type": "character", "text": "ghost voice"}
+            ],
+            updated_by=self.owner,
+        )
+
+        response = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(
+            response.json(),
+            {
+                "characters": [
+                    {"name": "GHOST VOICE", "dialogueCount": 0, "sceneCount": 2}
+                ]
+            },
+        )
+
+    def test_visible_character_name_matches_resolve_without_scene_links(self):
+        StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Mira Ivanova",
+            status=CharacterStatus.ACTIVE,
+        )
+        StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Clara",
+            status=CharacterStatus.REFERENCES_LOCKED,
+        )
+        StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Mira Ivanova",
+            status=CharacterStatus.DRAFT,
+        )
+        for order in (1, 2):
+            Scene.objects.create(
+                project=self.project,
+                title=f"Matched {order}",
+                order=order,
+                script_blocks=[
+                    {
+                        "id": f"mira-{order}",
+                        "type": "character",
+                        "text": " ＭIRA   IVANOVA ",
+                    },
+                    {
+                        "id": f"clara-{order}",
+                        "type": "character",
+                        "text": "CLARA",
+                    },
+                ],
+                updated_by=self.owner,
+            )
+
+        response = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(response.json(), {"characters": []})
+
+    def test_episodic_and_cameo_matches_are_excluded(self):
+        episodic = StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Courier",
+            role=CharacterRole.EPISODIC,
+            status=CharacterStatus.DRAFT,
+        )
+        StudioCharacter.objects.create(
+            project=self.project,
+            user=self.owner_key,
+            name="Passerby",
+            role=CharacterRole.CAMEO,
+            status=CharacterStatus.DRAFT,
+        )
+        Scene.objects.create(
+            project=self.project,
+            title="Minor roles",
+            script_blocks=[
+                {
+                    "id": "courier",
+                    "type": "character",
+                    "text": "Courier",
+                    "characterId": str(episodic.character_id),
+                },
+                *[
+                    {"id": f"courier-{index}", "type": "dialogue", "text": "Line"}
+                    for index in range(6)
+                ],
+                {"id": "reset", "type": "action", "text": "The courier leaves"},
+                {"id": "passerby", "type": "character", "text": "passerby"},
+                *[
+                    {"id": f"passerby-{index}", "type": "dialogue", "text": "Line"}
+                    for index in range(6)
+                ],
+            ],
+            updated_by=self.owner,
+        )
+
+        response = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(response.json(), {"characters": []})
+
+    def test_ambiguous_duplicate_names_do_not_resolve_missing_character(self):
+        for status_value in (
+            CharacterStatus.ACTIVE,
+            CharacterStatus.REFERENCES_LOCKED,
+        ):
+            StudioCharacter.objects.create(
+                project=self.project,
+                user=self.owner_key,
+                name="Duplicate",
+                status=status_value,
+            )
+        Scene.objects.create(
+            project=self.project,
+            title="Ambiguous first",
+            order=1,
+            script_blocks=[
+                {"id": "duplicate-1", "type": "character", "text": "Duplicate"}
+            ],
+            updated_by=self.owner,
+        )
+        Scene.objects.create(
+            project=self.project,
+            title="Ambiguous second",
+            order=2,
+            script_blocks=[
+                {"id": "duplicate-2", "type": "character", "text": "duplicate"}
+            ],
+            updated_by=self.owner,
+        )
+
+        response = self.client.get(
+            self.missing_characters_url,
+            **self.token(self.viewer_key),
+        )
+        self.assertEqual(
+            response.json(),
+            {
+                "characters": [
+                    {"name": "Duplicate", "dialogueCount": 0, "sceneCount": 2}
+                ]
+            },
+        )

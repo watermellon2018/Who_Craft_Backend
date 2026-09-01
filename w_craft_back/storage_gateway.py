@@ -848,6 +848,18 @@ def signed_url_for_music_asset(asset, request=None) -> str | None:
     )
 
 
+def signed_url_for_sound_effect_asset(asset, request=None) -> str | None:
+    """Issue a project-scoped signed URL for a sound-effect asset."""
+
+    if asset is None:
+        return None
+    return signed_url_for_file(
+        asset.file,
+        request,
+        project=asset.project,
+    )
+
+
 def storage_key_from_legacy_url(raw_url: str | None) -> str | None:
     """Extract a local storage key from an old ``/media/...`` URL."""
 

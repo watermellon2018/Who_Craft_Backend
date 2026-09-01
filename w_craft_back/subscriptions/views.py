@@ -98,6 +98,8 @@ class ChannelSubscribeView(APIView):
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         try:
             state = services.subscribe(user, int(user_id))
+        except services.AccountInactiveError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
         except services.SelfSubscriptionError as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except services.TargetNotFoundError as e:
@@ -110,6 +112,8 @@ class ChannelSubscribeView(APIView):
             return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         try:
             state = services.unsubscribe(user, int(user_id))
+        except services.AccountInactiveError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
         except services.SelfSubscriptionError as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except services.SubscriptionNotFoundError as e:
@@ -144,6 +148,8 @@ class ChannelSubscriptionSettingsView(APIView):
                 is_favorite=is_favorite,
                 notifications_enabled=notifications_enabled,
             )
+        except services.AccountInactiveError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
         except services.SubscriptionNotFoundError as e:
             return Response({'detail': str(e)}, status=status.HTTP_404_NOT_FOUND)
         return Response({'success': True, 'subscription': _state_to_payload(state)})

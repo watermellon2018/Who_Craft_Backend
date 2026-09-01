@@ -2,7 +2,8 @@
 Dashboard-related models for the project page (/project-list/project).
 
 Note on Character: a new Character model is intentionally NOT introduced here.
-The canonical character entity is `w_craft_back.character_studio.models.StudioCharacter`,
+The canonical character entity is
+`w_craft_back.character_studio.models.StudioCharacter`,
 which already has a `project` FK, name, role choices, status, and timestamps.
 SceneCharacter therefore links Scene -> StudioCharacter directly.
 """
@@ -528,6 +529,172 @@ class ProjectAsset(models.Model):
 
     def __str__(self):
         return f"{self.asset_type}:{self.title or self.file.name}"
+
+
+class SceneStoryboard(models.Model):
+    """Storyboard accepted for one concrete revision of a scene."""
+
+    scene = models.OneToOneField(
+        Scene,
+        on_delete=models.CASCADE,
+        related_name="storyboard",
+    )
+    asset = models.ForeignKey(
+        ProjectAsset,
+        on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
+        related_name="scene_storyboards",
+    )
+    source_scene_version = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)]
+    )
+    confirmed_scene_version = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_scene_storyboards",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_scene_storyboards",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["source_scene_version"]),
+            models.Index(fields=["confirmed_scene_version"]),
+        ]
+
+    @property
+    def accepted_scene_version(self) -> int:
+        return max(
+            self.source_scene_version,
+            self.confirmed_scene_version or 0,
+        )
+
+    @property
+    def needs_review(self) -> bool:
+        return self.accepted_scene_version != self.scene.version
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.scene_id and self.asset_id:
+            if self.asset.project_id != self.scene.project_id:
+                errors["asset"] = "Storyboard asset must belong to the scene project."
+            if self.asset.asset_type != AssetType.STORYBOARD:
+                errors["asset"] = "Storyboard asset must have storyboard type."
+        if self.scene_id:
+            if self.source_scene_version > self.scene.version:
+                errors["source_scene_version"] = (
+                    "Source scene version cannot be newer than the scene."
+                )
+            if (
+                self.confirmed_scene_version is not None
+                and self.confirmed_scene_version > self.scene.version
+            ):
+                errors["confirmed_scene_version"] = (
+                    "Confirmed scene version cannot be newer than the scene."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Storyboard[{self.scene_id}]@{self.accepted_scene_version}"
+
+
+class VideoShot(models.Model):
+    """One planned video shot; generation attempts live outside this row."""
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="video_shots",
+    )
+    scene = models.ForeignKey(
+        Scene,
+        on_delete=models.CASCADE,
+        related_name="video_shots",
+    )
+    title = models.CharField(max_length=255, blank=True, default="")
+    order = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    final_asset = models.ForeignKey(
+        ProjectAsset,
+        on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
+        related_name="final_for_video_shots",
+    )
+    version = models.PositiveIntegerField(default=1)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_video_shots",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_video_shots",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scene__order", "order", "created_at"]
+        indexes = [
+            models.Index(fields=["project", "scene", "order"]),
+            models.Index(fields=["project", "final_asset"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scene", "order"],
+                name="uniq_video_shot_order_per_scene",
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        errors = {}
+        if self.scene_id and self.project_id:
+            if self.scene.project_id != self.project_id:
+                errors["scene"] = "Video shot scene must belong to the project."
+        if self.final_asset_id and self.project_id:
+            if self.final_asset.project_id != self.project_id:
+                errors["final_asset"] = "Final video asset must belong to the project."
+            if self.final_asset.asset_type != AssetType.VIDEO:
+                errors["final_asset"] = "Final video asset must have video type."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Shot[{self.scene_id}:{self.order}]"
 
 
 class ProjectProgress(models.Model):

@@ -8,6 +8,18 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from w_craft_back.movie.music.providers import (
+    MusicProviderError,
+    resolve_audio_model,
+)
+from w_craft_back.movie.sound_effects.errors import SoundEffectError
+from w_craft_back.movie.sound_effects.providers.elevenlabs import (
+    MODEL_KEY as SOUND_EFFECT_MODEL_KEY,
+)
+from w_craft_back.movie.sound_effects.providers.registry import (
+    get_sound_effect_provider,
+)
+
 from .models import CreditAccount, CreditLedgerEntry, CreditOperationType
 from .pricing import GenerationEstimate
 from .serializers import (
@@ -207,7 +219,82 @@ class GenerationEstimateView(APIView):
             return _validation_error(serializer)
         data = serializer.validated_data
         try:
-            if data["domain"] in {"music", "model3d"}:
+            if data["domain"] == "music":
+                resolved = resolve_audio_model(data.get("modelKey") or None)
+                capabilities = resolved.model.capabilities
+                if data["variantCount"] not in capabilities.variant_counts:
+                    raise MusicProviderError(
+                        "The selected music provider does not support "
+                        "this variant count.",
+                        code="MUSIC_CAPABILITY_UNSUPPORTED",
+                        http_status=400,
+                        retryable=False,
+                    )
+                pricing = resolved.pricing(
+                    data["variantCount"],
+                    duration_seconds=(
+                        int(data["durationSeconds"])
+                        if data.get("durationSeconds") is not None
+                        else None
+                    ),
+                )
+                estimate = GenerationEstimate(
+                    provider=resolved.route.backend_name,
+                    model_key=resolved.model.key,
+                    model_name=resolved.route.model_id,
+                    currency="USD",
+                    estimated_cost=pricing.estimated_cost,
+                    reservation_amount=pricing.estimated_cost,
+                    pricing_source=str(
+                        pricing.snapshot.get("source")
+                        or resolved.route.backend_name
+                    ),
+                    prompt_tokens_estimate=0,
+                    snapshot=dict(pricing.snapshot),
+                )
+                routing_mode = "manual"
+                routing_reason = "cheapest-configured-audio-route"
+                route_candidates = [
+                    {
+                        "provider": resolved.route.backend_name,
+                        "modelKey": resolved.model.key,
+                        "modelName": resolved.route.model_id,
+                        "estimatedCost": _credit(pricing.estimated_cost),
+                    }
+                ]
+            elif data["domain"] == "sound_effect":
+                requested_model = str(data.get("modelKey") or SOUND_EFFECT_MODEL_KEY)
+                if requested_model != SOUND_EFFECT_MODEL_KEY:
+                    raise SoundEffectError(
+                        "The selected sound-effect model is unknown.",
+                        code="SOUND_EFFECT_MODEL_UNKNOWN",
+                    )
+                provider = get_sound_effect_provider()
+                pricing = provider.pricing(data.get("durationSeconds"))
+                estimate = GenerationEstimate(
+                    provider=provider.name,
+                    model_key=provider.model_key,
+                    model_name=provider.model_name,
+                    currency="USD",
+                    estimated_cost=pricing.estimated_cost,
+                    reservation_amount=pricing.estimated_cost,
+                    pricing_source=str(
+                        pricing.snapshot.get("source") or provider.name
+                    ),
+                    prompt_tokens_estimate=0,
+                    snapshot=dict(pricing.snapshot),
+                )
+                routing_mode = "manual"
+                routing_reason = "configured-sound-effect-route"
+                route_candidates = [
+                    {
+                        "provider": provider.name,
+                        "modelKey": provider.model_key,
+                        "modelName": provider.model_name,
+                        "estimatedCost": _credit(pricing.estimated_cost),
+                    }
+                ]
+            elif data["domain"] == "model3d":
                 estimate = GenerationEstimate(
                     provider="local",
                     model_key="local",
@@ -229,7 +316,11 @@ class GenerationEstimateView(APIView):
                 route_candidates = []
             else:
                 model_key = data["modelKey"] or (
-                    getattr(getattr(request.user, "profile", None), "image_generation_model", "")
+                    getattr(
+                        getattr(request.user, "profile", None),
+                        "image_generation_model",
+                        "",
+                    )
                     or get_default_key()
                 )
                 decision = build_routing_decision(
@@ -251,6 +342,16 @@ class GenerationEstimateView(APIView):
                 {"code": error.code, "detail": error.message},
                 status=error.http_status,
             )
+        except MusicProviderError as error:
+            return Response(
+                {"code": error.code, "detail": error.message},
+                status=error.http_status,
+            )
+        except SoundEffectError as error:
+            return Response(
+                {"code": error.code, "detail": error.detail},
+                status=error.http_status,
+            )
         account = get_or_create_account(request.user)
         return Response(
             {
@@ -263,7 +364,7 @@ class GenerationEstimateView(APIView):
                 "estimatedCost": _credit(estimate.estimated_cost),
                 "reservationAmount": _credit(
                     decision.reservation_amount
-                    if data["domain"] not in {"music", "model3d"}
+                    if data["domain"] not in {"music", "sound_effect", "model3d"}
                     else estimate.reservation_amount
                 ),
                 "pricingSource": estimate.pricing_source,
@@ -273,7 +374,11 @@ class GenerationEstimateView(APIView):
                     not account.is_frozen
                     and account.available_balance >= (
                         decision.reservation_amount
-                        if data["domain"] not in {"music", "model3d"}
+                        if data["domain"] not in {
+                            "music",
+                            "sound_effect",
+                            "model3d",
+                        }
                         else estimate.reservation_amount
                     )
                 ),

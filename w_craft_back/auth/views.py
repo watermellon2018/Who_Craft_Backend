@@ -15,6 +15,7 @@ from w_craft_back.auth.models import IssuedUserTokens, UserKey
 from w_craft_back.auth.serializers import UserSerializer
 from w_craft_back.auth.tokens import (
     RefreshTokenRejected,
+    revoke_all_user_tokens,
     rotate_refresh_token,
     rotate_user_tokens,
 )
@@ -103,5 +104,13 @@ class LogoutView(APIView):
         user_key = request.auth
         if not isinstance(user_key, UserKey):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
-        user_key.revoke()
+        revoke_all_user_tokens(request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class LogoutAllView(APIView):
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        revoke_all_user_tokens(request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)

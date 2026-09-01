@@ -164,6 +164,67 @@ class OpenRouterCatalogTest(TestCase):
         self.assertEqual(first, second)
         session.get.assert_called_once()
 
+    def test_catalog_enriches_models_from_definitive_endpoint_pricing(self):
+        payload = _catalog_payload()
+        payload["data"][0].pop("pricing")
+        session = _session()
+        session.get.side_effect = [
+            _response(200, payload),
+            _response(200, {
+                "id": "openai/gpt-image-2",
+                "endpoints": [{
+                    "provider_name": "OpenAI",
+                    "provider_slug": "openai",
+                    "pricing": [
+                        {
+                            "billable": "input_image",
+                            "unit": "image",
+                            "cost_usd": 0.003,
+                        },
+                        {
+                            "billable": "output_image",
+                            "unit": "image",
+                            "cost_usd": 0.04,
+                            "variant": "1k",
+                        },
+                    ],
+                }],
+            }),
+        ]
+
+        spec = discover_openrouter_image_models(session=session)[0]
+
+        self.assertEqual(spec.provider_pricing["source"], "openrouter")
+        self.assertEqual(
+            spec.provider_pricing["catalog"][1],
+            {
+                "billable": "output_image",
+                "unit": "image",
+                "cost_usd": "0.04",
+                "variant": "1k",
+                "provider": "openai",
+            },
+        )
+        self.assertTrue(
+            session.get.call_args_list[1].args[0].endswith(
+                "/images/models/openai/gpt-image-2/endpoints"
+            )
+        )
+
+    def test_endpoint_pricing_failure_keeps_other_catalog_data(self):
+        payload = _catalog_payload()
+        payload["data"][0].pop("pricing")
+        session = _session()
+        session.get.side_effect = [
+            _response(200, payload),
+            _response(503, {"error": "temporarily unavailable"}),
+        ]
+
+        spec = discover_openrouter_image_models(session=session)[0]
+
+        self.assertEqual(spec.key, "openrouter-images:openai/gpt-image-2")
+        self.assertEqual(spec.provider_pricing, {})
+
     def test_catalog_uses_last_known_good_after_refresh_error(self):
         session = _session(get_response=_response(200, _catalog_payload()))
         expected = discover_openrouter_image_models(session=session)
@@ -324,6 +385,24 @@ class OpenRouterProviderTest(TestCase):
             "data:image/png;base64,"
         ))
 
+    def test_multiple_references_are_preserved_and_limits_checked(self):
+        session = _session(post_response=_response(200, {
+            "data": [{"b64_json": PNG_B64}],
+        }))
+        provider = self._provider(session)
+        images = provider.generate_with_references(
+            "Scene condition and identity", [PNG_BYTES, PNG_BYTES],
+            aspect_ratio="16:9",
+        )
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
+        payload = session.post.call_args.kwargs["json"]
+        self.assertEqual(len(payload["input_references"]), 2)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        session.post.reset_mock()
+        with self.assertRaises(ImageProviderError):
+            provider.generate_with_references("Too many", [PNG_BYTES] * 3)
+        session.post.assert_not_called()
+
     def test_error_statuses_are_mapped_without_raw_body(self):
         cases = {
             400: (CODE_BAD_RESPONSE, 400),
@@ -347,7 +426,13 @@ class OpenRouterProviderTest(TestCase):
                     )
                 )
                 provider = self._provider(session)
-                with self.assertRaises(ImageProviderError) as captured:
+                with (
+                    mock.patch(
+                        "w_craft_back.services.image_generation."
+                        "openrouter_images.time.sleep"
+                    ),
+                    self.assertRaises(ImageProviderError) as captured,
+                ):
                     provider.generate("cat")
                 self.assertEqual(
                     (captured.exception.code, captured.exception.http_status),
@@ -355,6 +440,34 @@ class OpenRouterProviderTest(TestCase):
                 )
                 self.assertIsNone(captured.exception.provider_body)
                 self.assertEqual(captured.exception.provider_body_length, 14)
+
+    def test_explicit_transient_response_retries_before_success(self):
+        session = _session()
+        session.post.side_effect = [
+            _response(503, {"error": {"message": "temporary"}}),
+            _response(200, {"data": [{"b64_json": PNG_B64}]}),
+        ]
+        provider = self._provider(session)
+
+        with mock.patch(
+            "w_craft_back.services.image_generation.openrouter_images.time.sleep"
+        ) as sleep:
+            images = provider.generate("cat")
+
+        self.assertEqual(images, [NORMALIZED_PNG_BYTES])
+        self.assertEqual(session.post.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_transport_failure_is_not_retried_after_request_may_be_sent(self):
+        session = _session()
+        session.post.side_effect = requests.ConnectionError("connection reset")
+        provider = self._provider(session)
+
+        with self.assertRaises(ImageProviderError) as captured:
+            provider.generate("cat")
+
+        self.assertEqual(captured.exception.code, CODE_UNAVAILABLE)
+        session.post.assert_called_once()
 
     def test_content_policy_error_is_classified_without_raw_body(self):
         session = _session(

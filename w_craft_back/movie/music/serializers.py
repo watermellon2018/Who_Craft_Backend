@@ -274,7 +274,16 @@ class MusicBriefSerializer(serializers.Serializer):
 
 
 class GenerationCreateSerializer(serializers.Serializer):
-    targetTrackId = serializers.IntegerField(min_value=1, allow_null=True, required=False)
+    modelKey = serializers.CharField(
+        max_length=64,
+        required=False,
+        allow_blank=False,
+    )
+    targetTrackId = serializers.IntegerField(
+        min_value=1,
+        allow_null=True,
+        required=False,
+    )
     referenceAssetId = serializers.UUIDField(allow_null=True, required=False)
     variantCount = serializers.ChoiceField(choices=VARIANT_COUNTS, default=2)
     brief = MusicBriefSerializer()

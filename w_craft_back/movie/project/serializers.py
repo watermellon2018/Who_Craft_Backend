@@ -178,7 +178,11 @@ class ProjectUpdateSerializer(serializers.Serializer):
 
 class CharacterCreateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
-    short_description = serializers.CharField(allow_blank=True, required=False, default="")
+    short_description = serializers.CharField(
+        allow_blank=True,
+        required=False,
+        default="",
+    )
     role = serializers.ChoiceField(
         choices=CharacterRole.choices,
         required=False,
@@ -282,6 +286,61 @@ class SceneWorkspaceCreateSerializer(_SceneWriteSerializer):
 
 class SceneWorkspaceUpdateSerializer(_SceneWriteSerializer):
     version = serializers.IntegerField(min_value=1, required=True)
+
+
+class SceneOrderItemSerializer(serializers.Serializer):
+    id = serializers.IntegerField(min_value=1)
+    order = serializers.IntegerField(min_value=1)
+    act = serializers.IntegerField(min_value=1, max_value=3)
+    version = serializers.IntegerField(min_value=1)
+
+
+class SceneReorderSerializer(serializers.Serializer):
+    scenes = SceneOrderItemSerializer(many=True, allow_empty=True)
+
+    def validate_scenes(self, value):
+        scene_ids = [item["id"] for item in value]
+        orders = [item["order"] for item in value]
+        if len(scene_ids) != len(set(scene_ids)):
+            raise serializers.ValidationError("Scene ids must be unique")
+        if len(orders) != len(set(orders)):
+            raise serializers.ValidationError("Scene orders must be unique")
+        if sorted(orders) != list(range(1, len(value) + 1)):
+            raise serializers.ValidationError(
+                "Scene orders must form a continuous sequence"
+            )
+        return value
+
+
+class SceneStoryboardUpdateSerializer(serializers.Serializer):
+    assetId = serializers.IntegerField(min_value=1)
+    sourceSceneVersion = serializers.IntegerField(min_value=1)
+
+
+class SceneStoryboardConfirmSerializer(serializers.Serializer):
+    expectedSceneVersion = serializers.IntegerField(min_value=1)
+
+
+class VideoShotCreateSerializer(serializers.Serializer):
+    sceneId = serializers.IntegerField(min_value=1)
+    title = serializers.CharField(
+        max_length=255,
+        allow_blank=True,
+        required=False,
+        default="",
+    )
+    order = serializers.IntegerField(min_value=1, required=False)
+
+
+class VideoShotUpdateSerializer(serializers.Serializer):
+    version = serializers.IntegerField(min_value=1)
+    title = serializers.CharField(max_length=255, allow_blank=True, required=False)
+    order = serializers.IntegerField(min_value=1, required=False)
+    finalAssetId = serializers.IntegerField(
+        min_value=1,
+        allow_null=True,
+        required=False,
+    )
 
 
 class LocationCreateSerializer(serializers.Serializer):

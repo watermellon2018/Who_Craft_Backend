@@ -68,3 +68,18 @@ def rotate_refresh_token(raw_token: str) -> tuple[UserKey, IssuedUserTokens]:
         ):
             raise RefreshTokenRejected()
         return user_key, user_key.rotate_tokens()
+
+
+def revoke_all_user_tokens(user: User) -> bool:
+    """Revoke the user's current credential pair, if one exists.
+
+    ``UserKey`` is one-to-one with ``User`` and login/refresh always rotates that
+    pair, so revoking this row invalidates every access and refresh credential
+    that may still be held by any device.
+    """
+    with transaction.atomic():
+        user_key = UserKey.objects.select_for_update().filter(user=user).first()
+        if user_key is None:
+            return False
+        user_key.revoke()
+        return True

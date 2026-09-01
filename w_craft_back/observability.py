@@ -117,7 +117,14 @@ class SafeDjangoRequestFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         request = getattr(record, "request", None)
-        record.msg = "django_request_error"
+        status_code = getattr(record, "status_code", None)
+        try:
+            is_error = int(status_code) >= 400
+        except (TypeError, ValueError):
+            is_error = record.levelno >= logging.WARNING
+        record.msg = (
+            "django_request_error" if is_error else "django_request_completed"
+        )
         record.args = ()
         if request is not None:
             request_id = getattr(request, "request_id", None)

@@ -14,6 +14,8 @@ import datetime
 import os
 from pathlib import Path
 
+from w_craft_back.services.text_generation.registry import DEFAULT_TEXT_MODEL_ROUTES
+
 # Load environment variables from backend/.env (dev convenience).
 # This makes CHARACTER_STUDIO_IMAGE_PROVIDER / GEMINI_API_KEY available to Character Studio services.
 try:
@@ -268,6 +270,10 @@ LOGGING = {
 
 USER_KEY_ACCESS_TTL = datetime.timedelta(hours=1)
 USER_KEY_REFRESH_TTL = datetime.timedelta(days=30)
+STORYBOARD_SHOT_LIST_THROTTLE_RATE = os.getenv(
+    'STORYBOARD_SHOT_LIST_THROTTLE_RATE',
+    '10/min',
+).strip() or '10/min'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -284,6 +290,7 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '600/min',
         'auth': '10/min',
+        'storyboard_shot_list': STORYBOARD_SHOT_LIST_THROTTLE_RATE,
     },
 }
 
@@ -319,8 +326,197 @@ REFERENCE_ALLOW_MOCK = (
 REFERENCE_PROVIDER_TIMEOUT_SECONDS = int(
     os.getenv("REFERENCE_PROVIDER_TIMEOUT_SECONDS", "90")
 )
+STORYBOARD_SHOT_LIST_MODEL = os.getenv(
+    "STORYBOARD_SHOT_LIST_MODEL",
+    os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"),
+).strip()
+STORYBOARD_SHOT_LIST_MODELS = os.getenv(
+    "STORYBOARD_SHOT_LIST_MODELS",
+    ",".join(
+        (
+            STORYBOARD_SHOT_LIST_MODEL,
+            *DEFAULT_TEXT_MODEL_ROUTES,
+        )
+    ),
+).strip()
+STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS = int(
+    os.getenv("STORYBOARD_SHOT_LIST_TIMEOUT_SECONDS", "60")
+)
+STORYBOARD_PROVIDER_TIMEOUT_SECONDS = int(
+    os.getenv("STORYBOARD_PROVIDER_TIMEOUT_SECONDS", "120")
+)
+STORYBOARD_JOB_LEASE_SECONDS = int(
+    os.getenv("STORYBOARD_JOB_LEASE_SECONDS", "180")
+)
+# Music Studio uses the deterministic provider unless production explicitly
+# selects Stability AI. Paid generation requires the web and worker processes
+# to share these values.
+MUSIC_GENERATION_PROVIDER = os.getenv(
+    "MUSIC_GENERATION_PROVIDER", "mock"
+).strip().lower()
+MUSIC_ALLOW_MOCK = (
+    os.getenv("MUSIC_ALLOW_MOCK", "true" if DEBUG else "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+MUSIC_DEFAULT_AUDIO_MODEL = os.getenv(
+    "MUSIC_DEFAULT_AUDIO_MODEL", ""
+).strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "").strip()
+MUSIC_GEMINI_API_BASE_URL = os.getenv(
+    "MUSIC_GEMINI_API_BASE_URL",
+    "https://generativelanguage.googleapis.com",
+).rstrip("/")
+MUSIC_GEMINI_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_GEMINI_TIMEOUT_SECONDS", "180")
+)
+MUSIC_GEMINI_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_GEMINI_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_OPENROUTER_API_BASE_URL = os.getenv(
+    "MUSIC_OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1"
+).rstrip("/")
+MUSIC_OPENROUTER_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_OPENROUTER_TIMEOUT_SECONDS", "180")
+)
+MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_OPENROUTER_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_ELEVENLABS_API_BASE_URL = os.getenv(
+    "MUSIC_ELEVENLABS_API_BASE_URL", "https://api.elevenlabs.io"
+).rstrip("/")
+MUSIC_ELEVENLABS_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_ELEVENLABS_TIMEOUT_SECONDS", "180")
+)
+MUSIC_ELEVENLABS_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_ELEVENLABS_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_ELEVENLABS_COST_USD_PER_MINUTE = os.getenv(
+    "MUSIC_ELEVENLABS_COST_USD_PER_MINUTE", "0.15"
+).strip()
+MUSIC_MINIMAX_API_BASE_URL = os.getenv(
+    "MUSIC_MINIMAX_API_BASE_URL", "https://api.minimax.io"
+).rstrip("/")
+MUSIC_MINIMAX_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_MINIMAX_TIMEOUT_SECONDS", "180")
+)
+MUSIC_MINIMAX_RESPONSE_DEADLINE_SECONDS = min(
+    900.0,
+    max(
+        1.0,
+        float(os.getenv("MUSIC_MINIMAX_RESPONSE_DEADLINE_SECONDS", "300")),
+    ),
+)
+MUSIC_MINIMAX_COST_USD_PER_GENERATION = os.getenv(
+    "MUSIC_MINIMAX_COST_USD_PER_GENERATION", "0.15"
+).strip()
+MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED = (
+    os.getenv("MUSIC_MINIMAX_LEGACY_PAID_ACCESS_CONFIRMED", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+MUSIC_JOB_LEASE_SECONDS = max(
+    300,
+    int(os.getenv("MUSIC_JOB_LEASE_SECONDS", "300")),
+    int(
+        max(
+            MUSIC_GEMINI_TIMEOUT_SECONDS,
+            MUSIC_OPENROUTER_TIMEOUT_SECONDS,
+            MUSIC_ELEVENLABS_TIMEOUT_SECONDS,
+            MUSIC_MINIMAX_TIMEOUT_SECONDS,
+        )
+        + 120
+    ),
+)
+OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "").strip()
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY", "").strip()
+MUSIC_STABILITY_API_BASE_URL = os.getenv(
+    "MUSIC_STABILITY_API_BASE_URL", "https://api.stability.ai"
+).rstrip("/")
+MUSIC_STABILITY_MODEL = os.getenv(
+    "MUSIC_STABILITY_MODEL", "stable-audio-3"
+).strip()
+MUSIC_STABILITY_OUTPUT_FORMAT = os.getenv(
+    "MUSIC_STABILITY_OUTPUT_FORMAT", "mp3"
+).strip().lower()
+MUSIC_STABILITY_TIMEOUT_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_TIMEOUT_SECONDS", "30")
+)
+MUSIC_STABILITY_POLL_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_POLL_SECONDS", "10")
+)
+MUSIC_STABILITY_MAX_POLL_SECONDS = float(
+    os.getenv("MUSIC_STABILITY_MAX_POLL_SECONDS", "1800")
+)
+MUSIC_STABILITY_COST_USD_PER_VARIANT = os.getenv(
+    "MUSIC_STABILITY_COST_USD_PER_VARIANT", "0.26"
+).strip()
+
+# Sound Effects is a separate project domain even though it shares the same
+# ElevenLabs credential and private audio storage primitives with Music Studio.
+SOUND_EFFECTS_ELEVENLABS_API_BASE_URL = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_API_BASE_URL", "https://api.elevenlabs.io"
+).rstrip("/")
+SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS = float(
+    os.getenv("SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS", "90")
+)
+SOUND_EFFECTS_ELEVENLABS_RESPONSE_DEADLINE_SECONDS = min(
+    300.0,
+    max(
+        1.0,
+        float(
+            os.getenv(
+                "SOUND_EFFECTS_ELEVENLABS_RESPONSE_DEADLINE_SECONDS", "120"
+            )
+        ),
+    ),
+)
+SOUND_EFFECTS_ELEVENLABS_COST_USD_PER_MINUTE = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_COST_USD_PER_MINUTE", "0.12"
+).strip()
+SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD", ""
+).strip()
+SOUND_EFFECTS_ELEVENLABS_OUTPUT_FORMAT = os.getenv(
+    "SOUND_EFFECTS_ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128"
+).strip().lower()
+SOUND_EFFECTS_JOB_LEASE_SECONDS = max(
+    120,
+    int(os.getenv("SOUND_EFFECTS_JOB_LEASE_SECONDS", "240")),
+    int(SOUND_EFFECTS_ELEVENLABS_TIMEOUT_SECONDS + 120),
+)
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
+
+# Notification email delivery uses Django's standard backend. Production should
+# provide an SMTP service; tests override this with Django's in-memory backend.
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend',
+)
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '25'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_TIMEOUT = float(os.getenv('EMAIL_TIMEOUT', '10'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'false').lower() in {
+    '1', 'true', 'yes', 'on',
+}
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@wcraft.local')
 
 # Per-character 3D reconstruction. The web process stays in the lightweight
 # ``backend`` environment; the detached worker invokes these tools through the

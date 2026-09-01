@@ -32,16 +32,44 @@ from w_craft_back.movie.reference_library.lifecycle import (
 from w_craft_back.movie.reference_library.worker import (
     execute_next_reference_job,
 )
+from w_craft_back.movie.sound_effects.lifecycle import (
+    recover_stale_sound_effect_jobs,
+)
+from w_craft_back.movie.sound_effects.worker import (
+    execute_next_sound_effect_job,
+)
+from w_craft_back.movie.storyboard.lifecycle import (
+    recover_stale_storyboard_generations,
+)
+from w_craft_back.movie.storyboard.models import (
+    StoryboardGenerationStatus,
+    StoryboardKeyframeGeneration,
+)
+from w_craft_back.movie.storyboard.worker import execute_storyboard_generation
+from w_craft_back.movie.storyboard.editor_frames import (
+    execute_frame_job, recover_stale_frame_jobs,
+)
+from w_craft_back.movie.storyboard.shot_list_jobs import (
+    execute_shot_list_job,
+    recover_stale_shot_list_jobs,
+)
 
 
 class Command(BaseCommand):
-    help = "Poll selected durable character, poster, 3D, music and reference queues."
+    help = (
+        "Poll selected durable character, poster, 3D, music, sound-effect, "
+        "reference, and storyboard queues."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--queue",
             default="all",
-            help="Comma-separated character,poster,music,reference queues or all.",
+            help=(
+                "Comma-separated character,poster,music,sound_effect,reference,"
+                "storyboard "
+                "queues or all."
+            ),
         )
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-interval", type=float, default=2.0)
@@ -54,8 +82,22 @@ class Command(BaseCommand):
         raw_queues = str(options["queue"] or "all").lower().split(",")
         selected = {item.strip() for item in raw_queues if item.strip()}
         if "all" in selected:
-            selected = {"character", "poster", "music", "reference"}
-        unknown = selected - {"character", "poster", "music", "reference"}
+            selected = {
+                "character",
+                "poster",
+                "music",
+                "sound_effect",
+                "reference",
+                "storyboard",
+            }
+        unknown = selected - {
+            "character",
+            "poster",
+            "music",
+            "sound_effect",
+            "reference",
+            "storyboard",
+        }
         if unknown or not selected:
             raise CommandError(
                 "Unknown generation queue(s): " + ", ".join(sorted(unknown))
@@ -71,8 +113,12 @@ class Command(BaseCommand):
                 processed += self._poll_poster_jobs(batch_size)
             if "music" in selected:
                 processed += self._poll_music_jobs(batch_size)
+            if "sound_effect" in selected:
+                processed += self._poll_sound_effect_jobs(batch_size)
             if "reference" in selected:
                 processed += self._poll_reference_jobs(batch_size)
+            if "storyboard" in selected:
+                processed += self._poll_storyboard_jobs(batch_size)
             if not once:
                 close_old_connections()
             if once:
@@ -151,3 +197,49 @@ class Command(BaseCommand):
                 break
             processed += 1
         return processed
+
+    @staticmethod
+    def _poll_sound_effect_jobs(batch_size: int) -> int:
+        recover_stale_sound_effect_jobs(limit=batch_size)
+        processed = 0
+        while processed < batch_size:
+            job = execute_next_sound_effect_job()
+            if job is None:
+                break
+            processed += 1
+        return processed
+
+    @staticmethod
+    def _poll_storyboard_jobs(batch_size: int) -> int:
+        recover_stale_frame_jobs(limit=batch_size)
+        frame_processed = 0
+        while frame_processed < batch_size:
+            job = execute_frame_job()
+            if job is None:
+                break
+            frame_processed += 1
+        recover_stale_shot_list_jobs(limit=batch_size)
+        text_processed = 0
+        while text_processed < batch_size:
+            job = execute_shot_list_job()
+            if job is None:
+                break
+            text_processed += 1
+        recover_stale_storyboard_generations(limit=batch_size)
+        scan_limit = min(batch_size * 10, 1000)
+        job_ids = list(
+            StoryboardKeyframeGeneration.objects.filter(
+                status=StoryboardGenerationStatus.QUEUED,
+            ).order_by("created_at").values_list("id", flat=True)[:scan_limit]
+        )
+        processed = 0
+        for job_id in job_ids:
+            if processed >= batch_size:
+                break
+            execute_storyboard_generation(job_id)
+            current_status = StoryboardKeyframeGeneration.objects.filter(
+                pk=job_id,
+            ).values_list("status", flat=True).first()
+            if current_status != StoryboardGenerationStatus.QUEUED:
+                processed += 1
+        return processed + text_processed + frame_processed

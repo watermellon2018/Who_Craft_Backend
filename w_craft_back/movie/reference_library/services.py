@@ -294,12 +294,16 @@ def get_capabilities(*, actor: Any, project_id: int) -> dict[str, Any]:
             (project.generation_settings or {}).get("image_generation_model", "") or ""
         ).strip()
         try:
-            provider = resolve_reference_provider(
+            effective_model = effective_reference_model_key(
                 actor=actor,
                 project=project,
                 requested_model=project_model,
             )
-            effective_model = provider.model_id
+            provider = resolve_reference_provider(
+                actor=actor,
+                project=project,
+                requested_model=effective_model,
+            )
             can_edit_provider = provider.supports_edit()
         except ReferenceError:
             configured = False

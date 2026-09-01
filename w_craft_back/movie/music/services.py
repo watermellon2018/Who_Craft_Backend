@@ -333,6 +333,24 @@ def list_tracks(
 
 def get_capabilities(*, actor: User, project_id: int) -> dict:
     project = _project_for_action(actor, project_id, policy.Action.VIEW)
+    from w_craft_back.movie.music.providers.model_registry import (
+        default_audio_model_key,
+        get_audio_model_spec,
+        public_audio_model_catalog,
+        resolve_audio_model,
+    )
+
+    default_model_key = default_audio_model_key()
+    default_spec = get_audio_model_spec(default_model_key)
+    effective_capabilities = default_spec.capabilities.as_public_dict()
+    try:
+        resolved_default = resolve_audio_model(default_model_key)
+    except Exception:
+        resolved_default = None
+    if resolved_default is not None:
+        effective_capabilities["providerDisplayName"] = (
+            resolved_default.route.provider_display_name
+        )
     capabilities = {
         "contentModes": list(CONTENT_MODES),
         "variantCounts": list(VARIANT_COUNTS),
@@ -380,17 +398,15 @@ def get_capabilities(*, actor: User, project_id: int) -> dict:
         "providerDisplayName": "Music generator",
         "permissions": _permission_payload(actor, project),
     }
-    from w_craft_back.movie.music.providers.registry import (
-        get_music_provider_capabilities,
-    )
-
-    try:
-        capabilities.update(get_music_provider_capabilities())
-    except Exception as error:
-        adapted = _adapt_domain_error(error)
-        if adapted is None:
-            raise
-        raise adapted from error
+    capabilities.update(effective_capabilities)
+    capabilities["defaultModelKey"] = default_model_key
+    models = public_audio_model_catalog()
+    for model in models:
+        # Brief controls are product-level values shared by every provider.
+        # Include them in each model capability row so clients can project a
+        # complete form contract after switching models.
+        model["capabilities"]["briefFields"] = capabilities["briefFields"]
+    capabilities["models"] = models
     capabilities["permissions"] = _permission_payload(actor, project)
     return capabilities
 
@@ -903,6 +919,21 @@ def _job_error_payload(job) -> dict | None:
     }
 
 
+def _job_model_key(job) -> str:
+    snapshot_key = str((job.provider_snapshot or {}).get("modelKey") or "")
+    if snapshot_key:
+        return snapshot_key
+    from w_craft_back.movie.music.providers import (
+        MusicProviderError,
+        resolve_legacy_audio_route,
+    )
+
+    try:
+        return resolve_legacy_audio_route(job.provider, job.model_name).model.key
+    except MusicProviderError:
+        return str(job.model_name or job.provider)
+
+
 def _job_payload(
     job,
     actor: User,
@@ -917,6 +948,7 @@ def _job_payload(
     can_run_generation = bool(effective_permissions["canRunGeneration"])
     payload = {
         "jobId": str(job.id),
+        "modelKey": _job_model_key(job),
         "status": job.status,
         "stage": job.stage,
         "variantCount": job.variant_count,
@@ -950,6 +982,7 @@ def _enqueue_payload(job, *, idempotent_replay: bool) -> dict:
 
     return {
         "jobId": str(job.id),
+        "modelKey": _job_model_key(job),
         "status": job.status,
         "stage": job.stage,
         "idempotentReplay": idempotent_replay,
@@ -1021,6 +1054,7 @@ def enqueue_job(
             idempotency_key=key,
             target_track=target_track,
             reference_asset=reference_asset,
+            model_key=data.get("modelKey"),
         )
     except MusicError:
         raise
@@ -1114,7 +1148,7 @@ def cancel_job(
     from w_craft_back.movie.music.lifecycle import request_music_cancellation
 
     try:
-        cancelled = request_music_cancellation(job)
+        request_music_cancellation(job)
     except Exception as error:
         adapted = _adapt_domain_error(error)
         if adapted is None:

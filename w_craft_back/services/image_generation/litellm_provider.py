@@ -391,6 +391,7 @@ class LiteLLMProvider:
         mime_type: str = "image/png",
         variant_count: int = 1,
         timeout: float | None = None,
+        aspect_ratio: str | None = None,
     ) -> list[bytes]:
         # Image input is currently available only on chat-mode multimodal models
         # (Gemini 2.5 Flash Image, OpenRouter chat-image variants). Image-API
@@ -408,6 +409,8 @@ class LiteLLMProvider:
 
         import litellm
 
+        if aspect_ratio:
+            prompt = f"Output image aspect ratio: {aspect_ratio}.\n{prompt}"
         data_url = (
             f"data:{mime_type or 'image/png'};base64,"
             f"{base64.b64encode(image_bytes).decode('ascii')}"
