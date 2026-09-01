@@ -892,6 +892,20 @@
         }
       }
     },
+    "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shot-metadata/": {
+      "post": {
+        "operationId": "suggestStoryboardShotMetadata",
+        "description": "Return one unpersisted AI suggestion for a manual shot title or description. The server reads the selected range from the authorized current scene and chooses the configured text route; clients cannot submit source text or a model.",
+        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotMetadataRequest"}}}},
+        "responses": {
+          "200": {"description": "Editable field suggestion", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotMetadataSuggestion"}}}},
+          "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"},
+          "409": {"description": "STORYBOARD_SOURCE_STALE; the screenplay changed and the range must be selected again.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorEnvelope"}}}},
+          "429": {"$ref": "#/components/responses/ApiError"}, "502": {"$ref": "#/components/responses/ApiError"}, "503": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shots/": {
       "get": {
         "operationId": "getStoryboardShotListOptions",
@@ -3429,6 +3443,30 @@
           "language": {"type": "string", "enum": ["ru", "en"], "description": "Generated titles and descriptions use this interface language; defaults to the user profile language, then ru. Source quotes and entity IDs remain unchanged."},
           "model": {"type": "string", "maxLength": 200},
           "maxShots": {"type": "integer", "minimum": 1, "maximum": 40, "default": 16}
+        }
+      },
+      "StoryboardShotMetadataRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "range", "sceneVersion"],
+        "properties": {
+          "field": {"type": "string", "enum": ["title", "description"]},
+          "range": {
+            "type": "object", "additionalProperties": false, "required": ["start", "end"],
+            "description": "Offsets in Unicode code points within the current canonical scene text; start is inclusive and end is exclusive.",
+            "properties": {"start": {"type": "integer", "minimum": 0, "maximum": 499999}, "end": {"type": "integer", "minimum": 1, "maximum": 500000}}
+          },
+          "sceneVersion": {"type": "integer", "minimum": 1},
+          "language": {"type": "string", "enum": ["ru", "en"], "description": "Suggestion language; defaults to the user profile language, then ru."}
+        }
+      },
+      "StoryboardShotMetadataSuggestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "value"],
+        "properties": {
+          "field": {"type": "string", "enum": ["title", "description"]},
+          "value": {"type": "string", "minLength": 1, "maxLength": 1000}
         }
       },
       "StoryboardEditorDraftId": {

@@ -219,6 +219,23 @@ class ShotListSuggestSerializer(serializers.Serializer):
     )
 
 
+class ShotMetadataRangeSerializer(StrictSerializer):
+    start = serializers.IntegerField(min_value=0, max_value=499999)
+    end = serializers.IntegerField(min_value=1, max_value=500000)
+
+    def validate(self, attrs: dict) -> dict:
+        if attrs["start"] >= attrs["end"]:
+            raise serializers.ValidationError("Source range start must precede end.")
+        return attrs
+
+
+class ShotMetadataSuggestSerializer(StrictSerializer):
+    field = serializers.ChoiceField(choices=("title", "description"))
+    range = ShotMetadataRangeSerializer()
+    sceneVersion = serializers.IntegerField(min_value=1)
+    language = serializers.ChoiceField(choices=("ru", "en"), required=False)
+
+
 class ShotListJobCreateSerializer(ShotListSuggestSerializer, StrictSerializer):
     requestId = serializers.UUIDField()
     estimatedSeconds = serializers.IntegerField(

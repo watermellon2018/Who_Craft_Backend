@@ -9,6 +9,7 @@ from w_craft_back.movie.storyboard.views import (
     SceneStoryboardEditorFrameJobsView,
     SceneStoryboardListView,
     SceneStoryboardPreviewView,
+    SceneStoryboardShotMetadataView,
     SceneStoryboardShotListView,
     SceneStoryboardShotListJobView,
     StoryboardShotListJobListView,
@@ -75,6 +76,11 @@ urlpatterns = [
         "scenes/<int:scene_id>/",
         SceneStoryboardDetailView.as_view(),
         name="storyboard-scene-detail",
+    ),
+    path(
+        "scenes/<int:scene_id>/suggest-shot-metadata/",
+        SceneStoryboardShotMetadataView.as_view(),
+        name="storyboard-suggest-shot-metadata",
     ),
     path(
         "scenes/<int:scene_id>/suggest-shots/",

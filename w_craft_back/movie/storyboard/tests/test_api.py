@@ -217,6 +217,73 @@ class StoryboardApiTests(TestCase):
         self.assertEqual(response.status_code, 404)
         service_class.assert_not_called()
 
+    @patch("w_craft_back.movie.storyboard.views.AIShotMetadataService")
+    def test_shot_metadata_uses_authorized_scene_and_server_model(self, service_class):
+        service_class.return_value.suggest.return_value = {
+            "field": "title",
+            "value": "Anna enters",
+        }
+
+        response = self.client.post(
+            f"/api/projects/{self.project.id}/storyboard/scenes/"
+            f"{self.scene.id}/suggest-shot-metadata/",
+            {
+                "field": "title",
+                "range": {"start": 0, "end": 11},
+                "sceneVersion": self.scene.version,
+            },
+            format="json",
+            **self.token(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["value"], "Anna enters")
+        service_class.assert_called_once_with()
+        kwargs = service_class.return_value.suggest.call_args.kwargs
+        self.assertEqual(kwargs["field"], "title")
+        self.assertEqual(kwargs["scene_text"], self.scene.script_text)
+        self.assertEqual(kwargs["scene_version"], self.scene.version)
+        self.assertEqual(kwargs["source_start"], 0)
+        self.assertEqual(kwargs["source_end"], 11)
+        self.assertEqual(kwargs["language"], "ru")
+
+    @patch("w_craft_back.movie.storyboard.views.AIShotMetadataService")
+    def test_shot_metadata_rejects_client_model_selection(self, service_class):
+        response = self.client.post(
+            f"/api/projects/{self.project.id}/storyboard/scenes/"
+            f"{self.scene.id}/suggest-shot-metadata/",
+            {
+                "field": "description",
+                "range": {"start": 0, "end": 11},
+                "sceneVersion": self.scene.version,
+                "model": "openrouter/openai/gpt-5.4-mini",
+            },
+            format="json",
+            **self.token(),
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        service_class.assert_not_called()
+
+    @patch("w_craft_back.movie.storyboard.views.AIShotMetadataService")
+    def test_shot_metadata_cannot_read_a_scene_from_another_project(
+        self, service_class,
+    ):
+        response = self.client.post(
+            f"/api/projects/{self.other_project.id}/storyboard/scenes/"
+            f"{self.scene.id}/suggest-shot-metadata/",
+            {
+                "field": "title",
+                "range": {"start": 0, "end": 11},
+                "sceneVersion": self.scene.version,
+            },
+            format="json",
+            **self.token(self.outsider_key),
+        )
+
+        self.assertEqual(response.status_code, 404, response.content)
+        service_class.assert_not_called()
+
     def test_shot_creation_adds_boundaries_and_transition(self):
         shot = self.create_shot()
 
