@@ -31,6 +31,7 @@ from w_craft_back.movie.storyboard.serializers import (
     KeyframeCreateSerializer,
     KeyframePatchSerializer,
     ShotCreateSerializer,
+    ShotMetadataSuggestSerializer,
     ShotListSuggestSerializer,
     ShotListJobCreateSerializer,
     ShotListJobApplySerializer,
@@ -38,7 +39,10 @@ from w_craft_back.movie.storyboard.serializers import (
     ShotReorderSerializer,
     TransitionPatchSerializer,
 )
-from w_craft_back.movie.storyboard.shot_list import AIShotListService
+from w_craft_back.movie.storyboard.shot_list import (
+    AIShotListService,
+    AIShotMetadataService,
+)
 from w_craft_back.movie.storyboard.source import source_from_scene
 
 
@@ -209,6 +213,32 @@ class SceneStoryboardDetailView(StoryboardAuthedView):
             payload,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+class SceneStoryboardShotMetadataView(StoryboardAuthedView):
+    throttle_classes = [StoryboardShotListRateThrottle]
+
+    @handle_storyboard_errors
+    def post(self, request, project_id: int, scene_id: int):
+        data = _validated(ShotMetadataSuggestSerializer, request.data)
+        actor = self.actor(request)
+        project = services._require_project(
+            actor=actor,
+            project_id=project_id,
+            action=policy.Action.RUN_GENERATION,
+        )
+        scene = services._scene(project, scene_id)
+        source_range = data["range"]
+        return Response(AIShotMetadataService().suggest(
+            field=data["field"],
+            scene_title=str(scene.title or ""),
+            scene_text=services.SceneStoryboardContextService.scene_text(scene),
+            scene_version=scene.version,
+            expected_scene_version=data["sceneVersion"],
+            source_start=source_range["start"],
+            source_end=source_range["end"],
+            language=_shot_list_language(actor, data.get("language")),
+        ))
 
 
 class SceneStoryboardShotListView(StoryboardAuthedView):

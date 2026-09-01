@@ -54,6 +54,31 @@ language. `content_language` is not used. Entity IDs, proper names, source text,
 and verbatim dialogue remain unchanged. Existing English drafts are not silently
 translated or regenerated; changing language affects subsequent generations.
 
+Manual shot forms can request one editable field through
+`POST .../scenes/{sceneId}/suggest-shot-metadata/`. The payload is
+`{field, range, sceneVersion, language?}`, where `field` is `title` or
+`description` and `range` contains Unicode-code-point `start`/`end` offsets in
+the current canonical scene text. The client does not send source text or a
+model. The server checks project generation permission, scene ownership, the
+scene version, range bounds and the 20,000-character text budget before invoking
+the server-selected `STORYBOARD_SHOT_METADATA_MODELS` routes. The default order
+contains only specific free OpenRouter models and starts with
+`openrouter/dots-studio/dots-3-note-preview:free`; this choice is not exposed in
+the field UI. The metadata request uses JSON-object mode and the server validates
+its exact one-field shape and length. On 404, rate limit, timeout, transient 5xx,
+or two malformed responses, it tries the next configured free route. HTTP 400,
+content refusal and other permanent errors stop immediately. No paid route is
+added automatically. A stale scene returns HTTP 409 and
+requires a new selection. The synchronous response is `{field, value}`; it is an
+unpersisted suggestion that the user may edit before the existing draft save.
+Server validation caps generated titles at 255 characters and descriptions at
+1,000 characters, while the provider request caps output at 512 tokens and does
+not send a reasoning override. A malformed or incomplete response is retried
+once on the same route before the next eligible free fallback is considered. If
+every route fails, the last safe provider error is returned. This endpoint shares
+the Shot List generation throttle and never uses a mock or automatically added
+paid route.
+
 The shot-list request explicitly requires entity IDs, not display names. Its
 JSON schema limits the number of shots to the requested `maxShots` and restricts
 character, location, and visual-asset references to IDs in this scene. Empty
@@ -344,6 +369,12 @@ for audit and reconciliation.
   `gemini/gemini-2.5-flash` and uses the direct Gemini API. To route the request
   through OpenRouter, set an explicit LiteLLM model such as
   `openrouter/google/gemini-2.5-flash` and configure `OPENROUTER_API_KEY`.
+- `STORYBOARD_SHOT_METADATA_MODEL` selects the first internal route for the
+  manual-shot title and description buttons. It defaults to the free model
+  `openrouter/dots-studio/dots-3-note-preview:free` and is not client-selectable.
+- `STORYBOARD_SHOT_METADATA_MODELS` configures the fallback order. Its defaults
+  are specific `:free` OpenRouter routes and require `OPENROUTER_API_KEY`.
+  Overrides may add paid routes only through an explicit operator decision.
 - `STORYBOARD_SHOT_LIST_MODELS` optionally overrides the comma-separated route
   allowlist and its priority order. Omit it to use the text catalog. Existing
   explicit allowlists are respected and do not automatically gain new models;

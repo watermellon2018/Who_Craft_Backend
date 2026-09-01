@@ -330,6 +330,19 @@ STORYBOARD_SHOT_LIST_MODEL = os.getenv(
     "STORYBOARD_SHOT_LIST_MODEL",
     os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"),
 ).strip()
+STORYBOARD_SHOT_METADATA_MODEL = os.getenv(
+    "STORYBOARD_SHOT_METADATA_MODEL",
+    "openrouter/dots-studio/dots-3-note-preview:free",
+).strip()
+STORYBOARD_SHOT_METADATA_MODELS = os.getenv(
+    "STORYBOARD_SHOT_METADATA_MODELS",
+    ",".join((
+        STORYBOARD_SHOT_METADATA_MODEL,
+        "openrouter/google/gemma-4-26b-a4b-it:free",
+        "openrouter/z-ai/glm-5.2:free",
+        "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+    )),
+).strip()
 STORYBOARD_SHOT_LIST_MODELS = os.getenv(
     "STORYBOARD_SHOT_LIST_MODELS",
     ",".join(

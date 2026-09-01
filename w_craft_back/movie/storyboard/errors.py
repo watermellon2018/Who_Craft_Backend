@@ -16,6 +16,7 @@ class StoryboardError(RuntimeError):
         http_status: int = 400,
         retryable: bool = False,
         errors: Any = None,
+        upstream_status: int | None = None,
     ) -> None:
         super().__init__(detail)
         self.detail = detail
@@ -23,6 +24,7 @@ class StoryboardError(RuntimeError):
         self.http_status = http_status
         self.retryable = retryable
         self.errors = errors
+        self.upstream_status = upstream_status
 
 
 def validation_error(errors: Any) -> StoryboardError:

@@ -104,6 +104,7 @@ def check_contract() -> None:
         "/api/projects/{projectId}/team/invitations/",
         "/api/projects/{projectId}/storyboard/scenes/",
         "/api/projects/{projectId}/storyboard/scenes/{sceneId}/",
+        "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shot-metadata/",
         "/api/projects/{projectId}/storyboard/{storyboardId}/shots/",
         "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/generate/",
         "/api/projects/{projectId}/storyboard/keyframes/{keyframeId}/regenerate/",
@@ -240,6 +241,22 @@ def check_contract() -> None:
     assert _schema(document, "StoryboardSuggestShotsRequest")["properties"][
         "language"
     ]["enum"] == ["ru", "en"]
+    shot_metadata_request = _schema(document, "StoryboardShotMetadataRequest")
+    assert set(shot_metadata_request["required"]) == {
+        "field", "range", "sceneVersion",
+    }
+    assert "model" not in shot_metadata_request["properties"]
+    assert shot_metadata_request["properties"]["field"]["enum"] == [
+        "title", "description",
+    ]
+    shot_metadata_path = document["paths"][
+        "/api/projects/{projectId}/storyboard/scenes/"
+        "{sceneId}/suggest-shot-metadata/"
+    ]["post"]
+    assert shot_metadata_path["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": "#/components/schemas/StoryboardShotMetadataRequest"}
+    assert "409" in shot_metadata_path["responses"]
     shot_list_job = _schema(document, "StoryboardShotListJob")
     assert shot_list_job["properties"]["status"]["enum"] == [
         "queued", "running", "succeeded", "failed",
