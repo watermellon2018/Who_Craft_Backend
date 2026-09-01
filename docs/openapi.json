@@ -3101,12 +3101,58 @@
           "readiness": {"$ref": "#/components/schemas/ProjectReadiness"}
         }
       },
+      "ProjectRoadmapBlocker": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code": {"type": "string"},
+          "count": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ProjectRoadmapStep": {
+        "type": "object",
+        "required": ["key", "optional", "availability", "state", "progressPercent", "metrics", "blockers", "actionUrl"],
+        "properties": {
+          "key": {"type": "string", "enum": ["script", "characters", "references", "music", "storyboard", "video"]},
+          "optional": {"type": "boolean"},
+          "availability": {"type": "string", "enum": ["available", "coming_soon"]},
+          "state": {"type": "string", "enum": ["not_started", "in_progress", "ready", "blocked", "needs_attention"]},
+          "progressPercent": {"type": "integer", "minimum": 0, "maximum": 100, "nullable": true},
+          "metrics": {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 0}
+          },
+          "blockers": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectRoadmapBlocker"}},
+          "actionUrl": {"type": "string"}
+        }
+      },
+      "ProjectRoadmapNextAction": {
+        "type": "object",
+        "required": ["stepKey", "actionUrl"],
+        "properties": {
+          "stepKey": {"type": "string", "enum": ["script", "characters", "storyboard", "video"]},
+          "actionUrl": {"type": "string"}
+        }
+      },
+      "ProjectRoadmap": {
+        "type": "object",
+        "required": ["version", "steps", "nextAction"],
+        "properties": {
+          "version": {"type": "integer", "enum": [1]},
+          "steps": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectRoadmapStep"}},
+          "nextAction": {
+            "allOf": [{"$ref": "#/components/schemas/ProjectRoadmapNextAction"}],
+            "nullable": true
+          }
+        }
+      },
       "ProjectDashboard": {
         "type": "object",
-        "required": ["progress"],
+        "required": ["progress", "roadmap"],
         "additionalProperties": true,
         "properties": {
-          "progress": {"$ref": "#/components/schemas/ProjectProgress"}
+          "progress": {"$ref": "#/components/schemas/ProjectProgress"},
+          "roadmap": {"$ref": "#/components/schemas/ProjectRoadmap"}
         }
       },
       "SceneStoryboard": {

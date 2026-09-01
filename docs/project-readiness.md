@@ -49,6 +49,51 @@ The checklist is informational and requires project view permission. A future
 generation mutation must repeat the prerequisite and generation-permission
 checks atomically; the GET response is not an authorization token.
 
+## Project roadmap
+
+`GET /api/projects/{project_id}/dashboard/` also returns a top-level `roadmap`
+object. It is a versioned, copy-free navigation contract derived from the same
+current domain data as readiness; it does not store a mutable "current stage".
+The steps are returned in this stable order: script, characters, references,
+music, storyboard, and video.
+
+Script, characters, storyboard, and video are required. References and music
+are explicitly optional: their state is still reported, but they never block a
+required step and are never selected as `nextAction`. Script, characters, and
+storyboard may be started independently. An untouched storyboard is reported as
+`not_started`; once any storyboard exists it is `in_progress`. Stale storyboard
+data is exposed as a warning blocker without locking the stage or replacing its
+working state. Video becomes actionable after the script, characters, and
+current storyboard are ready. A character step already in progress is
+recommended before an untouched script so a visual-first workflow can continue
+naturally.
+
+Each step exposes only stable identifiers and data: `state`, integer metrics,
+machine-readable blockers, progress, and its application route. Labels and
+localized explanations belong to clients. `needs_attention` identifies work
+that needs intervention, while storyboard warnings preserve the storyboard's
+ordinary `not_started` or `in_progress` state. `blocked` means a required
+dependency is not ready yet. The supported v1 blocker codes are:
+
+- `incompleteScenes` and `missingCharacters`;
+- `generationFailed` for an unresolved optional reference or music job;
+- `scriptNotReady`, `charactersNotReady`, and `storyboardNotReady`;
+- `staleStoryboards` when accepted storyboard data no longer matches the scene
+  revision.
+
+Character progress uses one count-based denominator: saved project characters
+plus significant screenplay characters that do not have a logical character
+yet. The ready count includes only visible characters with a ready identity
+asset, so the percentage always matches the reported total/ready pair and any
+`missingCharacters` blocker.
+
+`nextAction` considers required available steps only. It prioritizes
+`needs_attention`, then `in_progress`, then `not_started`, using the stable
+required order to resolve ties. Storyboard has no navigation dependency and can
+be recommended while preparation is still underway; video remains excluded
+until its required inputs are ready. `nextAction` is `null` once every required
+step is ready.
+
 ## Storyboard and video lifecycle
 
 - Structured storyboard authoring is available under

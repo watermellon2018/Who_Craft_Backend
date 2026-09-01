@@ -30,6 +30,7 @@ from w_craft_back.movie.project.progress_service import (
     ProjectProgressSnapshot,
     calculate_project_progress,
 )
+from w_craft_back.movie.project.roadmap_service import build_project_roadmap
 from w_craft_back.storage_gateway import (
     signed_url_for_asset,
     signed_url_for_file,
@@ -641,6 +642,7 @@ def build_project_dashboard(project: Project, user: User, request=None) -> dict[
     hero = _hero_payload(project, request, user=user)
     stats = _stats_payload(project)
     progress_snapshot = calculate_project_progress(project)
+    roadmap = build_project_roadmap(project, progress_snapshot)
     pipeline = _pipeline_payload(
         project,
         scenes_total=stats["scenesTotal"],
@@ -651,6 +653,7 @@ def build_project_dashboard(project: Project, user: User, request=None) -> dict[
         "stats": stats,
         "characters": _characters_payload(project, request),
         "pipeline": pipeline,
+        "roadmap": roadmap,
         "music": _music_payload(project, request),
         "progress": _progress_payload(project, progress_snapshot),
         "quickActions": _quick_actions_payload(project),
