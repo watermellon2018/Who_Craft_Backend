@@ -64,6 +64,7 @@ class MissingCharacter:
     name: str
     dialogue_count: int
     scene_count: int
+    has_logical_character: bool = False
 
     def as_payload(self) -> dict:
         return {
@@ -124,6 +125,7 @@ class VideoPreparationState:
     storyboard_scenes: tuple[StoryboardPreparationScene, ...]
     storyboard_ready_count: int
     storyboard_total_count: int
+    storyboard_started_count: int = 0
 
     @property
     def storyboard_missing_count(self) -> int:
@@ -207,6 +209,7 @@ class ProjectProgressSnapshot:
     video_total_count: int = 0
     video_preparation_ready: bool = False
     video_preparation_task_count: int = 1
+    video_preparation: Optional[VideoPreparationState] = None
 
     @property
     def overall(self) -> Fraction:
@@ -352,6 +355,11 @@ def analyze_missing_characters(
         character = characters_by_id.get(str(raw_character_id).casefold())
         return _speaker_for_character(character)
 
+    def has_character_id(raw_character_id) -> bool:
+        if raw_character_id is None:
+            return False
+        return str(raw_character_id).casefold() in characters_by_id
+
     def speaker_for_name(raw_name) -> Optional[_MissingSpeaker]:
         display_name = _clean_character_name(raw_name)
         if not display_name:
@@ -393,11 +401,14 @@ def analyze_missing_characters(
             has_explicit_character_id = "characterId" in block
 
             if block_type == "character":
-                active_speaker = (
-                    speaker_for_id(block.get("characterId"))
-                    if has_explicit_character_id
-                    else speaker_for_name(block.get("text"))
-                )
+                raw_character_id = block.get("characterId")
+                if (
+                    has_explicit_character_id
+                    and has_character_id(raw_character_id)
+                ):
+                    active_speaker = speaker_for_id(raw_character_id)
+                else:
+                    active_speaker = speaker_for_name(block.get("text"))
                 if active_speaker is not None:
                     metric = metrics.setdefault(
                         active_speaker.normalized_name,
@@ -414,7 +425,9 @@ def analyze_missing_characters(
                 continue
 
             if has_explicit_character_id:
-                active_speaker = speaker_for_id(block.get("characterId"))
+                raw_character_id = block.get("characterId")
+                if has_character_id(raw_character_id):
+                    active_speaker = speaker_for_id(raw_character_id)
                 if active_speaker is not None:
                     metric = metrics.setdefault(
                         active_speaker.normalized_name,
@@ -460,6 +473,7 @@ def analyze_missing_characters(
             name=metric.name,
             dialogue_count=metric.dialogue_count,
             scene_count=len(metric.scene_ids),
+            has_logical_character=metric.has_logical_character,
         )
         for metric in significant
     )
@@ -563,6 +577,7 @@ def calculate_video_preparation(
         storyboard_scenes=tuple(storyboard_scenes),
         storyboard_ready_count=storyboard_ready_count,
         storyboard_total_count=len(scenes),
+        storyboard_started_count=len(storyboards),
     )
 
 
@@ -757,4 +772,5 @@ def calculate_project_progress(project: Project) -> ProjectProgressSnapshot:
         video_total_count=total_shots,
         video_preparation_ready=video_preparation.ready,
         video_preparation_task_count=video_preparation.task_count,
+        video_preparation=video_preparation,
     )
