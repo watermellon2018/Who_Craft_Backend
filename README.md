@@ -2,7 +2,8 @@
 
 Django 5.2 + Django REST Framework backend for Craft. It owns authentication,
 PostgreSQL persistence, project/team workflows, Character Studio, posters,
-Music Studio, Reference Library, profiles/subscriptions, private media, and
+Music Studio, Reference Library, profiles/subscriptions, personal messaging,
+private media, and
 durable generation workers.
 
 The sibling frontend is `../who_craft/`. Cross-system documentation is in
@@ -78,6 +79,10 @@ operations are unchanged.
 - `GET /api/projects/{id}/video/preparation/` — the current video prerequisites:
   missing characters, empty scenes, and incomplete or stale storyboards.
 - `/api/credits/` — internal balance, ledger, demo top-up, and transfers.
+- `/api/messaging/` — private text conversations, personal history clearing,
+  unread/read state, and polling of edits/deletions; see
+  [Personal messaging](docs/messaging.md). Requires migration `0068` and the
+  existing PostgreSQL database; no additional service is needed.
 - `/api/media/{signed-token}` — authorized private media delivery.
 
 Root URL composition is in `backend/urls.py` (the inner Django project directory
@@ -106,7 +111,9 @@ On success, profile media/metadata, interests, social links, subscriptions,
 non-owner project memberships, incoming invitations, and authentication tokens
 are removed. The Django user is deactivated and anonymized rather than deleted,
 so protected generation attribution and the credit ledger remain referentially
-valid. The response is `204`, and the previous access/refresh credentials stop
+valid. Authored personal-message text is erased; peers retain their own history
+and can no longer send to the closed account. The response is `204`, and the
+previous access/refresh credentials stop
 working immediately. Historical project/activity records may retain author,
 title, or metadata snapshots created before closure; audit history is not
 rewritten. Physical media deletion runs after the database commit through the

@@ -3,7 +3,7 @@
   "info": {
     "title": "W Craft API",
     "version": "1.0.0",
-    "description": "Canonical contract for frontend-facing credits, project, character tree, poster and Music Studio operations."
+    "description": "Canonical contract for frontend-facing credits, project, character tree, poster, Music Studio and personal messaging operations."
   },
   "servers": [
     {"url": "/"}
@@ -15,9 +15,714 @@
     "posterPromptMaxLength": 1000,
     "projectAnnotationMaxLength": 800,
     "projectSynopsisMaxLength": 2000,
-    "projectPosterMaxBytes": 5242880
+    "projectPosterMaxBytes": 5242880,
+    "messagingTextMaxLength": 4000
   },
   "paths": {
+    "/api/messaging/users/": {
+      "get": {
+        "operationId": "searchMessagingUsers",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Search any active user by login, public username or display name; excludes the caller. Queries shorter than two characters return no results.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search any active user by login, public username or display name; excludes the caller. Queries shorter than two characters return no results.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingUserList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/unread/": {
+      "get": {
+        "operationId": "getMessagingUnread",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Count visible, nondeleted incoming messages not yet read.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Count visible, nondeleted incoming messages not yet read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingUnread"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/": {
+      "get": {
+        "operationId": "listMessagingConversations",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "List the caller's visible conversations in activity order.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List the caller's visible conversations in activity order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingConversationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "openMessagingConversation",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Open the unique conversation with an active user; the recipient sees it only after a message is sent.",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingConversationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Open the unique conversation with an active user; the recipient sees it only after a message is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingConversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/{conversationId}/": {
+      "get": {
+        "operationId": "getMessagingConversation",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Get private conversation and participant state; nonparticipants receive 404.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Get private conversation and participant state; nonparticipants receive 404.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingConversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clearMessagingConversation",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Clear and hide only the caller's history. A future new message reopens the conversation; old history stays hidden.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Clear and hide only the caller's history. A future new message reopens the conversation; old history stays hidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingConversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/{conversationId}/messages/": {
+      "get": {
+        "operationId": "listMessagingMessages",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Read a page of visible history in ascending sequence order. Use next_before for older pages; only the initial snapshot establishes the changes cursor.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read a page of visible history in ascending sequence order. Use next_before for older pages; only the initial snapshot establishes the changes cursor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendMessagingMessage",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Send plain text idempotently using client_id. A key reused with different text returns 409. Replays never restore edited/deleted text or cleared history.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingMessageCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Send plain text idempotently using client_id. A key reused with different text returns 409. Replays never restore edited/deleted text or cleared history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/{conversationId}/messages/{messageId}/": {
+      "patch": {
+        "operationId": "editMessagingMessage",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Edit only an authored, visible, nondeleted message. A stale expected_version returns 409.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingMessageUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edit only an authored, visible, nondeleted message. A stale expected_version returns 409.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteMessagingMessage",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Delete only an authored message for both participants. The result is an empty-text tombstone; retries are safe.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delete only an authored message for both participants. The result is an empty-text tombstone; retries are safe.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/{conversationId}/changes/": {
+      "get": {
+        "operationId": "listMessagingChanges",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Read message changes, including edits and deletion tombstones, ordered by unique revision. Continue from next_revision while has_more. Conversation state also synchronizes read receipts and cleared history.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after_revision",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read message changes, including edits and deletion tombstones, ordered by unique revision. Continue from next_revision while has_more. Conversation state also synchronizes read receipts and cleared history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingChanges"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/messaging/conversations/{conversationId}/read/": {
+      "post": {
+        "operationId": "markMessagingRead",
+        "tags": [
+          "Messaging"
+        ],
+        "summary": "Advance the caller's read cursor monotonically through a displayed message sequence.",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagingReadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Advance the caller's read cursor monotonically through a displayed message sequence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagingConversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
     "/api/projects/{projectId}/storyboard/scenes/{sceneId}/shot-list-jobs/": {
       "post": {
         "operationId": "createStoryboardShotListJob",
@@ -2142,6 +2847,387 @@
       }
     },
     "schemas": {
+      "MessagingUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "avatar_url",
+          "is_active"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "username": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "avatar_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "is_active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MessagingMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "conversation_id",
+          "sequence",
+          "sender_id",
+          "is_own",
+          "text",
+          "created_at",
+          "edited_at",
+          "deleted_at",
+          "version",
+          "client_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "conversation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sender_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "is_own": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "edited_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "deleted_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "MessagingConversation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "peer",
+          "last_message",
+          "unread_count",
+          "last_sequence",
+          "revision",
+          "read_through",
+          "peer_read_through",
+          "cleared_through",
+          "is_hidden",
+          "can_send",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "peer": {
+            "$ref": "#/components/schemas/MessagingUser"
+          },
+          "last_message": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessagingMessage"
+              }
+            ],
+            "nullable": true
+          },
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "read_through": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "peer_read_through": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cleared_through": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "is_hidden": {
+            "type": "boolean"
+          },
+          "can_send": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "MessagingUserList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagingUser"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "MessagingUnread": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "unread_count"
+        ],
+        "properties": {
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "MessagingConversationList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "unread_count"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagingConversation"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "MessagingHistory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_before",
+          "sync_revision",
+          "conversation"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagingMessage"
+            }
+          },
+          "next_before": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true
+          },
+          "sync_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/MessagingConversation"
+          }
+        }
+      },
+      "MessagingChanges": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_revision",
+          "has_more",
+          "conversation"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagingMessage"
+            }
+          },
+          "next_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/MessagingConversation"
+          }
+        }
+      },
+      "MessagingMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "message",
+          "conversation"
+        ],
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/MessagingMessage"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/MessagingConversation"
+          }
+        }
+      },
+      "MessagingConversationCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "recipient_id"
+        ],
+        "properties": {
+          "recipient_id": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "MessagingMessageCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "client_id"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Plain text, trimmed at the boundary; whitespace-only input is rejected."
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "MessagingMessageUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "expected_version"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Plain text, trimmed at the boundary; whitespace-only input is rejected."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "MessagingReadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "through_sequence"
+        ],
+        "properties": {
+          "through_sequence": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "StoryboardShotListJob": {
         "type": "object",
         "additionalProperties": false,

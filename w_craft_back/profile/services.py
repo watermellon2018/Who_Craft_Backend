@@ -134,6 +134,7 @@ def close_user_account(user: User, current_password: str) -> None:
     """Deactivate and anonymize an account while preserving audit history."""
 
     from w_craft_back.auth.models import UserKey
+    from w_craft_back.messaging.services import scrub_user_messages
     from w_craft_back.movie.project.comment_models import VideoShotComment
     from w_craft_back.movie.project.dashboard_models import ProjectMember
     from w_craft_back.movie.project.models import Project
@@ -157,6 +158,7 @@ def close_user_account(user: User, current_password: str) -> None:
     locked_user.is_active = False
     locked_user.save(update_fields=['is_active'])
 
+    scrub_user_messages(locked_user)
     remove_user_subscriptions(locked_user)
     ProjectMember.objects.filter(user=locked_user).delete()
     ProjectInvitation.objects.filter(invited_user=locked_user).delete()
