@@ -33,6 +33,7 @@ class MusicProviderError(RuntimeError):
         retryable: bool = True,
         outcome_unknown: bool = False,
         cost_incurred: bool = False,
+        definitely_rejected: bool = False,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -41,6 +42,7 @@ class MusicProviderError(RuntimeError):
         self.retryable = retryable
         self.outcome_unknown = outcome_unknown
         self.cost_incurred = cost_incurred
+        self.definitely_rejected = definitely_rejected
 
 
 @dataclass(frozen=True)

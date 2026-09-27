@@ -135,37 +135,63 @@ def effective_reference_model_key(
 
 
 def resolve_reference_provider(
-    *,
-    actor: Any,
-    project: Any,
-    requested_model: str = "",
-    require_edit: bool = False,
+    *, actor: Any, project: Any, requested_model: str = "",
+    require_edit: bool = False, generation_source: str | None = None,
+    approval_token: str | None = None, require_reference: bool = False,
 ) -> ImageProvider:
-    """Resolve mock or registry provider without silent fallback."""
+    """Resolve the selected payer before choosing a mock or real provider."""
+    from w_craft_back.personal_api.access import (
+        generation_source as saved_source, resolve_generation_access,
+    )
+    from w_craft_back.personal_api.errors import PersonalAPIError
+    from w_craft_back.services.image_generation.personal import (
+        PersonalImageProvider, image_access_error,
+    )
 
-    if provider_mode() == "mock":
+    source = generation_source or saved_source(actor, "image")
+    use_mock = (
+        provider_mode() == "mock" and source == "platform"
+        and requested_model in {"", DeterministicReferenceMockProvider.model_id}
+    )
+    try:
+        access = resolve_generation_access(
+            actor, "image", source=generation_source,
+            model_key=requested_model or None,
+            operation=(
+                "edit" if require_edit else "reference" if require_reference
+                else "generate"
+            ),
+            free_platform=use_mock,
+            approval_token=approval_token,
+        )
+    except PersonalAPIError as error:
+        raise image_access_error(error) from error
+    if access["source"] == "personal":
+        return PersonalImageProvider({"generationAccess": access})
+    if use_mock:
         environment = str(getattr(settings, "ENVIRONMENT", "development")).lower()
         if environment == "production" and not bool(
             getattr(settings, "REFERENCE_ALLOW_MOCK", False)
         ):
             raise ReferenceError(
                 "Mock reference provider is disabled in production.",
-                code="IMAGE_PROVIDER_NOT_CONFIGURED",
-                http_status=503,
-                retryable=True,
+                code="IMAGE_PROVIDER_NOT_CONFIGURED", http_status=503, retryable=True,
             )
-        return DeterministicReferenceMockProvider()
-
+        provider = DeterministicReferenceMockProvider()
+        provider.generation_access = access
+        provider.provider_snapshot = {"generationAccess": access, "mock": True}
+        return provider
     override = effective_reference_model_key(
-        actor=actor,
-        project=project,
-        requested_model=requested_model,
+        actor=actor, project=project, requested_model=requested_model,
     )
-    return resolve_provider_for_user(
-        actor,
-        override=override or None,
-        require_edit=require_edit,
+    provider = resolve_provider_for_user(
+        actor, override=override or None, require_edit=require_edit,
     )
+    provider.generation_access = access
+    provider.provider_snapshot = {
+        "generationAccess": access, "spec": provider.spec.__dict__,
+    }
+    return provider
 
 
 def resolve_pinned_reference_provider(

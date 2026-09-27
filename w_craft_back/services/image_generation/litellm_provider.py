@@ -248,11 +248,14 @@ def _extract_image_api(response: Any) -> list[bytes]:
 class LiteLLMProvider:
     """Adapter from the :class:`ImageProvider` protocol to ``litellm``."""
 
-    def __init__(self, spec: ModelSpec) -> None:
+    def __init__(self, spec: ModelSpec, *, api_key: str | None = None) -> None:
         self.spec = spec
         self.name = spec.key
         self.model_id = spec.model_id
         self._usage_events: list[dict[str, Any]] = []
+        self._credentials = (
+            {"api_key": api_key, "num_retries": 0} if api_key is not None else {}
+        )
 
     def usage_snapshot(self) -> dict[str, Any]:
         return merge_usage(self._usage_events)
@@ -308,7 +311,7 @@ class LiteLLMProvider:
             if timeout is not None:
                 params["timeout"] = timeout
             try:
-                response = litellm.image_generation(**params)
+                response = litellm.image_generation(**params, **self._credentials)
             except Exception as exc:  # noqa: BLE001
                 raise map_to_provider_error(exc) from exc
             images = _extract_image_api(response)
@@ -323,6 +326,7 @@ class LiteLLMProvider:
                 modalities=["image", "text"],
                 n=n,
                 timeout=kwargs.get("timeout"),
+                **self._credentials,
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc
@@ -372,6 +376,7 @@ class LiteLLMProvider:
                 messages=messages,
                 modalities=["image", "text"],
                 timeout=kwargs.get("timeout"),
+                **self._credentials,
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc
@@ -432,6 +437,7 @@ class LiteLLMProvider:
                 modalities=["image", "text"],
                 n=n,
                 timeout=timeout,
+                **self._credentials,
             )
         except Exception as exc:  # noqa: BLE001
             raise map_to_provider_error(exc) from exc

@@ -15,6 +15,10 @@ EDIT_INSTRUCTION_MAX_LENGTH = 1000
 
 
 class PosterGenerateSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(required=False, max_length=16000)
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     prompt = serializers.CharField(
         max_length=PROMPT_MAX_LENGTH,
         allow_blank=False,
@@ -60,6 +64,10 @@ class PosterGenerateSerializer(serializers.Serializer):
 
 
 class PosterEditSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(required=False, max_length=16000)
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     source_variant_id = serializers.IntegerField(min_value=1)
     instruction = serializers.CharField(
         max_length=EDIT_INSTRUCTION_MAX_LENGTH,

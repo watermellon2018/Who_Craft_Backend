@@ -251,6 +251,8 @@ def create_character_from_reference(request, project_id):
     generation_params = {
         "_idempotency_key": idempotency_key,
         "image_model": _form_value(request, "image_model") or None,
+        "generationSource": _form_value(request, "generationSource") or None,
+        "generationAccessToken": _form_value(request, "generationAccessToken") or None,
         "variant_count": _form_int(request, "variants_count")
         or _form_int(request, "variant_count") or 1,
         "preserve_identity": _form_bool(request, "use_image_as_identity", default=True)
@@ -371,6 +373,7 @@ def generation_preview(request, project_id, character_id):
             character=character,
             image_types=image_types,
             image_model=request.GET.get("image_model"),
+            generation_source=request.GET.get("generationSource"),
         )
     )
 

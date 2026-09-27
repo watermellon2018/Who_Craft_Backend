@@ -44,6 +44,15 @@ DEFAULT_TEXT_MODEL_ROUTES = tuple(
     route for model in TEXT_MODELS for route in model.routes
 )
 
+# These explicit provider routes power the free storyboard field suggestions.
+# Missing/zero pricing and arbitrary environment overrides are not free grants.
+FREE_TEXT_ROUTES = frozenset({
+    "openrouter/dots-studio/dots-3-note-preview:free",
+    "openrouter/google/gemma-4-26b-a4b-it:free",
+    "openrouter/z-ai/glm-5.2:free",
+    "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+})
+
 
 def text_model_key(route: str) -> str:
     """Group only routes for the same namespaced model, retaining versions."""

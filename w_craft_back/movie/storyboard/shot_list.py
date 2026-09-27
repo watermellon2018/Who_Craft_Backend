@@ -211,13 +211,15 @@ def _shot_metadata_model_id() -> str:
 
 
 def _shot_metadata_model_ids() -> tuple[str, ...]:
+    from w_craft_back.services.text_generation.registry import FREE_TEXT_ROUTES
+
     configured = str(
         getattr(settings, "STORYBOARD_SHOT_METADATA_MODELS", "")
     ).split(",")
     model_ids: list[str] = []
     for raw_model in (_shot_metadata_model_id(), *configured):
         model_id = _normalize_model_id(raw_model)
-        if model_id and model_id not in model_ids:
+        if model_id in FREE_TEXT_ROUTES and model_id not in model_ids:
             model_ids.append(model_id)
         if len(model_ids) >= MAX_CONFIGURED_MODELS:
             break
@@ -405,6 +407,7 @@ class LiteLLMShotListProvider:
         operation: str = "suggest_shots",
         max_tokens: int | None = None,
         response_format: Literal["json_schema", "json_object"] = "json_schema",
+        api_key: str | None = None,
     ) -> None:
         configured = _normalize_model_id(model or _default_model_id())
         if not configured:
@@ -415,6 +418,11 @@ class LiteLLMShotListProvider:
                 retryable=True,
             )
         allowed_models = {*_configured_model_ids(), *_shot_metadata_model_ids()}
+        if api_key is not None:
+            from w_craft_back.services.text_generation.registry import (
+                DEFAULT_TEXT_MODEL_ROUTES,
+            )
+            allowed_models.update(DEFAULT_TEXT_MODEL_ROUTES)
         if configured not in allowed_models:
             raise StoryboardError(
                 "The selected Storyboard text model is not available.",
@@ -423,7 +431,7 @@ class LiteLLMShotListProvider:
                 retryable=False,
             )
         litellm = _load_litellm()
-        if model is None:
+        if model is None and api_key is None:
             # Legacy requests without a selection use the same default as GET.
             configured = next(
                 (option.model_id for option in _model_options(litellm)
@@ -431,7 +439,9 @@ class LiteLLMShotListProvider:
                 configured,
             )
         option = _model_option(configured, litellm)
-        if not option.available:
+        if not option.available and not (
+            api_key and option.unavailable_reason == "credentialMissing"
+        ):
             raise StoryboardError(
                 "Storyboard Shot List provider is not configured.",
                 code="STORYBOARD_AI_NOT_CONFIGURED",
@@ -443,9 +453,12 @@ class LiteLLMShotListProvider:
         self.operation = operation
         self.max_tokens = max_tokens
         self.response_format = response_format
+        self.api_key = api_key
 
     def suggest(self, *, prompt: str, schema: Mapping[str, Any]) -> Mapping[str, Any]:
         route_parameters = {}
+        if self.api_key is not None:
+            route_parameters["api_key"] = self.api_key
         if self.model.startswith("openrouter/"):
             route_parameters["extra_body"] = {
                 "provider": {
@@ -762,7 +775,11 @@ class AIShotMetadataService:
                 for model in _shot_metadata_model_ids()
             )
         if not self.providers:
-            raise ValueError("At least one shot metadata provider is required")
+            raise StoryboardError(
+                "No free Storyboard text provider is configured.",
+                code="STORYBOARD_AI_NOT_CONFIGURED", http_status=503,
+                retryable=False,
+            )
         self.provider = self.providers[0]
 
     @staticmethod

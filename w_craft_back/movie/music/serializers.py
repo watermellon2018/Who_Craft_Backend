@@ -274,6 +274,12 @@ class MusicBriefSerializer(serializers.Serializer):
 
 
 class GenerationCreateSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(
+        max_length=16384, required=False, allow_blank=True, trim_whitespace=False,
+    )
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     modelKey = serializers.CharField(
         max_length=64,
         required=False,

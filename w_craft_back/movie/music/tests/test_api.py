@@ -7,6 +7,7 @@ import io
 import tempfile
 import wave
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -169,6 +170,11 @@ class MusicBriefSerializerTests(TestCase):
 )
 class MusicApiTests(TestCase):
     def setUp(self) -> None:
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.media = tempfile.TemporaryDirectory()
         self.addCleanup(self.media.cleanup)
         self.media_override = override_settings(MEDIA_ROOT=self.media.name)

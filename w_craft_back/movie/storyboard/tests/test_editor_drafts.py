@@ -277,10 +277,13 @@ class EditorDraftApiTests(TestCase):
                     ][0][field] = value
                     self.assertEqual(self.put(invalid, revision=1).status_code, 400)
 
-    @patch("w_craft_back.movie.storyboard.views.AIShotListService")
+    @patch(
+        "w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True,
+    )
+    @patch("w_craft_back.movie.storyboard.text_generation.AIShotListService")
     def test_generation_language_uses_profile_and_explicit_override(self, service):
         service.return_value.suggest.return_value = {"shots": []}
-        service.options.return_value = {"models": []}
+        service.options.return_value = {"models": [], "defaultModel": ""}
         UserProfile.objects.update_or_create(
             user=self.owner, defaults={"language": "ru", "content_language": "en"},
         )

@@ -66,7 +66,10 @@ def execute_poster_job(job_id: int) -> PosterGenerationJob:
             "source_variant",
         ).get(pk=job_id)
     )
-    use_mock = getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
+    access = (job.provider_snapshot or {}).get("generationAccess")
+    use_mock = bool((job.provider_snapshot or {}).get("mock")) if access else (
+        getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
+    )
     if use_mock:
         complete_generation_mock(
             job,
@@ -88,6 +91,21 @@ def execute_poster_job(job_id: int) -> PosterGenerationJob:
         return job
 
     try:
+        from w_craft_back.services.image_generation.personal import (
+            resolve_image_generation, validate_image_access,
+        )
+
+        validate_image_access(claimed.provider_snapshot or {}, user=claimed.user)
+        if not (claimed.provider_snapshot or {}).get("generationAccess"):
+            # Previously queued paid jobs also require the new payer grant.
+            resolve_image_generation(
+                claimed.user, source="platform",
+                model_key=claimed.requested_model or None,
+                operation=(
+                    "edit" if claimed.operation == PosterJobOperation.EDIT
+                    else "generate"
+                ),
+            )
         if claimed.provider_snapshot:
             from w_craft_back.services.image_generation.routing import (
                 provider_from_route_snapshot,

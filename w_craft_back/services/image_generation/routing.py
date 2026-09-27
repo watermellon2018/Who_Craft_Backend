@@ -262,6 +262,12 @@ class RoutedImageProvider:
 
 
 def provider_from_route_snapshot(snapshot: Mapping[str, Any]):
+    if snapshot.get("generationAccess"):
+        from .personal import PersonalImageProvider, validate_image_access
+
+        validate_image_access(snapshot)
+        if snapshot["generationAccess"].get("source") == "personal":
+            return PersonalImageProvider(snapshot)
     if snapshot.get("candidates"):
         return RoutedImageProvider(snapshot)
     spec_snapshot = snapshot.get("spec", snapshot)

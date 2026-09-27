@@ -55,6 +55,7 @@ def proposal_for(scene: Scene) -> dict:
     STORYBOARD_SHOT_LIST_MODELS=MODEL,
     STORYBOARD_SHOT_LIST_THROTTLE_RATE="1000/min",
 )
+@patch("w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True)
 class ShotListJobTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -387,6 +388,7 @@ class ShotListJobTests(TestCase):
     GEMINI_API_KEY="test-key", STORYBOARD_SHOT_LIST_MODEL=MODEL,
     STORYBOARD_SHOT_LIST_MODELS=MODEL,
 )
+@patch("w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True)
 class ShotListJobConcurrencyTests(TransactionTestCase):
     def test_simultaneous_start_creates_one_paid_job_and_two_durable_retries(self):
         owner, _ = make_user("shot-list-race")

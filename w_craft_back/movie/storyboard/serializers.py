@@ -192,6 +192,10 @@ class GenerationReferencesReplaceSerializer(serializers.Serializer):
 
 
 class GenerateKeyframeSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(max_length=16384, required=False)
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     imageModel = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -205,6 +209,10 @@ class GenerateKeyframeSerializer(serializers.Serializer):
 
 
 class ShotListSuggestSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(max_length=16384, required=False)
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     language = serializers.ChoiceField(choices=("ru", "en"), required=False)
     model = serializers.CharField(
         required=False,

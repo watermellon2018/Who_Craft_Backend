@@ -40,10 +40,14 @@ from w_craft_back.movie.storyboard.serializers import (
     TransitionPatchSerializer,
 )
 from w_craft_back.movie.storyboard.shot_list import (
-    AIShotListService,
     AIShotMetadataService,
 )
 from w_craft_back.movie.storyboard.source import source_from_scene
+from w_craft_back.movie.storyboard.text_generation import (
+    resolve_shot_list_access,
+    shot_list_options,
+    shot_list_service,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -156,6 +160,7 @@ class SceneStoryboardEditorFrameOptionsView(StoryboardAuthedView):
     def get(self, request, project_id: int, scene_id: int):
         return Response(editor_frames.frame_options(
             actor=self.actor(request), project_id=project_id, scene_id=scene_id,
+            generation_source=request.query_params.get("generationSource"),
         ))
 
 
@@ -262,7 +267,8 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
         )
         scene = services._scene(project, scene_id)
         context = services.SceneStoryboardContextService.build(scene)
-        return Response(AIShotListService.options(
+        return Response(shot_list_options(
+            actor=actor, generation_source_override=data.get("generationSource"),
             context=context, max_shots=16, source=source_from_scene(scene),
             language=_shot_list_language(actor, data.get("language")),
         ))
@@ -278,8 +284,13 @@ class SceneStoryboardShotListView(StoryboardAuthedView):
         )
         scene = services._scene(project, scene_id)
         context = services.SceneStoryboardContextService.build(scene)
+        access = resolve_shot_list_access(
+            actor, model=data.get("model"), source=data.get("generationSource"),
+            approval_token=data.get("generationAccessToken"),
+        )
+        service = shot_list_service(access=access, model=data.get("model"), actor=actor)
         return Response(
-            AIShotListService(model=data.get("model")).suggest(
+            service.suggest(
                 context=context,
                 max_shots=data["maxShots"],
                 source=source_from_scene(scene),
@@ -298,6 +309,8 @@ class SceneStoryboardShotListJobView(StoryboardAuthedView):
         return Response(shot_list_jobs.enqueue_shot_list(
             actor=actor, project_id=project_id, scene_id=scene_id,
             request_id=data["requestId"], model=data.get("model"),
+            generation_source=data.get("generationSource"),
+            approval_token=data.get("generationAccessToken"),
             max_shots=data["maxShots"], estimated_seconds=data["estimatedSeconds"],
             language=_shot_list_language(actor, data.get("language")),
         ), status=status.HTTP_202_ACCEPTED)

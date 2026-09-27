@@ -124,6 +124,18 @@ def _effect_payload(effect: SoundEffect, request) -> dict[str, Any]:
 
 def get_capabilities(*, actor: User, project_id: int) -> dict[str, Any]:
     project = _project_for_action(actor, project_id, policy.Action.VIEW)
+    from w_craft_back.personal_api.access import (
+        has_paid_subscription, resolve_generation_access,
+    )
+    from w_craft_back.personal_api.errors import PersonalAPIError
+
+    try:
+        resolve_generation_access(
+            actor, "sound_effect", source="personal", model_key=MODEL_KEY,
+        )
+        personal_available = True
+    except PersonalAPIError:
+        personal_available = False
     try:
         auto_cost = Decimal(
             str(getattr(settings, "SOUND_EFFECTS_ELEVENLABS_AUTO_COST_USD", ""))
@@ -152,6 +164,8 @@ def get_capabilities(*, actor: User, project_id: int) -> dict[str, Any]:
         ).strip()
         == "mp3_44100_128"
     )
+    configured = personal_available or (configured and has_paid_subscription(actor))
+    auto_supported = personal_available or auto_supported
     return {
         "defaultModelKey": MODEL_KEY,
         "models": [
@@ -266,6 +280,10 @@ def _job_queryset():
 
 
 def _job_payload(job: SoundEffectGenerationJob, actor: User, request) -> dict[str, Any]:
+    access = (job.provider_snapshot or {}).get("generationAccess") or {}
+    owns_source = (
+        access.get("source") != "personal" or access.get("ownerId") == actor.pk
+    )
     try:
         variant = job.variant
     except SoundEffectVariant.DoesNotExist:
@@ -304,7 +322,7 @@ def _job_payload(job: SoundEffectGenerationJob, actor: User, request) -> dict[st
             "attempts": job.attempts,
             "canCancel": job.status == SoundEffectJobStatus.QUEUED,
             "canRetry": (
-                job.status
+                owns_source and job.status
                 in {SoundEffectJobStatus.FAILED, SoundEffectJobStatus.CANCELLED}
                 and job.error_code != "SOUND_EFFECT_PROVIDER_OUTCOME_UNKNOWN"
             ),

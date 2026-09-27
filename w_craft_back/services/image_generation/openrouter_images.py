@@ -133,8 +133,12 @@ def _base_url() -> str:
     ).strip().rstrip("/")
 
 
-def _request_headers(*, require_key: bool) -> dict[str, str]:
-    api_key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+def _request_headers(
+    *, require_key: bool, api_key: str | None = None,
+) -> dict[str, str]:
+    api_key = (
+        (os.getenv("OPENROUTER_API_KEY") or "") if api_key is None else api_key
+    ).strip()
     if require_key and not api_key:
         raise ImageProviderError(
             code=CODE_NOT_CONFIGURED,
@@ -896,6 +900,7 @@ class OpenRouterImagesProvider:
         spec: ModelSpec,
         *,
         session: requests.Session | None = None,
+        api_key: str | None = None,
     ) -> None:
         if spec.backend != "openrouter-images" or spec.mode != "images":
             raise ValueError("OpenRouterImagesProvider requires an images ModelSpec")
@@ -904,7 +909,10 @@ class OpenRouterImagesProvider:
         self.model_id = spec.model_id
         self.session = session or requests.Session()
         self._usage_events: list[dict[str, Any]] = []
-        self.session.headers.update(_request_headers(require_key=True))
+        self._personal = api_key is not None
+        self.session.headers.update(
+            _request_headers(require_key=True, api_key=api_key)
+        )
         self.session.headers.setdefault("Content-Type", "application/json")
 
     def supports_edit(self) -> bool:
@@ -994,6 +1002,7 @@ class OpenRouterImagesProvider:
                     f"{_base_url()}/images",
                     json=payload,
                     timeout=remaining,
+                    allow_redirects=False,
                 )
             except requests.RequestException as exc:
                 # A transport error can happen after the provider accepted a
@@ -1007,6 +1016,10 @@ class OpenRouterImagesProvider:
             if response.status_code == 200:
                 break
             error = _http_error(response)
+            error.rejected_before_acceptance = (
+                response.status_code in {401, 402, 403, 404, 429}
+                and error.code != CODE_BLOCKED
+            )
             error_type, provider_code = _provider_error_tokens(response)
             logger.warning(
                 "OpenRouter Images request rejected: model=%s status=%s "
@@ -1021,7 +1034,8 @@ class OpenRouterImagesProvider:
                 error.provider_body_hash,
             )
             if (
-                response.status_code not in _TRANSIENT_RESPONSE_STATUSES
+                self._personal
+                or response.status_code not in _TRANSIENT_RESPONSE_STATUSES
                 or attempt >= len(_TRANSIENT_RESPONSE_DELAYS_SECONDS)
             ):
                 raise error

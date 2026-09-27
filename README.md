@@ -230,8 +230,15 @@ because ElevenLabs publishes plan credits for Auto without a public USD
 conversion. Before production use, disable third-party SFX sublicensing in the
 ElevenLabs account and perform a credentialed smoke test.
 
+Personal keys and modality preferences are available in profile settings.
+See [`docs/personal-api.md`](docs/personal-api.md) for provider support, the
+`PERSONAL_API_ENCRYPTION_KEY` required by web/workers, and migration `0069`.
+Paid generation uses a personal key or requires a future Craft subscription;
+Craft subscriptions are not implemented yet. Free storyboard field suggestions
+remain available without either. Personal requests do not debit Craft credits.
+
 The credits wallet and generation settlement flow are described in
-[`docs/credits.md`](docs/credits.md). Paid generation first reserves the
+[`docs/credits.md`](docs/credits.md). Entitlement-approved Craft generation reserves the
 provider-native estimate, captures the final provider cost on success, and
 releases the reservation on confirmed pre-provider failure or cancellation. Set
 `CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal

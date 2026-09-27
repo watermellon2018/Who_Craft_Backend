@@ -24,6 +24,11 @@ from w_craft_back.movie.sound_effects.models import (
     SoundEffectJobStage,
 )
 from w_craft_back.movie.sound_effects.providers import get_sound_effect_provider
+from w_craft_back.movie.sound_effects.generation_access import (
+    validate_sound_effect_snapshot_access,
+)
+from w_craft_back.personal_api.access import credential_for_candidate
+from w_craft_back.personal_api.errors import PersonalAPIError
 from w_craft_back.storage_gateway import (
     InvalidAudio,
     MediaTooLarge,
@@ -35,6 +40,37 @@ from w_craft_back.storage_gateway import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_personal_sound_effect(claimed, snapshot, context):
+    access = snapshot["generationAccess"]
+    last_error = None
+    for index, candidate in enumerate(access["candidates"]):
+        try:
+            credential = credential_for_candidate(access, candidate, user=claimed.actor)
+        except PersonalAPIError as exc:
+            last_error = exc
+            continue
+        provider = get_sound_effect_provider(claimed.provider, api_key=credential)
+        pinned = dict(snapshot, generationCandidateIndex=index)
+        context.checkpoint()
+        SoundEffectGenerationJob.objects.filter(
+            pk=claimed.pk, lease_token=claimed.lease_token,
+        ).update(provider_snapshot=pinned)
+        claimed.provider_snapshot = pinned
+        credential_for_candidate(access, candidate, user=claimed.actor)
+        mark_sound_effect_provider_started(claimed)
+        try:
+            return provider.generate(claimed.request, context)
+        except SoundEffectProviderError as exc:
+            if not exc.definitely_rejected or exc.outcome_unknown or exc.cost_incurred:
+                raise
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise SoundEffectProviderError(
+        "No personal sound-effect route is available.", retryable=False,
+    )
 
 
 def execute_sound_effect_job(
@@ -58,12 +94,16 @@ def execute_sound_effect_job(
                 code="SOUND_EFFECT_PROVIDER_NOT_CONFIGURED",
                 retryable=False,
             )
-        provider = get_sound_effect_provider(claimed.provider)
+        access = validate_sound_effect_snapshot_access(snapshot, user=claimed.actor)
         context = SoundEffectExecutionContext(claimed.pk, claimed.lease_token)
         context.checkpoint()
-        mark_sound_effect_provider_started(claimed)
-        provider_started = True
-        generated = provider.generate(claimed.request, context)
+        if access["source"] == "personal":
+            generated = _generate_personal_sound_effect(claimed, snapshot, context)
+        else:
+            provider = get_sound_effect_provider(claimed.provider)
+            mark_sound_effect_provider_started(claimed)
+            provider_started = True
+            generated = provider.generate(claimed.request, context)
         SoundEffectGenerationJob.objects.filter(pk=claimed.pk).update(
             stage=SoundEffectJobStage.STORING
         )
@@ -101,6 +141,11 @@ def execute_sound_effect_job(
             provider_metadata={
                 "providerRequestId": generated.provider_request_id,
             },
+        )
+    except PersonalAPIError as exc:
+        fail_sound_effect_job(
+            claimed, code=exc.code, detail=exc.message,
+            http_status=exc.status_code, retryable=False, cost_incurred=False,
         )
     except (InvalidAudio, UnsupportedMedia, MediaTooLarge) as exc:
         code = (
@@ -148,16 +193,28 @@ def execute_sound_effect_job(
             cost_incurred=True,
         )
     except Exception:
-        logger.exception(
-            "sound_effect_worker_failed",
-            extra={"job_id": str(claimed.pk)},
+        source = (claimed.provider_snapshot.get("generationAccess") or {}).get("source")
+        unknown = source == "personal" and bool(claimed.provider_started_at)
+        error_code = (
+            "SOUND_EFFECT_PROVIDER_OUTCOME_UNKNOWN" if unknown
+            else "SOUND_EFFECT_PROVIDER_UNAVAILABLE"
         )
+        if source == "personal":
+            logger.error(
+                "personal_sound_effect_worker_failed",
+                extra={"job_id": str(claimed.pk)},
+            )
+        else:
+            logger.exception(
+                "sound_effect_worker_failed",
+                extra={"job_id": str(claimed.pk)},
+            )
         fail_sound_effect_job(
             claimed,
-            code="SOUND_EFFECT_PROVIDER_UNAVAILABLE",
-            detail=public_provider_detail("SOUND_EFFECT_PROVIDER_UNAVAILABLE"),
+            code=error_code,
+            detail=public_provider_detail(error_code),
             http_status=503,
-            retryable=True,
+            retryable=not unknown,
             cost_incurred=provider_started,
         )
     if stored_key:

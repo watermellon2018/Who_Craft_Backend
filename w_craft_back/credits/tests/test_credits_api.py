@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -30,6 +31,7 @@ from w_craft_back.credits.services import (
 )
 
 
+@patch("w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True)
 class CreditsApiTest(TestCase):
     def setUp(self):
         self.client = APIClient()

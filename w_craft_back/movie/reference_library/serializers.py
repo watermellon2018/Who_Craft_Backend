@@ -79,6 +79,10 @@ class ReferenceUploadSerializer(ExpectedReferenceVersionSerializer):
 
 
 class GenerationCreateSerializer(ExpectedReferenceVersionSerializer):
+    generationAccessToken = serializers.CharField(required=False, max_length=16000)
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     operation = serializers.ChoiceField(choices=ReferenceOperation.values)
     sourceVersionId = serializers.UUIDField(required=False, allow_null=True)
     variantCount = serializers.IntegerField()

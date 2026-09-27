@@ -400,7 +400,7 @@ def get_capabilities(*, actor: User, project_id: int) -> dict:
     }
     capabilities.update(effective_capabilities)
     capabilities["defaultModelKey"] = default_model_key
-    models = public_audio_model_catalog()
+    models = public_audio_model_catalog(user=actor)
     for model in models:
         # Brief controls are product-level values shared by every provider.
         # Include them in each model capability row so clients can project a
@@ -946,6 +946,10 @@ def _job_payload(
 
     effective_permissions = permissions or _permission_payload(actor, job.project)
     can_run_generation = bool(effective_permissions["canRunGeneration"])
+    access = (job.provider_snapshot or {}).get("generationAccess") or {}
+    owns_source = (
+        access.get("source") != "personal" or access.get("ownerId") == actor.pk
+    )
     payload = {
         "jobId": str(job.id),
         "modelKey": _job_model_key(job),
@@ -962,7 +966,10 @@ def _job_payload(
         "retryOf": str(job.retry_of_id) if job.retry_of_id else None,
         "attempts": job.attempts,
         "canCancel": can_run_generation and job.status in CANCELLABLE_JOB_STATUSES,
-        "canRetry": can_run_generation and job.status in RETRYABLE_JOB_STATUSES,
+        "canRetry": (
+            can_run_generation and owns_source and job.status in RETRYABLE_JOB_STATUSES
+            and job.error_code != "MUSIC_PROVIDER_OUTCOME_UNKNOWN"
+        ),
         "error": _job_error_payload(job),
         "createdAt": _iso_datetime(job.created_at),
         "completedAt": _iso_datetime(job.completed_at),
@@ -1055,6 +1062,8 @@ def enqueue_job(
             target_track=target_track,
             reference_asset=reference_asset,
             model_key=data.get("modelKey"),
+            generation_source=data.get("generationSource"),
+            approval_token=data.get("generationAccessToken"),
         )
     except MusicError:
         raise

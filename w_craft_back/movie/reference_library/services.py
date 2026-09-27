@@ -60,7 +60,6 @@ from w_craft_back.movie.reference_library.prompt_compiler import (
     normalize_brief,
 )
 from w_craft_back.movie.reference_library.providers import (
-    effective_reference_model_key,
     provider_mode,
     resolve_reference_provider,
 )
@@ -289,28 +288,17 @@ def get_capabilities(*, actor: Any, project_id: int) -> dict[str, Any]:
     effective_model = "mock"
     configured = True
     can_edit_provider = True
-    if mode == "registry":
-        project_model = str(
-            (project.generation_settings or {}).get("image_generation_model", "") or ""
-        ).strip()
-        try:
-            effective_model = effective_reference_model_key(
-                actor=actor,
-                project=project,
-                requested_model=project_model,
-            )
-            provider = resolve_reference_provider(
-                actor=actor,
-                project=project,
-                requested_model=effective_model,
-            )
-            can_edit_provider = provider.supports_edit()
-        except ReferenceError:
-            configured = False
-            effective_model = project_model or None
-        except ImageProviderError:
-            configured = False
-            effective_model = project_model or None
+    try:
+        provider = resolve_reference_provider(actor=actor, project=project)
+        effective_model = (
+            provider.spec.key if getattr(provider, "spec", None) else provider.model_id
+        )
+        can_edit_provider = provider.supports_edit()
+        if provider.generation_access["source"] == "personal":
+            mode = "registry"
+    except (ReferenceError, ImageProviderError):
+        configured = False
+        effective_model = None
     return {
         "permissions": {
             "canView": permissions["canView"],
@@ -908,6 +896,7 @@ def enqueue_job(
         "variantCount": data["variantCount"],
         "imageModel": data.get("imageModel", ""),
         "routingMode": data.get("routingMode", "manual"),
+        "generationSource": data.get("generationSource"),
         "brief": data.get("brief", reference.brief),
         "editInstruction": data.get("editInstruction", ""),
         "expectedReferenceVersion": data["expectedReferenceVersion"],
@@ -952,45 +941,38 @@ def enqueue_job(
         brief=brief,
         edit_instruction=data.get("editInstruction", ""),
     )
-    effective_model = effective_reference_model_key(
-        actor=actor,
-        project=project,
-        requested_model=data.get("imageModel", ""),
-    )
     routing_mode = str(data.get("routingMode") or "manual").lower()
     try:
-        if routing_mode != "manual":
+        provider = resolve_reference_provider(
+            actor=actor, project=project, requested_model=data.get("imageModel", ""),
+            require_edit=operation == ReferenceOperation.EDIT,
+            generation_source=data.get("generationSource"),
+            approval_token=data.get("generationAccessToken"),
+        )
+        provider_snapshot = provider.provider_snapshot
+        access = provider.generation_access
+        provider_name = provider.name
+        model_name = provider.model_id
+        effective_model = (
+            provider.spec.key if getattr(provider, "spec", None) else model_name
+        )
+        if (routing_mode != "manual" and access["source"] == "platform"
+                and not access.get("freePlatform")):
             from w_craft_back.services.image_generation.routing import (
                 build_routing_decision,
             )
 
             decision = build_routing_decision(
-                mode=routing_mode,
-                requested_model=effective_model,
+                mode=routing_mode, requested_model=effective_model,
                 operation=(
                     "edit" if operation == ReferenceOperation.EDIT else "generate"
                 ),
-                variant_count=data["variantCount"],
-                prompt=compiled.compiled_prompt,
+                variant_count=data["variantCount"], prompt=compiled.compiled_prompt,
             )
-            provider_snapshot = decision.snapshot()
+            provider_snapshot = {**decision.snapshot(), "generationAccess": access}
             provider_name = decision.primary.spec.backend
             model_name = decision.primary.spec.model_id
             effective_model = decision.primary.spec.key
-        else:
-            provider = resolve_reference_provider(
-                actor=actor,
-                project=project,
-                requested_model=effective_model,
-                require_edit=operation == ReferenceOperation.EDIT,
-            )
-            provider_snapshot = (
-                {"spec": provider.spec.__dict__}
-                if getattr(provider, "spec", None) is not None
-                else {}
-            )
-            provider_name = provider.name
-            model_name = provider.model_id
     except ImageProviderError as error:
         raise map_provider_error(error) from error
     except CreditServiceError as error:
@@ -1023,14 +1005,29 @@ def enqueue_job(
             model_name=model_name,
         )
         try:
-            if provider_snapshot.get("candidates"):
-                from w_craft_back.services.image_generation.routing import (
-                    estimate_route_snapshot,
-                )
+            if access["source"] == "platform" and not access.get("freePlatform"):
+                if provider_snapshot.get("candidates"):
+                    from w_craft_back.services.image_generation.routing import (
+                        estimate_route_snapshot,
+                    )
 
-                estimate, reservation_amount, pricing_snapshot = (
-                    estimate_route_snapshot(
-                        provider_snapshot,
+                    estimate, reservation_amount, pricing_snapshot = (
+                        estimate_route_snapshot(
+                            provider_snapshot,
+                            operation=(
+                                "edit"
+                                if operation == ReferenceOperation.EDIT
+                                else "generate"
+                            ),
+                            variant_count=data["variantCount"],
+                            prompt=compiled.compiled_prompt,
+                        )
+                    )
+                else:
+                    estimate = estimate_for_pinned_provider(
+                        provider=provider_name,
+                        provider_snapshot=provider_snapshot or None,
+                        model_name=model_name,
                         operation=(
                             "edit"
                             if operation == ReferenceOperation.EDIT
@@ -1039,35 +1036,21 @@ def enqueue_job(
                         variant_count=data["variantCount"],
                         prompt=compiled.compiled_prompt,
                     )
+                    reservation_amount = estimate.reservation_amount
+                    pricing_snapshot = estimate.snapshot
+                reserve_generation(
+                    user=actor,
+                    domain="reference",
+                    job_id=str(job.id),
+                    provider=estimate.provider,
+                    model_name=estimate.model_name,
+                    estimated_cost=estimate.estimated_cost,
+                    reservation_amount=reservation_amount,
+                    pricing_snapshot=pricing_snapshot,
+                    project=project,
+                    operation=operation,
+                    routing_mode=routing_mode,
                 )
-            else:
-                estimate = estimate_for_pinned_provider(
-                    provider=provider_name,
-                    provider_snapshot=provider_snapshot or None,
-                    model_name=model_name,
-                    operation=(
-                        "edit"
-                        if operation == ReferenceOperation.EDIT
-                        else "generate"
-                    ),
-                    variant_count=data["variantCount"],
-                    prompt=compiled.compiled_prompt,
-                )
-                reservation_amount = estimate.reservation_amount
-                pricing_snapshot = estimate.snapshot
-            reserve_generation(
-                user=actor,
-                domain="reference",
-                job_id=str(job.id),
-                provider=estimate.provider,
-                model_name=estimate.model_name,
-                estimated_cost=estimate.estimated_cost,
-                reservation_amount=reservation_amount,
-                pricing_snapshot=pricing_snapshot,
-                project=project,
-                operation=operation,
-                routing_mode=routing_mode,
-            )
         except CreditServiceError as error:
             raise ReferenceError(
                 error.message,

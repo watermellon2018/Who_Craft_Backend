@@ -36,6 +36,10 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("DJANGO_SECRET_KEY is not set. Define it in backend/.env.")
 
+# A separate Fernet key is required to save/use personal provider credentials.
+# Leave blank to disable that feature; never derive it from DJANGO_SECRET_KEY.
+PERSONAL_API_ENCRYPTION_KEY = os.getenv("PERSONAL_API_ENCRYPTION_KEY", "").strip()
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in {"1", "true", "yes", "on"}
 CREDITS_DEMO_TOP_UP_ENABLED = os.getenv(

@@ -111,6 +111,14 @@ def provider_circuit_key(provider: object) -> str:
     name = str(getattr(provider, "name", provider.__class__.__name__))
     model = str(getattr(provider, "model_id", "") or "")
     raw = f"{name}:{model}" if model else name
+    access = getattr(provider, "generation_access", {})
+    if access.get("source") == "personal":
+        # A rejected user's key must never open the shared platform circuit.
+        scope = ":".join(
+            f"{item['connectionId']}:{item['connectionVersion']}"
+            for item in access.get("candidates", [])
+        )
+        raw = f"personal:{access['ownerId']}:{scope}:{raw}"
     if len(raw) <= 255:
         return raw
     suffix = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]

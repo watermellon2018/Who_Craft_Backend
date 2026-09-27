@@ -37,6 +37,7 @@ class GenerationEstimateSerializer(serializers.Serializer):
             "music",
             "sound_effect",
             "model3d",
+            "text",
         )
     )
     operation = serializers.ChoiceField(
@@ -65,6 +66,9 @@ class GenerationEstimateSerializer(serializers.Serializer):
     routingMode = serializers.ChoiceField(
         choices=("manual", "economy", "fast", "balanced", "quality"),
         default="manual",
+    )
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
     )
 
 

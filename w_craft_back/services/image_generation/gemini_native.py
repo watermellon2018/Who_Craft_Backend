@@ -38,10 +38,11 @@ def _format_from_aspect(aspect_ratio: str | None) -> str | None:
 class GeminiNativeProvider:
     name = "gemini-native"
 
-    def __init__(self, spec: ModelSpec) -> None:
+    def __init__(self, spec: ModelSpec, *, api_key: str | None = None) -> None:
         self.spec = spec
         self.model_id = spec.model_id
         self._usage_events: list[dict[str, Any]] = []
+        self._api_key = api_key
 
     def usage_snapshot(self) -> dict[str, Any]:
         return merge_usage(self._usage_events)
@@ -88,11 +89,16 @@ class GeminiNativeProvider:
                         poster_format=poster_format,
                         timeout_seconds=kwargs.get("timeout", 120),
                         return_usage=True,
+                        **({"api_key": self._api_key, "model": self.model_id}
+                           if self._api_key is not None else {}),
                     )
                 results.append(image)
                 self._record_usage(usage, operation="generate")
         except Exception as exc:  # noqa: BLE001 — funnel through unified mapper
-            raise map_to_provider_error(exc) from exc
+            error = map_to_provider_error(exc)
+            if results:
+                error.rejected_before_acceptance = False
+            raise error from exc
         return results
 
     def edit(
@@ -112,6 +118,8 @@ class GeminiNativeProvider:
                 mime_type=mime_type,
                 timeout_seconds=kwargs.get("timeout", 120),
                 return_usage=True,
+                **({"api_key": self._api_key, "model": "gemini-2.5-flash-image"}
+                   if self._api_key is not None else {}),
             )
             self._record_usage(usage, operation="edit")
             return image

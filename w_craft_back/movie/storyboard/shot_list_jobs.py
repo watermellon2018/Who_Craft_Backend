@@ -37,10 +37,14 @@ from w_craft_back.movie.storyboard.services import (
     _scene,
 )
 from w_craft_back.movie.storyboard.shot_list import (
-    AIShotListService,
     LiteLLMShotListProvider,
 )
 from w_craft_back.movie.storyboard.source import source_from_scene
+from w_craft_back.movie.storyboard.text_generation import (
+    resolve_shot_list_access,
+    shot_list_service,
+)
+from w_craft_back.personal_api.errors import PersonalAPIError
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,8 @@ def job_payload(job: SceneStoryboardShotListJob) -> dict[str, Any]:
 def enqueue_shot_list(
     *, actor: Any, project_id: int, scene_id: int, request_id: uuid.UUID,
     model: str | None, max_shots: int, language: str, estimated_seconds: int,
+    generation_source: str | None = None,
+    approval_token: str | None = None,
 ) -> dict[str, Any]:
     """Commit a request before returning; a browser is never its executor."""
     project = _require_project(
@@ -87,6 +93,7 @@ def enqueue_shot_list(
     parameters = {
         "sceneId": scene_id, "model": model, "maxShots": max_shots,
         "language": language, "estimatedSeconds": estimated_seconds,
+        "generationSource": generation_source,
     }
     previous = SceneStoryboardShotListRequest.objects.select_related("job").filter(
         project=project, actor=actor, request_id=request_id,
@@ -100,7 +107,14 @@ def enqueue_shot_list(
     ).first()
     if job is None:
         # Constructor validates allowlist/configuration; it never calls a provider.
-        route = LiteLLMShotListProvider(model=model).model
+        access = resolve_shot_list_access(
+            actor, model=model, source=generation_source,
+            approval_token=approval_token,
+        )
+        route = (
+            access["candidates"][0]["modelKey"] if access["source"] == "personal"
+            else LiteLLMShotListProvider(model=model).model
+        )
         draft = SceneStoryboardEditorDraft.objects.select_for_update().filter(
             scene=scene,
         ).first()
@@ -112,6 +126,7 @@ def enqueue_shot_list(
                 "model": route, "language": language, "maxShots": max_shots,
                 "context": SceneStoryboardContextService.build(scene),
                 "source": source_from_scene(scene),
+                "generationAccess": access,
             },
         )
     SceneStoryboardShotListRequest.objects.create(
@@ -397,7 +412,12 @@ def execute_shot_list_job(job_id: uuid.UUID | None = None):
             action=policy.Action.RUN_GENERATION,
         )
         snapshot = claimed.request_snapshot
-        service = AIShotListService(model=snapshot["model"])
+        access = snapshot.get("generationAccess") or resolve_shot_list_access(
+            claimed.actor, model=snapshot["model"], source="platform",
+        )
+        service = shot_list_service(
+            access=access, model=snapshot["model"], actor=claimed.actor,
+        )
         _provider_started(claimed)
         proposal = service.suggest(
             context=snapshot["context"], source=snapshot["source"],
@@ -409,6 +429,8 @@ def execute_shot_list_job(job_id: uuid.UUID | None = None):
     except (ShotListLeaseLost, StoryboardNotFound):
         return None
     except StoryboardError as error:
+        _fail_job(claimed, error.code)
+    except PersonalAPIError as error:
         _fail_job(claimed, error.code)
     except Exception as error:
         # Exception text may contain provider response bodies or credentials.

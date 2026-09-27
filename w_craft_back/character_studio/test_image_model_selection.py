@@ -54,6 +54,14 @@ PROVIDER_FACTORY = (
 
 
 class CharacterImageModelSelectionTests(CharacterStudioTestCase):
+    def setUp(self):
+        super().setUp()
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
+
     @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"})
     def test_request_project_user_environment_and_default_precedence(self):
         character = self.create_character()

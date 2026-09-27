@@ -7,6 +7,8 @@ from .elevenlabs import ElevenLabsSoundEffectsProvider
 
 def get_sound_effect_provider(
     provider_name: str = "elevenlabs-sfx",
+    *,
+    api_key: str | None = None,
 ) -> ElevenLabsSoundEffectsProvider:
     if str(provider_name or "").strip().lower() != "elevenlabs-sfx":
         raise SoundEffectProviderError(
@@ -14,4 +16,4 @@ def get_sound_effect_provider(
             code="SOUND_EFFECT_PROVIDER_NOT_CONFIGURED",
             retryable=False,
         )
-    return ElevenLabsSoundEffectsProvider()
+    return ElevenLabsSoundEffectsProvider(api_key=api_key)

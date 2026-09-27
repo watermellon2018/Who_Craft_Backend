@@ -8,6 +8,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from w_craft_back.personal_api.access import (
+    resolve_generation_access, sign_generation_access,
+)
 from w_craft_back.movie.music.providers import (
     MusicProviderError,
     resolve_audio_model,
@@ -218,6 +221,60 @@ class GenerationEstimateView(APIView):
         if not serializer.is_valid():
             return _validation_error(serializer)
         data = serializer.validated_data
+        modality = (
+            data["domain"] if data["domain"] in {"text", "music", "sound_effect"}
+            else "image"
+        )
+        access = resolve_generation_access(
+            request.user, modality,
+            source=data.get("generationSource"),
+            model_key=data.get("modelKey") or None,
+            operation="structured" if modality == "text" else data["operation"],
+            free_platform=data["domain"] == "model3d",
+        )
+        if access["source"] == "personal" or access.get("freePlatform"):
+            candidates = access.get("candidates") or []
+            primary = candidates[0] if candidates else {}
+            # A zero Craft charge is external billing, not a free provider call.
+            # Do not create/check a wallet for personal or explicit free work.
+            return Response({
+                "domain": data["domain"],
+                "operation": data["operation"],
+                "generationSource": access["source"],
+                "generationAccessToken": (
+                    sign_generation_access(access)
+                    if access["source"] == "personal" else ""
+                ),
+                "modality": modality,
+                "isFree": bool(access.get("freePlatform")),
+                "connectionName": primary.get("connectionName", ""),
+                "provider": primary.get("provider", "local"),
+                "modelKey": primary.get("modelKey", "local"),
+                "modelName": primary.get("modelKey", "local"),
+                "currency": "USD",
+                "estimatedCost": "0.00",
+                "reservationAmount": "0.00",
+                "pricingSource": (
+                    "personal-api" if access["source"] == "personal" else "local"
+                ),
+                "costIsEstimate": True,
+                "availableBalance": "0.00",
+                "sufficientBalance": True,
+                "accountFrozen": False,
+                "routingMode": "manual",
+                "routingReason": (
+                    "personal-priority" if candidates else "local-operation"
+                ),
+                "routeCandidates": [
+                    {
+                        "provider": item["provider"],
+                        "modelKey": item["modelKey"],
+                        "modelName": item["modelKey"],
+                        "estimatedCost": "0.00",
+                    }
+                    for item in candidates
+                ],
+            })
         try:
             if data["domain"] == "music":
                 resolved = resolve_audio_model(data.get("modelKey") or None)
@@ -357,6 +414,9 @@ class GenerationEstimateView(APIView):
             {
                 "domain": data["domain"],
                 "operation": data["operation"],
+                "generationSource": access["source"],
+                "modality": modality,
+                "isFree": False,
                 "provider": estimate.provider,
                 "modelKey": estimate.model_key,
                 "modelName": estimate.model_name,

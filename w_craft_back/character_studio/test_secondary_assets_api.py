@@ -21,6 +21,11 @@ from w_craft_back.movie.project.models import Project
 
 class SecondaryAssetsApiTests(TestCase):
     def setUp(self):
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.media_directory = tempfile.TemporaryDirectory()
         self.media_override = override_settings(MEDIA_ROOT=self.media_directory.name)
         self.media_override.enable()
@@ -199,7 +204,7 @@ class SecondaryAssetsApiTests(TestCase):
                 domain="character",
                 job_id__in=[row["job_id"] for row in first_jobs],
             ).count(),
-            2,
+            0,
         )
 
     def test_generate_rejects_tampered_quote(self):

@@ -9,6 +9,12 @@ MODEL_KEY = "elevenlabs-sound-effects-v2"
 
 
 class GenerationCreateSerializer(serializers.Serializer):
+    generationAccessToken = serializers.CharField(
+        max_length=16384, required=False, allow_blank=True, trim_whitespace=False,
+    )
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
     modelKey = serializers.ChoiceField(choices=(MODEL_KEY,), default=MODEL_KEY)
     prompt = serializers.CharField(max_length=450, trim_whitespace=True)
     durationSeconds = serializers.FloatField(

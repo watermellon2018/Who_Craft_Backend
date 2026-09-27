@@ -41,6 +41,7 @@ class SoundEffectProviderError(SoundEffectError):
         retryable: bool | None = None,
         outcome_unknown: bool = False,
         cost_incurred: bool = False,
+        definitely_rejected: bool = False,
     ) -> None:
         super().__init__(
             detail,
@@ -50,6 +51,7 @@ class SoundEffectProviderError(SoundEffectError):
         )
         self.outcome_unknown = outcome_unknown
         self.cost_incurred = cost_incurred
+        self.definitely_rejected = definitely_rejected
 
 
 PUBLIC_PROVIDER_DETAILS = {

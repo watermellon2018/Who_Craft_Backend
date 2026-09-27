@@ -417,7 +417,9 @@ class ImageModelView(APIView):
             return _inactive_account_response()
         raw_project_id = request.query_params.get('project_id')
         if raw_project_id is None:
-            return Response(self._serialize(profile))
+            return Response(self._serialize(
+                profile, generation_source=request.query_params.get('generationSource'),
+            ))
 
         try:
             project_id = int(str(raw_project_id).strip())
@@ -449,11 +451,15 @@ class ImageModelView(APIView):
             selection = resolve_character_provider(
                 project=project,
                 actor=actor,
-                request_payload={},
+                request_payload={
+                    'generationSource': request.query_params.get('generationSource'),
+                },
                 provider_operation='generate',
             )
         except CharacterStudioError as exc:
-            if exc.error_code != CODE_NOT_CONFIGURED:
+            if (exc.error_code != CODE_NOT_CONFIGURED
+                    and exc.error_code != 'CRAFT_SUBSCRIPTION_REQUIRED'
+                    and not exc.error_code.startswith('PERSONAL_API_')):
                 return Response(
                     {'detail': exc.message, 'code': exc.error_code},
                     status=exc.status_code,
@@ -478,6 +484,15 @@ class ImageModelView(APIView):
             selected_row = model_catalog_row(spec)
             selected_row['configured'] = configured
             available.append(selected_row)
+        from w_craft_back.services.image_generation.personal import (
+            annotate_image_catalog,
+        )
+        available = annotate_image_catalog(
+            available, user, source=request.query_params.get('generationSource'),
+        )
+        configured = next(
+            (row['configured'] for row in available if row['key'] == current), False,
+        )
         return Response({
             'current': current,
             'source': source,
@@ -567,17 +582,38 @@ class ImageModelView(APIView):
         return Response(response_data)
 
     @staticmethod
-    def _serialize(profile: UserProfile) -> dict:
+    def _serialize(profile: UserProfile, *, generation_source=None) -> dict:
         from w_craft_back.services.image_generation import list_available_models
         from w_craft_back.services.image_generation.resolver import (
             resolve_current_for_user,
         )
 
         current = resolve_current_for_user(profile.user)
+        from w_craft_back.personal_api.access import resolve_generation_access
+        from w_craft_back.personal_api.errors import PersonalAPIError
+        from w_craft_back.services.image_generation.personal import (
+            annotate_image_catalog,
+        )
+        try:
+            access = resolve_generation_access(
+                profile.user, 'image', source=generation_source,
+            )
+        except PersonalAPIError:
+            pass
+        else:
+            if access['source'] == 'personal':
+                current = {**current, 'key': access['candidates'][0]['modelKey']}
+        available = annotate_image_catalog(
+            list_available_models(), profile.user, source=generation_source,
+        )
         return {
             'current': current['key'],
             'source': current['source'],
-            'configured': current['configured'],
+            'configured': next(
+                (row['configured'] for row in available
+                 if row['key'] == current['key']),
+                False,
+            ),
             'stored': profile.image_generation_model or None,
-            'available': list_available_models(),
+            'available': available,
         }

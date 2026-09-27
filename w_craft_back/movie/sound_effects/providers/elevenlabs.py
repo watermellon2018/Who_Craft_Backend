@@ -246,6 +246,7 @@ class ElevenLabsSoundEffectsProvider:
                     "ElevenLabs rate limit was reached.",
                     code="SOUND_EFFECT_PROVIDER_RATE_LIMITED",
                     retryable=True,
+                    definitely_rejected=True,
                 )
             if response.status_code >= 500:
                 raise SoundEffectProviderError(
@@ -262,6 +263,7 @@ class ElevenLabsSoundEffectsProvider:
                     code="SOUND_EFFECT_PROVIDER_REJECTED",
                     http_status=422,
                     retryable=False,
+                    definitely_rejected=response.status_code in {401, 403},
                 )
             raw_length = str(response.headers.get("Content-Length") or "").strip()
             if raw_length:

@@ -31,7 +31,10 @@ from w_craft_back.movie.sound_effects.models import (
     SoundEffectJobStage,
     SoundEffectJobStatus,
 )
-from w_craft_back.movie.sound_effects.providers import get_sound_effect_provider
+from w_craft_back.movie.sound_effects.generation_access import (
+    resolve_sound_effect_generation_snapshot,
+    validate_sound_effect_snapshot_access,
+)
 
 
 DOMAIN = "sound_effect"
@@ -112,7 +115,8 @@ def _snapshot_price(snapshot: Mapping[str, Any]) -> tuple[Decimal, dict[str, Any
             code="SOUND_EFFECT_PRICE_UNAVAILABLE",
             http_status=503,
         ) from exc
-    if not estimated.is_finite() or estimated <= 0:
+    personal = (snapshot.get("generationAccess") or {}).get("source") == "personal"
+    if not estimated.is_finite() or estimated < 0 or (estimated == 0 and not personal):
         raise SoundEffectError(
             "Stored sound-effect price is invalid.",
             code="SOUND_EFFECT_PRICE_UNAVAILABLE",
@@ -130,6 +134,8 @@ def enqueue_sound_effect_job(
     target_effect: SoundEffect | None = None,
     target_scene: Scene | None = None,
     provider_snapshot: Mapping[str, Any] | None = None,
+    generation_source: str | None = None,
+    approval_token: str | None = None,
 ) -> tuple[SoundEffectGenerationJob, bool]:
     """Reserve and enqueue exactly one immutable provider route."""
 
@@ -159,6 +165,9 @@ def enqueue_sound_effect_job(
         "loop": bool(request.get("loop", False)),
         "promptInfluence": float(request.get("promptInfluence", 0.3)),
     }
+    source_choice = generation_source or request.get("generationSource")
+    if source_choice is not None:
+        normalized_request["generationSource"] = source_choice
     fingerprint = _fingerprint(
         project_id=project.pk,
         request=normalized_request,
@@ -185,11 +194,16 @@ def enqueue_sound_effect_job(
 
     if provider_snapshot:
         snapshot = dict(provider_snapshot)
-        estimated_cost, pricing_snapshot = _snapshot_price(snapshot)
+        access = validate_sound_effect_snapshot_access(snapshot, user=actor)
+        snapshot["generationAccess"] = dict(access)
     else:
-        provider = get_sound_effect_provider()
-        snapshot = provider.provider_snapshot(normalized_request["durationSeconds"])
-        estimated_cost, pricing_snapshot = _snapshot_price(snapshot)
+        snapshot = resolve_sound_effect_generation_snapshot(
+            actor, generation_source=source_choice,
+            duration_seconds=normalized_request["durationSeconds"],
+            approval_token=approval_token or request.get("generationAccessToken"),
+        )
+        access = snapshot["generationAccess"]
+    estimated_cost, pricing_snapshot = _snapshot_price(snapshot)
 
     with transaction.atomic():
         existing = (
@@ -219,18 +233,19 @@ def enqueue_sound_effect_job(
                     idempotency_key=key,
                     request_fingerprint=fingerprint,
                 )
-                reserve_generation(
-                    user=actor,
-                    domain=DOMAIN,
-                    job_id=str(job.pk),
-                    provider=job.provider,
-                    model_name=job.model_name,
-                    estimated_cost=estimated_cost,
-                    reservation_amount=estimated_cost,
-                    pricing_snapshot=pricing_snapshot,
-                    project=project,
-                    operation="generate",
-                )
+                if access["source"] == "platform":
+                    reserve_generation(
+                        user=actor,
+                        domain=DOMAIN,
+                        job_id=str(job.pk),
+                        provider=job.provider,
+                        model_name=job.model_name,
+                        estimated_cost=estimated_cost,
+                        reservation_amount=estimated_cost,
+                        pricing_snapshot=pricing_snapshot,
+                        project=project,
+                        operation="generate",
+                    )
         except IntegrityError:
             existing = SoundEffectGenerationJob.objects.select_for_update().get(
                 project=project,
@@ -290,17 +305,19 @@ def claim_sound_effect_job(
 
 @transaction.atomic
 def mark_sound_effect_provider_started(job: SoundEffectGenerationJob) -> None:
+    now = timezone.now()
     updated = SoundEffectGenerationJob.objects.filter(
         pk=job.pk,
         lease_token=job.lease_token,
         status=SoundEffectJobStatus.PROCESSING,
-    ).update(provider_started_at=timezone.now(), heartbeat_at=timezone.now())
+    ).update(provider_started_at=now, heartbeat_at=now)
     if not updated:
         raise SoundEffectError(
             "Sound-effect lease was lost.",
             code="SOUND_EFFECT_LEASE_LOST",
             http_status=409,
         )
+    job.provider_started_at = now
 
 
 @transaction.atomic
@@ -435,6 +452,7 @@ def retry_sound_effect_job(
             http_status=409,
         )
     existing = locked.retries.order_by("created_at").first()
+    validate_sound_effect_snapshot_access(locked.provider_snapshot, user=actor)
     if existing is not None:
         return existing, True
     retry, _ = enqueue_sound_effect_job(

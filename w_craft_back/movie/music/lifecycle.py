@@ -40,11 +40,13 @@ from w_craft_back.movie.music.prompt_compiler import (
 )
 from w_craft_back.movie.music.providers import (
     MusicProviderError,
-    get_music_provider,
     pricing_from_snapshot,
-    resolve_audio_model,
     resolve_legacy_audio_route,
     resolved_from_snapshot,
+)
+from w_craft_back.movie.music.generation_access import (
+    resolve_music_generation_snapshot,
+    validate_music_snapshot_access,
 )
 from w_craft_back.movie.project.dashboard_models import MusicTrack, Scene
 from w_craft_back.movie.project.models import Project
@@ -193,6 +195,7 @@ def _fingerprint(
     target_track: MusicTrack | None,
     reference_asset: MusicAsset | None,
     model_key: str,
+    generation_source_choice: str | None = None,
 ) -> str:
     intent = {
         "projectId": project.pk,
@@ -202,6 +205,8 @@ def _fingerprint(
         "referenceAssetId": str(reference_asset.pk) if reference_asset else None,
         "modelKey": model_key,
     }
+    if generation_source_choice is not None:
+        intent["generationSource"] = generation_source_choice
     payload = json.dumps(
         intent,
         ensure_ascii=False,
@@ -350,6 +355,8 @@ def enqueue_music_job(
     model_name: str = "",
     model_key: str | None = None,
     provider_snapshot: Mapping[str, Any] | None = None,
+    generation_source: str | None = None,
+    approval_token: str | None = None,
 ) -> tuple[MusicGenerationJob, bool]:
     """Create a durable queued job or return its idempotent replay.
 
@@ -391,6 +398,7 @@ def enqueue_music_job(
         target_track=target_track,
         reference_asset=reference_asset,
         model_key=intent_model_key,
+        generation_source_choice=generation_source,
     )
     with transaction.atomic():
         existing = (
@@ -418,6 +426,8 @@ def enqueue_music_job(
                 )
             return existing, True
     if persisted_snapshot:
+        access = validate_music_snapshot_access(persisted_snapshot, user=actor)
+        persisted_snapshot["generationAccess"] = dict(access)
         restored = resolved_from_snapshot(persisted_snapshot)
         if (
             restored.route.backend_name == "mock"
@@ -429,44 +439,59 @@ def enqueue_music_job(
                 http_status=503,
                 retryable=False,
             )
-        effective_provider = restored.route.backend_name
-        effective_model = restored.route.model_id
-        capabilities = restored.model.capabilities
-        pricing = pricing_from_snapshot(persisted_snapshot)
-        provider = get_music_provider(
-            effective_provider,
-            model_name=effective_model,
-        )
     else:
-        resolved = (
-            resolve_audio_model(model_key)
-            if model_key or not provider_name
-            else resolve_legacy_audio_route(
-                provider_name,
-                model_name,
-                require_configured=True,
+        selected_key = model_key
+        if not selected_key and provider_name:
+            selected_key = resolve_legacy_audio_route(
+                provider_name, model_name,
+            ).model.key
+        persisted_snapshot = resolve_music_generation_snapshot(
+            actor, model_key=selected_key,
+            generation_source_choice=generation_source,
+            approval_token=approval_token,
+            variant_count=int(variant_count),
+            duration_seconds=int(normalized["durationSeconds"]),
+        )
+        access = persisted_snapshot["generationAccess"]
+        if provider_name and not model_key and access["source"] == "platform":
+            legacy = resolve_legacy_audio_route(
+                provider_name, model_name, require_configured=True,
             )
-        )
-        effective_provider = resolved.route.backend_name
-        effective_model = resolved.route.model_id
-        provider = get_music_provider(
-            effective_provider,
-            model_name=effective_model,
-        )
-        capabilities = resolved.model.capabilities
-        pricing = resolved.pricing(
-            int(variant_count),
-            duration_seconds=int(normalized["durationSeconds"]),
-        )
-        persisted_snapshot = resolved.snapshot(
-            int(variant_count),
-            duration_seconds=int(normalized["durationSeconds"]),
-        )
-        # Preserve dependency-injected providers used by existing integrations/tests.
-        if provider.name != effective_provider:
-            pricing = provider.pricing(int(variant_count))
-            persisted_snapshot["pricing"] = dict(pricing.snapshot)
-            persisted_snapshot["estimatedCostUsd"] = str(pricing.estimated_cost)
+            persisted_snapshot = legacy.snapshot(
+                int(variant_count), duration_seconds=int(normalized["durationSeconds"]),
+            )
+            persisted_snapshot["generationAccess"] = access
+    if access["source"] == "personal":
+        compatible_routes = []
+        for route in persisted_snapshot.get("generationCandidates", []):
+            candidate_model = resolved_from_snapshot(route["snapshot"])
+            try:
+                _validate_intent(
+                    project=project, actor=actor, normalized_brief=normalized,
+                    variant_count=int(variant_count), target_track=target_track,
+                    reference_asset=reference_asset,
+                    capabilities=candidate_model.model.capabilities,
+                )
+            except MusicLifecycleError as exc:
+                if exc.code not in {
+                    "MUSIC_CAPABILITY_UNSUPPORTED", "MUSIC_LYRICS_UNSUPPORTED",
+                }:
+                    raise
+                continue
+            compatible_routes.append(route)
+        if not compatible_routes:
+            raise MusicLifecycleError(
+                "No personal route supports this music request.",
+                code="MUSIC_CAPABILITY_UNSUPPORTED", http_status=400,
+            )
+        persisted_snapshot.update(compatible_routes[0]["snapshot"])
+        persisted_snapshot["generationCandidates"] = compatible_routes
+        persisted_snapshot["generationCandidateIndex"] = 0
+    restored = resolved_from_snapshot(persisted_snapshot)
+    effective_provider = restored.route.backend_name
+    effective_model = restored.route.model_id
+    capabilities = restored.model.capabilities
+    pricing = pricing_from_snapshot(persisted_snapshot)
     _validate_intent(
         project=project,
         actor=actor,
@@ -521,18 +546,19 @@ def enqueue_music_job(
                     idempotency_key=key,
                     request_fingerprint=fingerprint,
                 )
-                reserve_generation(
-                    user=actor,
-                    domain="music",
-                    job_id=str(job.id),
-                    provider=effective_provider,
-                    model_name=effective_model,
-                    estimated_cost=pricing.estimated_cost,
-                    reservation_amount=pricing.estimated_cost,
-                    pricing_snapshot=dict(pricing.snapshot),
-                    project=project,
-                    operation="generate",
-                )
+                if access["source"] == "platform" and not access.get("freePlatform"):
+                    reserve_generation(
+                        user=actor,
+                        domain="music",
+                        job_id=str(job.id),
+                        provider=effective_provider,
+                        model_name=effective_model,
+                        estimated_cost=pricing.estimated_cost,
+                        reservation_amount=pricing.estimated_cost,
+                        pricing_snapshot=dict(pricing.snapshot),
+                        project=project,
+                        operation="generate",
+                    )
         except IntegrityError:
             existing = MusicGenerationJob.objects.select_for_update().get(
                 project=project,
@@ -1054,6 +1080,10 @@ def retry_music_job(
                 http_status=409,
             )
         existing = locked.retries.order_by("created_at").first()
+        validate_music_snapshot_access(
+            locked.provider_snapshot or {"backendProvider": locked.provider},
+            user=actor,
+        )
         if existing is not None:
             return existing
         retry, _replay = enqueue_music_job(

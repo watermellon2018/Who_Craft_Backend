@@ -136,6 +136,17 @@ def retry_poster_job(
     from w_craft_back.movie.poster.services import enqueue_generation_job
 
     locked = PosterGenerationJob.objects.select_for_update().get(pk=original.pk)
+    from w_craft_back.services.image_generation.personal import image_snapshot_for_retry
+    from w_craft_back.services.image_generation.errors import ImageProviderError
+    try:
+        retry_snapshot = image_snapshot_for_retry(
+            locked.provider_snapshot or {}, user=actor,
+            free_platform=bool((locked.provider_snapshot or {}).get("mock")),
+        )
+    except ImageProviderError as error:
+        raise PosterError(
+            error.message, code=error.code, http_status=error.http_status,
+        ) from error
     if locked.status in (PosterJobStatus.QUEUED, PosterJobStatus.PROCESSING):
         raise PosterError(
             "An active poster job cannot be retried",
@@ -173,6 +184,10 @@ def retry_poster_job(
         idempotency_key=f"retry:{locked.pk}:{retry_number}",
         request_hash=locked.request_hash,
         requested_model=locked.requested_model,
+        pinned_snapshot=retry_snapshot,
+        generation_source=(locked.provider_snapshot or {}).get(
+            "generationAccess", {},
+        ).get("source"),
         routing_mode=str(
             (locked.provider_snapshot or {}).get("routingMode") or "manual"
         ),

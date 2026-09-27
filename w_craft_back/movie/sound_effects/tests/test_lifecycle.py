@@ -76,6 +76,11 @@ class SoundEffectLifecycleTests(TestCase):
         super().tearDownClass()
 
     def setUp(self):
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.user = make_user(f"sfx-{self._testMethodName}")
         self.project = make_project(self.user)
         CreditAccount.objects.create(
@@ -124,7 +129,8 @@ class SoundEffectLifecycleTests(TestCase):
         job = self.enqueue(key="sfx:config-drift")
 
         with patch(
-            "w_craft_back.movie.sound_effects.lifecycle.get_sound_effect_provider",
+            "w_craft_back.movie.sound_effects.generation_access."
+            "get_sound_effect_provider",
             side_effect=SoundEffectError(
                 "Provider is no longer configured.",
                 code="SOUND_EFFECT_PROVIDER_NOT_CONFIGURED",

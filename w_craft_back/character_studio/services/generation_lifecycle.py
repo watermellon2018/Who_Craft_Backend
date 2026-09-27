@@ -36,6 +36,7 @@ from w_craft_back.character_studio.services.errors import (
     ValidationError,
 )
 from w_craft_back.movie.project.models import Project
+from w_craft_back.services.image_generation.errors import ImageProviderError
 from w_craft_back.credits.pricing import estimate_for_pinned_provider
 from w_craft_back.credits.services import (
     CreditServiceError,
@@ -160,6 +161,7 @@ def _clean_payload(payload: dict | None) -> dict:
         "user_key",
         "key",
         "provider",
+        "generationAccessToken",
     ):
         cleaned.pop(key, None)
     return cleaned
@@ -315,11 +317,44 @@ def resolve_character_provider(
     if requested_key and len(requested_key) > 255:
         raise ValidationError("image_model max length is 255.")
 
+    from w_craft_back.personal_api.access import (
+        generation_source, resolve_generation_access,
+    )
+    from w_craft_back.personal_api.errors import PersonalAPIError
+    from w_craft_back.services.image_generation.personal import PersonalImageProvider
+
+    django_user = actor.user
+    requested_source = (request_payload or {}).get("generationSource")
+    effective_source = requested_source or generation_source(django_user, "image")
     routing_mode = str(
         (request_payload or {}).get("routing_mode")
-        or (request_payload or {}).get("routingMode")
-        or "manual"
+        or (request_payload or {}).get("routingMode") or "manual"
     ).strip().lower()
+    # Character's legacy region edit is text-to-image until it has source pixels.
+    access_operation = "reference" if provider_operation == "reference" else "generate"
+    try:
+        access = resolve_generation_access(
+            django_user, "image", source=requested_source,
+            model_key=requested_key if source == "request" else None,
+            operation=access_operation,
+            approval_token=(request_payload or {}).get("generationAccessToken"),
+            free_platform=(
+                requested_key == "mock" and effective_source == "platform"
+                and routing_mode == "manual"
+            ),
+        )
+        if access["source"] == "personal":
+            provider = PersonalImageProvider({"generationAccess": access})
+            return CharacterProviderSelection(
+                key=provider.spec.key, source="personal",
+                snapshot=provider.provider_snapshot,
+                model_name=provider.spec.backend, model_version=provider.model_id,
+            )
+    except PersonalAPIError as exc:
+        raise CharacterStudioError(
+            message=exc.message, error_code=exc.code, status_code=exc.status_code,
+        ) from exc
+
     if routing_mode != "manual":
         from w_craft_back.services.image_generation.routing import (
             build_routing_decision,
@@ -341,7 +376,7 @@ def resolve_character_provider(
         return CharacterProviderSelection(
             key=spec.key,
             source="routing",
-            snapshot=decision.snapshot(),
+            snapshot={**decision.snapshot(), "generationAccess": access},
             model_name=spec.backend,
             model_version=spec.model_id,
         )
@@ -400,6 +435,7 @@ def resolve_character_provider(
         snapshot={
             "source": source,
             "spec": serialized_spec,
+            "generationAccess": access,
         },
         model_name=spec.backend,
         model_version=spec.model_id,
@@ -501,6 +537,7 @@ def build_generation_preview(
     character: StudioCharacter,
     image_types: list[str],
     image_model: str | None = None,
+    generation_source: str | None = None,
 ) -> dict[str, object]:
     normalized_types: list[str] = []
     for raw_image_type in image_types:
@@ -515,7 +552,9 @@ def build_generation_preview(
     selection = resolve_character_provider(
         project=character.project,
         actor=actor,
-        request_payload={"image_model": image_model},
+        request_payload={
+            "image_model": image_model, "generationSource": generation_source,
+        },
         provider_operation="generate",
     )
     provider = selection.key
@@ -527,12 +566,10 @@ def build_generation_preview(
     )
     call_count = len(normalized_types)
     try:
-        estimate = estimate_for_pinned_provider(
-            provider=provider,
-            provider_snapshot=selection.snapshot,
-            model_name=selection.model_version,
-            operation="generate",
+        estimate, _, _ = estimate_character_generation(
+            provider_selection=selection, provider_operation="generate",
             variant_count=call_count,
+            request_payload={}, compiled={},
         )
     except CreditServiceError as exc:
         raise CharacterStudioError(
@@ -540,10 +577,15 @@ def build_generation_preview(
             error_code=exc.code,
             status_code=exc.http_status,
         ) from exc
-    account = get_or_create_account(actor.user)
+    access = selection.snapshot.get("generationAccess", {})
+    uses_craft_wallet = (
+        access.get("source") != "personal" and not access.get("freePlatform")
+    )
+    account = get_or_create_account(actor.user) if uses_craft_wallet else None
     return {
         "provider": provider,
         "provider_source": selection.source,
+        "generationSource": access.get("source", "platform"),
         "provider_snapshot": selection.snapshot,
         "mode": "offline" if provider.strip().lower() == "mock" else "paid",
         "image_types": normalized_types,
@@ -556,8 +598,11 @@ def build_generation_preview(
         ),
         "currency": estimate.currency,
         "pricing_source": estimate.pricing_source,
-        "available_balance": format(account.available_balance, "f"),
-        "sufficient_balance": account.available_balance >= estimate.reservation_amount,
+        "available_balance": format(account.available_balance, "f") if account else "0",
+        "sufficient_balance": not uses_craft_wallet or (
+            not account.is_frozen
+            and account.available_balance >= estimate.reservation_amount
+        ),
         "budgets": {
             "user": {
                 "used": usage["user"],
@@ -740,6 +785,13 @@ def _enqueue_job_atomic(
     )
     provider = provider_selection.key
     provider_snapshot = dict(provider_selection.snapshot)
+    from w_craft_back.services.image_generation.personal import validate_image_access
+    try:
+        validate_image_access(provider_snapshot, user=actor.user)
+    except ImageProviderError as exc:
+        raise CharacterStudioError(
+            message=exc.message, error_code=exc.code, status_code=exc.http_status,
+        ) from exc
     request_hash = _request_hash(
         character=locked_character,
         job_type=job_type,
@@ -914,6 +966,19 @@ def estimate_character_generation(
         else "edit" if provider_operation == "edit" else "generate"
     )
     route_snapshot = dict(provider_selection.snapshot or {})
+    access = route_snapshot.get("generationAccess", {})
+    if access.get("source") == "personal" or access.get("freePlatform"):
+        from decimal import Decimal
+        from w_craft_back.credits.pricing import GenerationEstimate
+
+        estimate = GenerationEstimate(
+            provider=provider_selection.model_name, model_key=provider_selection.key,
+            model_name=provider_selection.model_version, currency="CRAFT",
+            estimated_cost=Decimal("0.000000"), reservation_amount=Decimal("0.000000"),
+            pricing_source=access["source"], prompt_tokens_estimate=0,
+            snapshot={"generationAccess": access},
+        )
+        return estimate, estimate.reservation_amount, estimate.snapshot
     resolution = str((request_payload or {}).get("resolution") or "1K")
     if route_snapshot.get("candidates"):
         from w_craft_back.services.image_generation.routing import (
@@ -943,6 +1008,9 @@ def estimate_character_generation(
 def _reserve_character_generation(job: CharacterGenerationJob) -> None:
     try:
         route_snapshot = dict(job.provider_snapshot or {})
+        access = route_snapshot.get("generationAccess", {})
+        if access.get("source") == "personal" or access.get("freePlatform"):
+            return
         estimate, reservation_amount, pricing_snapshot = (
             estimate_character_generation(
                 provider_selection=CharacterProviderSelection(
@@ -1229,6 +1297,20 @@ def retry_character_job(*, actor, job_id):
     except CharacterGenerationJob.DoesNotExist as exc:
         raise NotFoundError("Generation job not found.") from exc
     get_generation_project(actor, original.project_id)
+    from w_craft_back.services.image_generation.personal import image_snapshot_for_retry
+    try:
+        retry_snapshot = (
+            image_snapshot_for_retry(
+                original.provider_snapshot or {}, user=actor.user,
+                free_platform=original.provider == "mock",
+            )
+            if original.job_type in IMAGE_GENERATION_JOB_TYPES
+            else original.provider_snapshot
+        )
+    except ImageProviderError as exc:
+        raise CharacterStudioError(
+            message=exc.message, error_code=exc.code, status_code=exc.http_status,
+        ) from exc
     if original.status in (
         GenerationJobStatus.QUEUED,
         GenerationJobStatus.PROCESSING,
@@ -1286,7 +1368,7 @@ def retry_character_job(*, actor, job_id):
         preserve_options=dict(original.preserve_options or {}),
         compiled_metadata=dict(original.compiled_metadata or {}),
         provider=original.provider,
-        provider_snapshot=dict(original.provider_snapshot or {}),
+        provider_snapshot=dict(retry_snapshot or {}),
         provider_operation=original.provider_operation,
         model_name=original.model_name,
         model_version=original.model_version,

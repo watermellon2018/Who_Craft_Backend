@@ -96,6 +96,11 @@ class CountingProvider(MockProvider):
 
 class CharacterGenerationLifecycleTests(CharacterStudioTestCase):
     def setUp(self):
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         super().setUp()
         CreditAccount.objects.update_or_create(
             user=self.user_key.user,

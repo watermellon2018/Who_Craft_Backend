@@ -19,6 +19,195 @@
     "messagingTextMaxLength": 4000
   },
   "paths": {
+    "/api/personal-api/settings/": {
+      "get": {
+        "operationId": "getPersonalApiSettings",
+        "tags": [
+          "Personal API"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalApiSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid personal API configuration"
+          },
+          "403": {
+            "description": "Connection or generation source unavailable"
+          },
+          "503": {
+            "description": "Encrypted credential storage unavailable"
+          }
+        }
+      }
+    },
+    "/api/personal-api/connections/": {
+      "post": {
+        "operationId": "createPersonalApiConnection",
+        "tags": [
+          "Personal API"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalApiConnectionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalApiConnection"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid personal API configuration"
+          },
+          "403": {
+            "description": "Connection or generation source unavailable"
+          },
+          "503": {
+            "description": "Encrypted credential storage unavailable"
+          }
+        }
+      }
+    },
+    "/api/personal-api/connections/{connectionId}/": {
+      "patch": {
+        "operationId": "updatePersonalApiConnection",
+        "tags": [
+          "Personal API"
+        ],
+        "parameters": [
+          {
+            "name": "connectionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalApiConnectionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalApiConnection"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid personal API configuration"
+          },
+          "403": {
+            "description": "Connection or generation source unavailable"
+          },
+          "503": {
+            "description": "Encrypted credential storage unavailable"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deletePersonalApiConnection",
+        "tags": [
+          "Personal API"
+        ],
+        "parameters": [
+          {
+            "name": "connectionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Connection revoked and secret removed"
+          }
+        }
+      }
+    },
+    "/api/personal-api/preferences/{modality}/": {
+      "put": {
+        "operationId": "updatePersonalApiPreference",
+        "tags": [
+          "Personal API"
+        ],
+        "parameters": [
+          {
+            "name": "modality",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/GenerationModality"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalApiPreferenceUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalApiPreference"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid personal API configuration"
+          },
+          "403": {
+            "description": "Connection or generation source unavailable"
+          },
+          "503": {
+            "description": "Encrypted credential storage unavailable"
+          }
+        }
+      }
+    },
     "/api/messaging/users/": {
       "get": {
         "operationId": "searchMessagingUsers",
@@ -1614,15 +1803,125 @@
     "/api/projects/{projectId}/storyboard/scenes/{sceneId}/suggest-shots/": {
       "get": {
         "operationId": "getStoryboardShotListOptions",
-        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}, {"name": "language", "in": "query", "required": false, "schema": {"type": "string", "enum": ["ru", "en"]}, "description": "Interface language for the estimated generation prompt; defaults to the user profile language, then ru."}],
-        "responses": {"200": {"description": "Allowlisted text models, scene context, and best-effort cost estimates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotListOptions"}}}}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}}
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ru",
+                "en"
+              ]
+            },
+            "description": "Interface language for the estimated generation prompt; defaults to the user profile language, then ru."
+          },
+          {
+            "name": "generationSource",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/GenerationSource"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Allowlisted text models, scene context, and best-effort cost estimates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotListOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
       },
       "post": {
         "operationId": "suggestStoryboardShots",
         "description": "Legacy synchronous unpersisted proposal endpoint. Interactive editors should use shot-list-jobs so leaving or reloading the page cannot discard generation.",
-        "parameters": [{"$ref": "#/components/parameters/ProjectId"}, {"name": "sceneId", "in": "path", "required": true, "schema": {"type": "integer", "minimum": 1}}],
-        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardSuggestShotsRequest"}}}},
-        "responses": {"200": {"description": "Unpersisted structured shot proposal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StoryboardShotProposal"}}}}, "400": {"$ref": "#/components/responses/ApiError"}, "401": {"$ref": "#/components/responses/ApiError"}, "403": {"$ref": "#/components/responses/ApiError"}, "404": {"$ref": "#/components/responses/ApiError"}, "429": {"$ref": "#/components/responses/ApiError"}, "502": {"$ref": "#/components/responses/ApiError"}, "503": {"$ref": "#/components/responses/ApiError"}}
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryboardSuggestShotsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unpersisted structured shot proposal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardShotProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
       }
     },
     "/api/projects/{projectId}/storyboard/scenes/{sceneId}/preview/": {
@@ -2580,6 +2879,14 @@
               "type": "integer",
               "minimum": 1
             }
+          },
+          {
+            "name": "generationSource",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/GenerationSource"
+            }
           }
         ],
         "responses": {
@@ -3376,6 +3683,13 @@
             "maximum": 3600,
             "default": 60,
             "description": "Display estimate only, not a execution deadline."
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
           }
         }
       },
@@ -3604,12 +3918,42 @@
       },
       "CharacterSecondaryAssetsQuoteRequest": {
         "type": "object",
-        "required": ["variant_id", "image_types"],
+        "required": [
+          "variant_id",
+          "image_types"
+        ],
         "properties": {
-          "variant_id": {"type": "string", "format": "uuid"},
-          "image_types": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetType"}},
-          "image_model": {"type": "string", "nullable": true},
-          "routing_mode": {"type": "string", "enum": ["manual", "economy", "fast", "balanced", "quality"], "default": "manual"}
+          "variant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image_types": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/CharacterSecondaryAssetType"
+            }
+          },
+          "image_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "routing_mode": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "economy",
+              "fast",
+              "balanced",
+              "quality"
+            ],
+            "default": "manual"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          }
         },
         "additionalProperties": false
       },
@@ -3628,22 +3972,56 @@
       },
       "CharacterSecondaryAssetsQuote": {
         "type": "object",
-        "required": ["quote_token", "expires_in_seconds", "items", "totals", "available_balance", "sufficient_balance", "account_frozen"],
+        "required": [
+          "quote_token",
+          "expires_in_seconds",
+          "items",
+          "totals",
+          "available_balance",
+          "sufficient_balance",
+          "account_frozen"
+        ],
         "properties": {
-          "quote_token": {"type": "string"},
-          "expires_in_seconds": {"type": "integer", "minimum": 1},
-          "items": {"type": "array", "items": {"$ref": "#/components/schemas/CharacterSecondaryAssetQuoteItem"}},
-          "totals": {
-            "type": "object",
-            "required": ["estimated_cost", "reservation_amount"],
-            "properties": {
-              "estimated_cost": {"$ref": "#/components/schemas/CreditAmount"},
-              "reservation_amount": {"$ref": "#/components/schemas/CreditAmount"}
+          "quote_token": {
+            "type": "string"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CharacterSecondaryAssetQuoteItem"
             }
           },
-          "available_balance": {"$ref": "#/components/schemas/CreditAmount"},
-          "sufficient_balance": {"type": "boolean"},
-          "account_frozen": {"type": "boolean"}
+          "totals": {
+            "type": "object",
+            "required": [
+              "estimated_cost",
+              "reservation_amount"
+            ],
+            "properties": {
+              "estimated_cost": {
+                "$ref": "#/components/schemas/CreditAmount"
+              },
+              "reservation_amount": {
+                "$ref": "#/components/schemas/CreditAmount"
+              }
+            }
+          },
+          "available_balance": {
+            "$ref": "#/components/schemas/CreditAmount"
+          },
+          "sufficient_balance": {
+            "type": "boolean"
+          },
+          "account_frozen": {
+            "type": "boolean"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          }
         }
       },
       "CharacterSecondaryAssetsGenerateRequest": {
@@ -3964,6 +4342,270 @@
           "items": {"type": "array", "items": {"$ref": "#/components/schemas/CreditAdminAuditEvent"}}
         }
       },
+      "GenerationSource": {
+        "type": "string",
+        "enum": [
+          "platform",
+          "personal"
+        ]
+      },
+      "GenerationModality": {
+        "type": "string",
+        "enum": [
+          "text",
+          "image",
+          "music",
+          "sound_effect"
+        ]
+      },
+      "PersonalApiConnection": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "keyHint",
+          "isActive",
+          "version",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "keyHint": {
+            "type": "string"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PersonalApiRoute": {
+        "type": "object",
+        "required": [
+          "connectionId",
+          "modelKey"
+        ],
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "modelKey": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersonalApiPreference": {
+        "type": "object",
+        "required": [
+          "modality",
+          "source",
+          "routes"
+        ],
+        "properties": {
+          "modality": {
+            "$ref": "#/components/schemas/GenerationModality"
+          },
+          "source": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiRoute"
+            }
+          }
+        }
+      },
+      "PersonalApiProvider": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "modalities"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "modalities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerationModality"
+            }
+          }
+        }
+      },
+      "PersonalApiModel": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "modality",
+          "providers",
+          "operations",
+          "isFree"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "modality": {
+            "$ref": "#/components/schemas/GenerationModality"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "isFree": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PersonalApiSettings": {
+        "type": "object",
+        "required": [
+          "connections",
+          "preferences",
+          "providers",
+          "models",
+          "hasPaidSubscription",
+          "storageAvailable"
+        ],
+        "properties": {
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiConnection"
+            }
+          },
+          "preferences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiPreference"
+            }
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiProvider"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiModel"
+            }
+          },
+          "hasPaidSubscription": {
+            "type": "boolean"
+          },
+          "storageAvailable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PersonalApiConnectionCreate": {
+        "type": "object",
+        "required": [
+          "name",
+          "provider",
+          "apiKey"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "provider": {"type": "string", "description": "Supported provider identifier returned by settings.providers."},
+          "apiKey": {
+            "type": "string",
+            "writeOnly": true,
+            "minLength": 8,
+            "maxLength": 4096
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersonalApiConnectionUpdate": {
+        "type": "object",
+        "required": [],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "apiKey": {
+            "type": "string",
+            "writeOnly": true,
+            "minLength": 8,
+            "maxLength": 4096
+          },
+          "isActive": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersonalApiPreferenceUpdate": {
+        "type": "object",
+        "required": [
+          "source",
+          "routes"
+        ],
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonalApiRoute"
+            },
+            "maxItems": 8
+          }
+        },
+        "additionalProperties": false
+      },
       "GenerationRoutingMode": {
         "type": "string",
         "enum": ["manual", "economy", "fast", "balanced", "quality"]
@@ -3981,38 +4623,163 @@
       "GenerationCostEstimateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["domain"],
+        "required": [
+          "domain"
+        ],
         "properties": {
-          "domain": {"type": "string", "enum": ["character", "poster", "reference", "music", "sound_effect", "model3d"]},
-          "operation": {"type": "string", "enum": ["generate", "edit", "reference"], "default": "generate"},
-          "modelKey": {"type": "string", "maxLength": 300},
-          "variantCount": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1},
-          "promptLength": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0},
-          "durationSeconds": {"type": "number", "minimum": 0.5, "maximum": 600, "nullable": true},
-          "resolution": {"type": "string", "enum": ["512", "1K", "2K", "4K"], "default": "1K"},
-          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
+          "domain": {
+            "type": "string",
+            "enum": [
+              "character",
+              "poster",
+              "reference",
+              "music",
+              "sound_effect",
+              "model3d",
+              "text"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "edit",
+              "reference",
+              "structured"
+            ],
+            "default": "generate"
+          },
+          "modelKey": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "variantCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1
+          },
+          "promptLength": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "default": 0
+          },
+          "durationSeconds": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 600,
+            "nullable": true
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "512",
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "default": "1K"
+          },
+          "routingMode": {
+            "$ref": "#/components/schemas/GenerationRoutingMode"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          }
         }
       },
       "GenerationCostEstimate": {
         "type": "object",
-        "required": ["domain", "operation", "provider", "modelKey", "modelName", "currency", "estimatedCost", "reservationAmount", "pricingSource", "costIsEstimate", "availableBalance", "sufficientBalance", "accountFrozen", "routingMode", "routingReason", "routeCandidates"],
+        "required": [
+          "domain",
+          "operation",
+          "provider",
+          "modelKey",
+          "modelName",
+          "currency",
+          "estimatedCost",
+          "reservationAmount",
+          "pricingSource",
+          "costIsEstimate",
+          "availableBalance",
+          "sufficientBalance",
+          "accountFrozen",
+          "routingMode",
+          "routingReason",
+          "routeCandidates"
+        ],
         "properties": {
-          "domain": {"type": "string"},
-          "operation": {"type": "string"},
-          "provider": {"type": "string"},
-          "modelKey": {"type": "string"},
-          "modelName": {"type": "string"},
-          "currency": {"type": "string", "enum": ["USD"]},
-          "estimatedCost": {"$ref": "#/components/schemas/CreditAmount"},
-          "reservationAmount": {"$ref": "#/components/schemas/CreditAmount"},
-          "pricingSource": {"type": "string"},
-          "costIsEstimate": {"type": "boolean"},
-          "availableBalance": {"$ref": "#/components/schemas/CreditAmount"},
-          "sufficientBalance": {"type": "boolean"},
-          "accountFrozen": {"type": "boolean"},
-          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
-          "routingReason": {"type": "string"},
-          "routeCandidates": {"type": "array", "items": {"$ref": "#/components/schemas/GenerationRouteCandidate"}}
+          "domain": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "modelKey": {
+            "type": "string"
+          },
+          "modelName": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "estimatedCost": {
+            "$ref": "#/components/schemas/CreditAmount"
+          },
+          "reservationAmount": {
+            "$ref": "#/components/schemas/CreditAmount"
+          },
+          "pricingSource": {
+            "type": "string"
+          },
+          "costIsEstimate": {
+            "type": "boolean"
+          },
+          "availableBalance": {
+            "$ref": "#/components/schemas/CreditAmount"
+          },
+          "sufficientBalance": {
+            "type": "boolean"
+          },
+          "accountFrozen": {
+            "type": "boolean"
+          },
+          "routingMode": {
+            "$ref": "#/components/schemas/GenerationRoutingMode"
+          },
+          "routingReason": {
+            "type": "string"
+          },
+          "routeCandidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerationRouteCandidate"
+            }
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "modality": {
+            "$ref": "#/components/schemas/GenerationModality"
+          },
+          "connectionName": {
+            "type": "string"
+          },
+          "isFree": {
+            "type": "boolean"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         }
       },
       "GenerationBilling": {
@@ -4071,15 +4838,54 @@
       },
       "PosterGenerateRequest": {
         "type": "object",
-        "required": ["prompt", "style", "format"],
+        "required": [
+          "prompt",
+          "style",
+          "format"
+        ],
         "properties": {
-          "prompt": {"type": "string", "minLength": 1, "maxLength": 1000},
-          "style": {"type": "string", "enum": ["cinematic", "anime", "dark_fantasy", "realism"]},
-          "format": {"type": "string", "enum": ["vertical", "square", "horizontal"]},
-          "reference_image_url": {"type": "string"},
-          "reference_image_asset_id": {"type": "integer"},
-          "image_model": {"type": "string", "maxLength": 128},
-          "routing_mode": {"$ref": "#/components/schemas/GenerationRoutingMode"}
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "style": {
+            "type": "string",
+            "enum": [
+              "cinematic",
+              "anime",
+              "dark_fantasy",
+              "realism"
+            ]
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "vertical",
+              "square",
+              "horizontal"
+            ]
+          },
+          "reference_image_url": {
+            "type": "string"
+          },
+          "reference_image_asset_id": {
+            "type": "integer"
+          },
+          "image_model": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "routing_mode": {
+            "$ref": "#/components/schemas/GenerationRoutingMode"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         }
       },
       "PosterGenerateMultipartRequest": {
@@ -4204,10 +5010,7 @@
           "availability": {"type": "string", "enum": ["available", "coming_soon"]},
           "state": {"type": "string", "enum": ["not_started", "in_progress", "ready", "blocked", "needs_attention"]},
           "progressPercent": {"type": "integer", "minimum": 0, "maximum": 100, "nullable": true},
-          "metrics": {
-            "type": "object",
-            "additionalProperties": {"type": "integer", "minimum": 0}
-          },
+          "metrics": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
           "blockers": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectRoadmapBlocker"}},
           "actionUrl": {"type": "string"}
         }
@@ -4226,10 +5029,7 @@
         "properties": {
           "version": {"type": "integer", "enum": [1]},
           "steps": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectRoadmapStep"}},
-          "nextAction": {
-            "allOf": [{"$ref": "#/components/schemas/ProjectRoadmapNextAction"}],
-            "nullable": true
-          }
+          "nextAction": {"allOf": [{"$ref": "#/components/schemas/ProjectRoadmapNextAction"}], "nullable": true}
         }
       },
       "ProjectDashboard": {
@@ -4572,9 +5372,30 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "language": {"type": "string", "enum": ["ru", "en"], "description": "Generated titles and descriptions use this interface language; defaults to the user profile language, then ru. Source quotes and entity IDs remain unchanged."},
-          "model": {"type": "string", "maxLength": 200},
-          "maxShots": {"type": "integer", "minimum": 1, "maximum": 40, "default": 16}
+          "language": {
+            "type": "string",
+            "enum": [
+              "ru",
+              "en"
+            ],
+            "description": "Generated titles and descriptions use this interface language; defaults to the user profile language, then ru. Source quotes and entity IDs remain unchanged."
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "maxShots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40,
+            "default": 16
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string"
+          }
         }
       },
       "StoryboardShotMetadataRequest": {
@@ -4823,8 +5644,28 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "imageModel": {"type": "string", "maxLength": 128},
-          "routingMode": {"type": "string", "enum": ["manual", "economy", "fast", "balanced", "quality"], "default": "manual"}
+          "imageModel": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "routingMode": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "economy",
+              "fast",
+              "balanced",
+              "quality"
+            ],
+            "default": "manual"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         }
       },
       "StoryboardGeneration": {
@@ -5255,13 +6096,40 @@
       "MusicGenerationCreateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["brief"],
+        "required": [
+          "brief"
+        ],
         "properties": {
-          "modelKey": {"$ref": "#/components/schemas/MusicAudioModelKey"},
-          "targetTrackId": {"type": "integer", "nullable": true},
-          "referenceAssetId": {"type": "string", "format": "uuid", "nullable": true},
-          "variantCount": {"type": "integer", "enum": [1, 2], "default": 2},
-          "brief": {"$ref": "#/components/schemas/MusicBrief"}
+          "modelKey": {
+            "$ref": "#/components/schemas/MusicAudioModelKey"
+          },
+          "targetTrackId": {
+            "type": "integer",
+            "nullable": true
+          },
+          "referenceAssetId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "variantCount": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "default": 2
+          },
+          "brief": {
+            "$ref": "#/components/schemas/MusicBrief"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         }
       },
       "MusicGenerationAccepted": {
@@ -5518,15 +6386,56 @@
       "SoundEffectGenerationCreateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["prompt"],
+        "required": [
+          "prompt"
+        ],
         "properties": {
-          "modelKey": {"type": "string", "enum": ["elevenlabs-sound-effects-v2"], "default": "elevenlabs-sound-effects-v2"},
-          "prompt": {"type": "string", "minLength": 1, "maxLength": 450},
-          "durationSeconds": {"type": "number", "minimum": 0.5, "maximum": 30, "nullable": true, "default": null},
-          "loop": {"type": "boolean", "default": false},
-          "promptInfluence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.3},
-          "targetEffectId": {"type": "integer", "minimum": 1, "nullable": true},
-          "sceneId": {"type": "integer", "minimum": 1, "nullable": true}
+          "modelKey": {
+            "type": "string",
+            "enum": [
+              "elevenlabs-sound-effects-v2"
+            ],
+            "default": "elevenlabs-sound-effects-v2"
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 450
+          },
+          "durationSeconds": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 30,
+            "nullable": true,
+            "default": null
+          },
+          "loop": {
+            "type": "boolean",
+            "default": false
+          },
+          "promptInfluence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.3
+          },
+          "targetEffectId": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true
+          },
+          "sceneId": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         }
       },
       "SoundEffectGenerationAccepted": {
@@ -5849,16 +6758,57 @@
       "ReferenceGenerationCreateRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["expectedReferenceVersion", "operation", "variantCount"],
+        "required": [
+          "expectedReferenceVersion",
+          "operation",
+          "variantCount"
+        ],
         "properties": {
-          "expectedReferenceVersion": {"type": "integer", "minimum": 1},
-          "operation": {"type": "string", "enum": ["generate", "edit"]},
-          "sourceVersionId": {"type": "string", "format": "uuid", "nullable": true},
-          "variantCount": {"type": "integer", "enum": [1, 2, 4]},
-          "imageModel": {"type": "string", "maxLength": 128},
-          "routingMode": {"$ref": "#/components/schemas/GenerationRoutingMode"},
-          "brief": {"$ref": "#/components/schemas/ReferenceBrief"},
-          "editInstruction": {"type": "string", "maxLength": 2000}
+          "expectedReferenceVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "edit"
+            ]
+          },
+          "sourceVersionId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "variantCount": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              4
+            ]
+          },
+          "imageModel": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "routingMode": {
+            "$ref": "#/components/schemas/GenerationRoutingMode"
+          },
+          "brief": {
+            "$ref": "#/components/schemas/ReferenceBrief"
+          },
+          "editInstruction": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
+          }
         },
         "description": "generate accepts variantCount 1, 2 or 4; edit requires sourceVersionId and editInstruction and accepts only 1."
       },
@@ -6380,6 +7330,13 @@
           "requestId": {
             "type": "string",
             "format": "uuid"
+          },
+          "generationSource": {
+            "$ref": "#/components/schemas/GenerationSource"
+          },
+          "generationAccessToken": {
+            "type": "string",
+            "description": "Short-lived signed personal route approval. Contains credential references only, never the API key."
           }
         },
         "required": [
