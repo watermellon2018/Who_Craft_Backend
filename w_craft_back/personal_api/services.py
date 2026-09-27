@@ -10,7 +10,7 @@ from django.utils import timezone
 from django.views.decorators.debug import sensitive_variables
 
 from .catalog import model_catalog, provider_catalog, validate_route
-from .crypto import encrypt_secret, storage_available
+from .crypto import decrypt_secret, encrypt_secret, storage_available
 from .errors import PersonalAPIError
 from .models import MODALITIES, PersonalAPIConnection, PersonalAPIPreference
 
@@ -134,8 +134,25 @@ def revoke_connection(user: User, connection_id: UUID) -> None:
             preference.save(update_fields=['routes', 'updated_at'])
 
 
-@transaction.atomic
 def save_preference(
+    user: User, modality: str, *, source: str, routes: list[dict],
+) -> dict:
+    user = require_active_user(user)
+    # Discovery must not hold the account lock across a provider HTTP request.
+    # The transaction below rechecks ownership and catalog validity before save.
+    if modality == 'video':
+        if source not in {'platform', 'personal'} or len(routes) > 8:
+            raise PersonalAPIError(
+                'PERSONAL_API_INVALID_PREFERENCE', 'Invalid preferences.',
+            )
+        for route in routes[:8]:
+            connection = _owned_connection(user, route['connectionId'])
+            validate_connection_route(modality, connection, route['modelKey'])
+    return _save_preference(user, modality, source=source, routes=routes)
+
+
+@transaction.atomic
+def _save_preference(
     user: User, modality: str, *, source: str, routes: list[dict],
 ) -> dict:
     user = require_active_user(user, lock=True)
@@ -167,6 +184,69 @@ def save_preference(
         },
     )
     return preference_data(modality, preference)
+
+
+@sensitive_variables('secret')
+def _refresh_video_connection(connection: PersonalAPIConnection) -> None:
+    from w_craft_back.services.video_generation.contracts import VideoProviderError
+    from w_craft_back.services.video_generation.registry import (
+        refresh_openrouter_models,
+    )
+
+    if (
+        not connection.is_active or connection.revoked_at
+        or not connection.user.is_active
+    ):
+        raise PersonalAPIError(
+            'PERSONAL_API_CONNECTION_UNAVAILABLE',
+            'The personal API connection is unavailable.', 403,
+        )
+    secret = decrypt_secret(connection)
+    try:
+        refresh_openrouter_models(api_key=secret)
+    except VideoProviderError as exc:
+        raise PersonalAPIError(
+            exc.code, 'Could not refresh OpenRouter video models. '
+            'Check your API connection and try again.',
+            503 if exc.retryable else 400,
+        ) from None
+
+
+def refresh_video_models(user: User) -> dict:
+    """Explicit, read-only provider discovery using only the actor's own key."""
+    user = require_active_user(user)
+    connection = PersonalAPIConnection.objects.filter(
+        user=user, provider='openrouter', is_active=True, revoked_at__isnull=True,
+    ).select_related('user').first()
+    if connection is None:
+        raise PersonalAPIError(
+            'PERSONAL_API_NOT_CONFIGURED',
+            'Add an active OpenRouter connection to refresh video models.', 403,
+        )
+    _refresh_video_connection(connection)
+    return get_settings(user)
+
+
+def validate_connection_route(
+    modality: str, connection: PersonalAPIConnection, model_key: str,
+    operation: str = 'generate',
+) -> None:
+    """Recover a persisted OpenRouter model after process restart/cache loss."""
+    from w_craft_back.services.video_generation.registry import has_dynamic_catalog
+
+    try:
+        validate_route(modality, connection.provider, model_key, operation)
+        return
+    except PersonalAPIError:
+        if (
+            modality != 'video' or connection.provider != 'openrouter'
+            or not isinstance(model_key, str)
+            or not model_key.startswith('openrouter-video:')
+            or len(model_key) > 200 or has_dynamic_catalog()
+        ):
+            raise
+    _refresh_video_connection(connection)
+    validate_route(modality, connection.provider, model_key, operation)
 
 
 def scrub_user_connections(user: User) -> None:

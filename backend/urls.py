@@ -35,6 +35,7 @@ urlpatterns = [
         include('w_craft_back.movie.properties.urls'),
     ),
     path('api/projects/', include('w_craft_back.movie.project.urls')),
+    path('api/projects/<int:project_id>/video/', include('w_craft_back.movie.video.urls')),
     path('api/invitations/', include('w_craft_back.movie.project.team_urls')),
     path('api/', include('w_craft_back.character_studio.urls')),
     path('api/profile/', include('w_craft_back.profile.urls')),

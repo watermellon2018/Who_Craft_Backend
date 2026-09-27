@@ -14,7 +14,7 @@ PROVIDERS = (
     ('elevenlabs', 'ElevenLabs'),
     ('minimax', 'MiniMax'),
 )
-MODALITIES = ('text', 'image', 'music', 'sound_effect')
+MODALITIES = ('text', 'image', 'music', 'sound_effect', 'video')
 SOURCES = (('platform', 'API Craft'), ('personal', 'My API'))
 
 

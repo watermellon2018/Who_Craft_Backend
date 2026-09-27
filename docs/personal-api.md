@@ -2,15 +2,17 @@
 
 Issue 59 adds owner-scoped API connections to profile settings. A user can name
 multiple keys, including several keys from one service, and set an ordered list
-of connection/model pairs for text, images, music, and sound effects. Each
+of connection/model pairs for text, images, music, sound effects, and video. Each
 modality remembers its own `API Craft` or `My API` preference. The generation
-confirmation lets the user choose the source before submitting work.
+confirmation lets the user choose the source before submitting work, except for
+video: its source and personal models are configured exclusively in the profile.
 
 Supported services reuse the existing adapters: Gemini, OpenRouter, Stability,
 ElevenLabs, and MiniMax. Availability depends on the operation and model; an
 image key does not grant text generation, and not every image model supports
-editing or reference images. This feature does not add a video generator,
-arbitrary API URLs, or a general OpenAI-compatible proxy.
+editing or reference images. Gemini and OpenRouter also support the
+[video workspace](video.md). Arbitrary API URLs and a general OpenAI-compatible
+proxy are not supported.
 
 ## Access and payment
 
@@ -34,8 +36,10 @@ module does not implement subscription checkout, plans, or included credits.
 
 ## Configuration
 
-Run `python manage.py migrate` to apply `0069_personal_api_connections` before
-serving the updated frontend. Web and all generation workers need the same
+Run `python manage.py migrate` to apply `0069_personal_api_connections` and all
+video migrations through `0073_video_source_identifier_length` before serving
+the updated frontend. Web and all
+generation workers need the same
 `PERSONAL_API_ENCRYPTION_KEY`, a Fernet key separate from the Django signing
 secret and database. Generate a key with the installed cryptography package:
 
@@ -63,24 +67,36 @@ All routes use normal opaque access authentication via `X-User-Token`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/personal-api/settings/` | Own connections, four preferences, supported catalog and storage availability |
+| `GET /api/personal-api/settings/` | Own connections, five preferences, supported catalog and storage availability; no provider requests |
+| `POST /api/personal-api/video-models/refresh/` | Refresh video model metadata with the owner's first active OpenRouter key; return updated settings |
 | `POST /api/personal-api/connections/` | Add a named provider key |
 | `PATCH /api/personal-api/connections/{id}/` | Rename, replace the key, or enable/disable the connection |
 | `DELETE /api/personal-api/connections/{id}/` | Revoke and erase the secret; remove preference references |
 | `PUT /api/personal-api/preferences/{modality}/` | Save the source and ordered connection/model pairs |
 
-Generation requests accept `generationSource: platform | personal`; omission
+Video model refresh does not generate media or use Craft credentials. Failure
+returns a provider/catalog error and retains the previous valid catalog. The
+settings GET stays offline. Saving or resolving a previously discovered video
+route after process restart can reload missing catalog metadata using that
+route's own credential; accepted jobs use their pinned capabilities instead.
+
+Text/image/audio generation requests accept `generationSource: platform | personal`; omission
 uses the saved modality preference. Free built-in helpers retain their explicit
 free route. A selected model starts the user's configured chain at that model;
 subsequent compatible, approved routes remain candidates. No suitable route
-means the API rejects the request before creating paid work.
+means the API rejects the request before creating paid work. Video uses a separate
+signed preflight with the profile's video source, compatible route chain, input
+fingerprint, and disclosed duration; it does not accept `generationSource` or a
+personal model override from the video page.
 
 Personal estimates also return a signed `generationAccessToken`, valid for five
 minutes. The client sends it with the generation request to preserve the approved
 connection/model order even if preferences change in another tab. Changed,
 revoked or rotated credentials require a new confirmation; the token contains
 only safe references and cannot be used by another owner or modality. Direct
-API callers may omit the token to resolve their current saved preferences.
+API callers may omit the token to resolve their current saved preferences for
+these existing text/image/audio flows. Video always requires its separate
+`preflightToken` and an idempotent `clientRequestId`; see [Video generation](video.md).
 
 Enqueue persists `generationAccess` with the owner, source, model/connection
 order, and credential revisions, without secret values. Workers recheck the
@@ -92,7 +108,7 @@ removes preferences.
 
 Fallback is limited to confirmed rejection before acceptance. An ambiguous
 timeout, accepted async job, or malformed paid result does not submit a second
-paid request. Accepted audio jobs keep polling the same connection/provider.
+paid request. Accepted audio/video jobs keep polling the same connection/provider.
 No personal failure falls back to a platform key or another user's key. A paid
 request already accepted by the external provider may still incur a charge
 after local cancellation or credential revocation.

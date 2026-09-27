@@ -31,6 +31,13 @@ class PersonalAPISettingsView(APIView):
         return response
 
 
+class PersonalAPIVideoModelsRefreshView(APIView):
+    def post(self, request: Request) -> Response:
+        response = Response(services.refresh_video_models(request.user))
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
 @method_decorator(sensitive_post_parameters('apiKey'), name='dispatch')
 class PersonalAPIConnectionsView(APIView):
     def post(self, request: Request) -> Response:

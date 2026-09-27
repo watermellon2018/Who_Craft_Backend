@@ -24,3 +24,4 @@ from w_craft_back.movie.sound_effects.models import *
 from w_craft_back.movie.project.team_models import *
 # Poster models depend on Project + ProjectAsset (defined above).
 from w_craft_back.movie.poster.models import *
+from w_craft_back.movie.video.models import *

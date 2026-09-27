@@ -3035,6 +3035,400 @@
           }
         }
       }
+    },
+    "/api/projects/{projectId}/video/workspace/": {
+      "get": {
+        "operationId": "getVideoWorkspace",
+        "description": "Current scene-scoped conditions, immutable video history and selection.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current scene-scoped conditions, immutable video history and selection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/video/options/": {
+      "post": {
+        "operationId": "getVideoOptions",
+        "description": "Validate conditions and profile video route; disclose effective duration before issuing a 600-second actor-bound preflight.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validate conditions and profile video route; disclose effective duration before issuing a 600-second actor-bound preflight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoOptionsRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/video/jobs/": {
+      "get": {
+        "operationId": "listVideoJobs",
+        "description": "Newest video jobs (at most 100).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "sceneId",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Newest video jobs (at most 100).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoJobList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createVideoJob",
+        "description": "Accept an idempotent durable video job. Source, profile and duration must still match preflight.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accept an idempotent durable video job. Source, profile and duration must still match preflight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoJobAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoJobCreateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/video/jobs/{jobId}/": {
+      "get": {
+        "operationId": "getVideoJob",
+        "description": "Video status and private result URL. Unknown submit outcomes must not be retried automatically.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Video status and private result URL. Unknown submit outcomes must not be retried automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/video/shots/{videoShotId}/select/": {
+      "post": {
+        "operationId": "selectVideoResult",
+        "description": "Explicitly choose a completed version with optimistic concurrency.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "videoShotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Explicitly choose a completed version with optimistic concurrency.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoShotSelectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoShotSelectRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{projectId}/video/shots/{videoShotId}/": {
+      "patch": {
+        "operationId": "updateVideoMotion",
+        "description": "Save motion instructions on an existing video shot.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          },
+          {
+            "name": "videoShotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Save motion instructions on an existing video shot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoShotMotionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoShotMotionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/personal-api/video-models/refresh/": {
+      "post": {
+        "operationId": "refreshPersonalVideoModels",
+        "description": "Refresh video model metadata using an active OpenRouter connection owned by the actor; no paid generation.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Refresh video model metadata using an active OpenRouter connection owned by the actor; no paid generation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalApiSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4350,14 +4744,15 @@
         ]
       },
       "GenerationModality": {
-        "type": "string",
-        "enum": [
-          "text",
-          "image",
-          "music",
-          "sound_effect"
-        ]
-      },
+      "type": "string",
+      "enum": [
+        "text",
+        "image",
+        "music",
+        "sound_effect",
+        "video"
+      ]
+    },
       "PersonalApiConnection": {
         "type": "object",
         "required": [
@@ -7515,7 +7910,705 @@
             }
           }
         }
-      }
+      },
+    "VideoBlocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "detail"
+      ]
+    },
+    "VideoFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assetId": {
+          "type": "integer"
+        },
+        "imageUrl": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "imageUrl",
+        "label"
+      ]
+    },
+    "VideoJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "videoShotId": {
+          "type": "integer"
+        },
+        "sceneId": {
+          "type": "integer"
+        },
+        "sourceKind": {
+          "type": "string",
+          "enum": [
+            "editor_draft",
+            "structured"
+          ]
+        },
+        "sourceShotId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "processing",
+            "completed",
+            "failed",
+            "outcome_unknown"
+          ]
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "submitting",
+            "polling",
+            "downloading",
+            "completed",
+            "failed",
+            "outcome_unknown"
+          ]
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "modelLabel": {
+          "type": "string"
+        },
+        "generationSource": {
+          "$ref": "#/components/schemas/GenerationSource"
+        },
+        "requestedDurationSeconds": {
+          "type": "number"
+        },
+        "effectiveDurationSeconds": {
+          "type": "number"
+        },
+        "motionPrompt": {
+          "type": "string"
+        },
+        "aspectRatio": {
+          "type": "string"
+        },
+        "resolution": {
+          "type": "string"
+        },
+        "sourceFingerprint": {
+          "type": "string"
+        },
+        "stale": {
+          "type": "boolean"
+        },
+        "staleReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assetId": {
+          "type": "integer",
+          "nullable": true
+        },
+        "videoUrl": {
+          "type": "string",
+          "nullable": true
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "detail",
+            "retryable"
+          ],
+          "nullable": true
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "pollAfterMs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "videoShotId",
+        "sceneId",
+        "sourceKind",
+        "sourceShotId",
+        "status",
+        "stage",
+        "modelId",
+        "modelLabel",
+        "generationSource",
+        "requestedDurationSeconds",
+        "effectiveDurationSeconds",
+        "motionPrompt",
+        "aspectRatio",
+        "resolution",
+        "sourceFingerprint",
+        "stale",
+        "staleReasons",
+        "assetId",
+        "videoUrl",
+        "error",
+        "createdAt",
+        "completedAt",
+        "pollAfterMs"
+      ]
+    },
+    "VideoSourceShot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceKind": {
+          "type": "string",
+          "enum": [
+            "editor_draft",
+            "structured"
+          ]
+        },
+        "sourceShotId": {
+          "type": "string"
+        },
+        "sceneId": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "description": {
+          "type": "string"
+        },
+        "durationSeconds": {
+          "type": "number"
+        },
+        "aspectRatio": {
+          "type": "string"
+        },
+        "startFrame": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/VideoFrame"
+            }
+          ],
+          "nullable": true
+        },
+        "endFrame": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/VideoFrame"
+            }
+          ],
+          "nullable": true
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoBlocker"
+          }
+        },
+        "videoShotId": {
+          "type": "integer",
+          "nullable": true
+        },
+        "videoShotVersion": {
+          "type": "integer",
+          "nullable": true
+        },
+        "motionPrompt": {
+          "type": "string"
+        },
+        "selectedJobId": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoJob"
+          }
+        },
+        "sourceRemoved": {
+          "type": "boolean"
+        },
+        "intermediateFrameCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inheritedCamera": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "imageUrl": {
+                "type": "string",
+                "nullable": true
+              },
+              "usage": {
+                "type": "string",
+                "enum": [
+                  "context_only",
+                  "sent"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "usage"
+            ]
+          }
+        }
+      },
+      "required": [
+        "sourceKind",
+        "sourceShotId",
+        "sceneId",
+        "title",
+        "order",
+        "description",
+        "durationSeconds",
+        "aspectRatio",
+        "startFrame",
+        "endFrame",
+        "fingerprint",
+        "ready",
+        "blockers",
+        "videoShotId",
+        "videoShotVersion",
+        "motionPrompt",
+        "selectedJobId",
+        "jobs"
+      ]
+    },
+    "VideoScene": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoBlocker"
+          }
+        },
+        "shots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoSourceShot"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "order",
+        "ready",
+        "blockers",
+        "shots"
+      ]
+    },
+    "VideoWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "projectId": {
+          "type": "integer"
+        },
+        "projectTitle": {
+          "type": "string"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "canView": {
+              "type": "boolean"
+            },
+            "canEdit": {
+              "type": "boolean"
+            },
+            "canRunGeneration": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "canView",
+            "canEdit",
+            "canRunGeneration"
+          ]
+        },
+        "generationSource": {
+          "$ref": "#/components/schemas/GenerationSource"
+        },
+        "scenes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoScene"
+          }
+        },
+        "archivedShots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoSourceShot"
+          }
+        }
+      },
+      "required": [
+        "projectId",
+        "projectTitle",
+        "permissions",
+        "generationSource",
+        "scenes",
+        "archivedShots"
+      ]
+    },
+    "VideoModelOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "compatible": {
+          "type": "boolean"
+        },
+        "unavailableReason": {
+          "type": "string"
+        },
+        "durations": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "aspectRatios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolutions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "provider",
+        "compatible",
+        "unavailableReason",
+        "durations",
+        "aspectRatios",
+        "resolutions"
+      ]
+    },
+    "VideoOptionsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sceneId": {
+          "type": "integer"
+        },
+        "sourceKind": {
+          "type": "string",
+          "enum": [
+            "editor_draft",
+            "structured"
+          ]
+        },
+        "sourceShotId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "motionPrompt": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "aspectRatio": {
+          "type": "string"
+        },
+        "resolution": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sceneId",
+        "sourceKind",
+        "sourceShotId"
+      ]
+    },
+    "VideoOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "generationSource": {
+          "$ref": "#/components/schemas/GenerationSource"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoModelOption"
+          }
+        },
+        "selectedModelId": {
+          "type": "string",
+          "nullable": true
+        },
+        "requestedDurationSeconds": {
+          "type": "number"
+        },
+        "effectiveDurationSeconds": {
+          "type": "number",
+          "nullable": true
+        },
+        "durationAdjusted": {
+          "type": "boolean"
+        },
+        "canGenerate": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoBlocker"
+          }
+        },
+        "preflightToken": {
+          "type": "string",
+          "nullable": true
+        },
+        "expiresInSeconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generationSource",
+        "models",
+        "selectedModelId",
+        "requestedDurationSeconds",
+        "effectiveDurationSeconds",
+        "durationAdjusted",
+        "canGenerate",
+        "blockers",
+        "preflightToken",
+        "expiresInSeconds"
+      ]
+    },
+    "VideoJobCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preflightToken": {
+          "type": "string"
+        },
+        "clientRequestId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "preflightToken",
+        "clientRequestId"
+      ]
+    },
+    "VideoJobAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "$ref": "#/components/schemas/VideoJob"
+        },
+        "idempotentReplay": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job",
+        "idempotentReplay"
+      ]
+    },
+    "VideoJobList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/VideoJob"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "VideoShotSelectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expectedVideoShotVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "jobId",
+        "expectedVideoShotVersion"
+      ]
+    },
+    "VideoShotSelectResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "videoShotId": {
+          "type": "integer"
+        },
+        "videoShotVersion": {
+          "type": "integer"
+        },
+        "selectedJobId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "videoShotId",
+        "videoShotVersion",
+        "selectedJobId"
+      ]
+    },
+    "VideoShotMotionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "motionPrompt": {
+          "type": "string",
+          "maxLength": 6000
+        },
+        "expectedVideoShotVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "motionPrompt",
+        "expectedVideoShotVersion"
+      ]
+    },
+    "VideoShotMotionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "videoShotId": {
+          "type": "integer"
+        },
+        "videoShotVersion": {
+          "type": "integer"
+        },
+        "motionPrompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoShotId",
+        "videoShotVersion",
+        "motionPrompt"
+      ]
     }
+  }
   }
 }

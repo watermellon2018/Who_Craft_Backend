@@ -346,6 +346,22 @@ def check_contract() -> None:
         "right",
         "front_right",
     }
+    assert "video" in _schema(document, "GenerationModality")["enum"]
+    video_base = "/api/projects/{projectId}/video/"
+    video_create = document["paths"][video_base + "jobs/"]["post"]
+    assert "202" in video_create["responses"]
+    assert set(_schema(document, "VideoJobCreateRequest")["required"]) == {
+        "preflightToken", "clientRequestId",
+    }
+    assert "generationSource" not in _schema(
+        document, "VideoOptionsRequest"
+    )["properties"]
+    assert "outcome_unknown" in _schema(document, "VideoJob")[
+        "properties"
+    ]["status"]["enum"]
+    assert "post" in document["paths"][
+        "/api/personal-api/video-models/refresh/"
+    ]
     assert set(_schema(document, "StoryboardMovement")["enum"]) == {
         "static",
         "dolly_in",

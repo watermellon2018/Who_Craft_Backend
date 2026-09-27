@@ -32,6 +32,7 @@ def audio_provider(backend: str) -> str:
 def model_catalog(*, include_dynamic: bool = False) -> list[dict]:
     from w_craft_back.movie.music.providers.model_registry import audio_model_specs
     from w_craft_back.movie.sound_effects.providers.elevenlabs import MODEL_KEY
+    from w_craft_back.services.video_generation.registry import list_models
 
     result = []
     for row in list_available_models(include_dynamic=include_dynamic):
@@ -81,6 +82,10 @@ def model_catalog(*, include_dynamic: bool = False) -> list[dict]:
         'modality': 'sound_effect', 'providers': ['elevenlabs'],
         'operations': ['generate'], 'isFree': False,
     })
+    result.extend({
+        'key': model.key, 'label': model.label, 'modality': 'video',
+        'providers': [model.provider], 'operations': ['generate'], 'isFree': False,
+    } for model in list_models(include_dynamic=include_dynamic))
     return result
 
 

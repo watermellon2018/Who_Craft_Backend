@@ -115,7 +115,7 @@ class PersonalAPICredentialTests(PersonalAPIBase):
         self.assertEqual(
             [row['id'] for row in payload['connections']], [connection['id']],
         )
-        self.assertEqual(len(payload['preferences']), 4)
+        self.assertEqual(len(payload['preferences']), 5)
         self.assertFalse(payload['hasPaidSubscription'])
         self.assertTrue(payload['storageAvailable'])
         self.assertEqual(response['Cache-Control'], 'no-store')
@@ -262,7 +262,7 @@ class PersonalAPIPreferenceTests(PersonalAPIBase):
         connection = self.connection(provider='openrouter')
         with self.assertRaises(PersonalAPIError):
             self.configure(connection)
-        response = self.client.put('/api/personal-api/preferences/video/', {
+        response = self.client.put('/api/personal-api/preferences/unsupported/', {
             'source': 'personal', 'routes': [],
         }, format='json')
         self.assertEqual(response.status_code, 400)

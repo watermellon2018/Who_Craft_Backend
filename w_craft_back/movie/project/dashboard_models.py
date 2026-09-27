@@ -645,6 +645,9 @@ class VideoShot(models.Model):
         related_name="final_for_video_shots",
     )
     version = models.PositiveIntegerField(default=1)
+    source_kind = models.CharField(max_length=24, null=True, blank=True)
+    source_shot_id = models.CharField(max_length=256, null=True, blank=True)
+    motion_prompt = models.TextField(blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -672,6 +675,11 @@ class VideoShot(models.Model):
             models.UniqueConstraint(
                 fields=["scene", "order"],
                 name="uniq_video_shot_order_per_scene",
+            ),
+            models.UniqueConstraint(
+                fields=["scene", "source_kind", "source_shot_id"],
+                condition=models.Q(source_kind__isnull=False),
+                name="uniq_video_shot_source",
             ),
         ]
 

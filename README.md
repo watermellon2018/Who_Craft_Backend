@@ -2,7 +2,8 @@
 
 Django 5.2 + Django REST Framework backend for Craft. It owns authentication,
 PostgreSQL persistence, project/team workflows, Character Studio, posters,
-Music Studio, Reference Library, profiles/subscriptions, personal messaging,
+Music Studio, Reference Library, video generation, profiles/subscriptions,
+personal messaging,
 private media, and
 durable generation workers.
 
@@ -28,7 +29,7 @@ python manage.py run_generation_worker --queue all
 ```
 
 Supported queue names are `character`, `poster`, `music`, `sound_effect`,
-`reference`, and `storyboard`.
+`reference`, `storyboard`, and `video`.
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
 
@@ -78,6 +79,11 @@ operations are unchanged.
   names that do not yet have a visible Character Studio character.
 - `GET /api/projects/{id}/video/preparation/` — the current video prerequisites:
   missing characters, empty scenes, and incomplete or stale storyboards.
+- `/api/projects/{id}/video/` — storyboard-conditioned clips, generation options,
+  durable jobs, version history, and explicit final selection; see
+  [Video generation](docs/video.md). Requires migrations through `0073` and a worker
+  polling `--queue video` or `--queue all`. A ready scene can generate while
+  other scenes are unfinished; API source is configured in the profile.
 - `/api/credits/` — internal balance, ledger, demo top-up, and transfers.
 - `/api/messaging/` — private text conversations, personal history clearing,
   unread/read state, and polling of edits/deletions; see

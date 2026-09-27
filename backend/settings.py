@@ -380,6 +380,19 @@ MUSIC_DEFAULT_AUDIO_MODEL = os.getenv(
 ).strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+# Video uses fixed official API endpoints. Additional CDN hosts must be exact
+# hostnames; provider credentials are never forwarded to those hosts.
+VIDEO_HTTP_TIMEOUT_SECONDS = float(os.getenv("VIDEO_HTTP_TIMEOUT_SECONDS", "45"))
+VIDEO_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv(
+    "VIDEO_DOWNLOAD_TIMEOUT_SECONDS", "180",
+))
+VIDEO_MAX_DOWNLOAD_BYTES = int(os.getenv("VIDEO_MAX_DOWNLOAD_BYTES", "134217728"))
+VIDEO_JOB_LEASE_SECONDS = int(os.getenv("VIDEO_JOB_LEASE_SECONDS", "300"))
+VIDEO_DOWNLOAD_ALLOWED_HOSTS = tuple(
+    host.strip().lower()
+    for host in os.getenv("VIDEO_DOWNLOAD_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "").strip()
 MUSIC_GEMINI_API_BASE_URL = os.getenv(

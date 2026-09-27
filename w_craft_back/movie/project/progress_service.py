@@ -524,7 +524,30 @@ def calculate_video_preparation(
     }
     storyboard_ready_count = 0
     storyboard_scenes = []
+    # Saved editor drafts are the live storyboard source, including draft-only
+    # scenes that have never been published into the historical structured API.
+    from w_craft_back.movie.storyboard.models import SceneStoryboardEditorDraft
+    from w_craft_back.movie.video.sources import collect_sources
+
+    draft_scene_ids = set(SceneStoryboardEditorDraft.objects.filter(
+        scene__project=project,
+    ).values_list("scene_id", flat=True))
+    editor_sources = (
+        {item["id"]: item for item in collect_sources(project)}
+        if draft_scene_ids else {}
+    )
     for scene in scenes:
+        if scene.id in draft_scene_ids:
+            source = editor_sources.get(scene.id, {})
+            if source.get("shots") and all(shot["ready"] for shot in source["shots"]):
+                storyboard_ready_count += 1
+            else:
+                storyboard_scenes.append(StoryboardPreparationScene(
+                    scene_id=scene.id, title=scene.title, order=scene.order,
+                    status="missing", current_version=scene.version,
+                    accepted_version=None,
+                ))
+            continue
         storyboard = storyboards.get(scene.id)
         if storyboard is None:
             storyboard_scenes.append(
@@ -577,7 +600,7 @@ def calculate_video_preparation(
         storyboard_scenes=tuple(storyboard_scenes),
         storyboard_ready_count=storyboard_ready_count,
         storyboard_total_count=len(scenes),
-        storyboard_started_count=len(storyboards),
+        storyboard_started_count=len(set(storyboards) | draft_scene_ids),
     )
 
 
@@ -747,13 +770,33 @@ def calculate_project_progress(project: Project) -> ProjectProgressSnapshot:
         if scene.status == "stale" and scene.accepted_version is not None
     )
 
-    shot_counts = VideoShot.objects.filter(project=project).aggregate(
+    shot_counts = VideoShot.objects.filter(
+        project=project, source_kind__isnull=True,
+    ).aggregate(
         total=Count("id"),
         ready=Count(
             "id",
             filter=Q(final_asset__asset_type=AssetType.VIDEO),
         ),
     )
+    from w_craft_back.movie.video.models import VideoGenerationJob
+    from w_craft_back.movie.video.sources import collect_sources
+
+    sources = {(shot["sceneId"], shot["sourceKind"], shot["sourceShotId"]): shot
+               for scene in collect_sources(project) for shot in scene["shots"]}
+    selected = VideoGenerationJob.objects.filter(
+        project=project, status="completed", result_asset__isnull=False,
+    ).select_related("video_shot")
+    ready_sources = set()
+    for job in selected:
+        shot = job.video_shot
+        key = (shot.scene_id, shot.source_kind, shot.source_shot_id)
+        source = sources.get(key)
+        if (source and source["ready"] and job.result_asset_id == shot.final_asset_id
+                and source["fingerprint"] == job.source_fingerprint):
+            ready_sources.add(key)
+    shot_counts["total"] = (shot_counts["total"] or 0) + len(sources)
+    shot_counts["ready"] = (shot_counts["ready"] or 0) + len(ready_sources)
     total_shots = shot_counts["total"] or 0
     video = (
         Fraction(shot_counts["ready"] or 0, total_shots)

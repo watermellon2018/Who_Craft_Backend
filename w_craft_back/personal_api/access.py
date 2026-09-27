@@ -14,7 +14,7 @@ from .catalog import validate_route
 from .crypto import decrypt_secret, storage_available
 from .errors import PersonalAPIError, unavailable_connection
 from .models import MODALITIES, PersonalAPIConnection, PersonalAPIPreference
-from .services import require_active_user
+from .services import require_active_user, validate_connection_route
 
 
 AccessError = PersonalAPIError
@@ -108,7 +108,9 @@ def resolve_generation_access(
         if connection is None:
             continue
         try:
-            validate_route(modality, connection.provider, route['modelKey'], operation)
+            validate_connection_route(
+                modality, connection, route['modelKey'], operation,
+            )
         except PersonalAPIError:
             continue
         snapshot['candidates'].append({
@@ -304,3 +306,76 @@ def reject_candidate(
     PersonalAPIConnection.objects.filter(
         pk=connection.pk, version=candidate['connectionVersion'],
     ).update(is_active=False, version=F('version') + 1, updated_at=timezone.now())
+
+
+def resolve_video_access(
+    user: User, *, requested_duration: float, model_key: str | None = None,
+    aspect_ratio: str = '16:9', resolution: str = '720p',
+    has_start_frame: bool = True, has_end_frame: bool = False,
+) -> dict[str, Any]:
+    """Pin profile-only video routes and disclose the first compatible duration."""
+    from w_craft_back.services.video_generation.contracts import VideoProviderError
+    from w_craft_back.services.video_generation.registry import (
+        compatible_model, is_configured, model_snapshot, nearest_duration,
+        resolve_model,
+    )
+
+    user = require_active_user(user)
+    source = generation_source(user, 'video')
+    if source == 'personal' and model_key:
+        raise PersonalAPIError(
+            'VIDEO_MODEL_PROFILE_ONLY',
+            'Personal video models are selected in the profile.',
+        )
+    access = resolve_generation_access(user, 'video')
+    selected_model = None
+    selected_duration = None
+    candidates = []
+    candidate_routes = []
+    if source == 'platform':
+        if not model_key:
+            raise PersonalAPIError('VIDEO_MODEL_REQUIRED', 'Choose a video model.')
+        route_candidates = [{'modelKey': model_key}]
+    else:
+        route_candidates = access['candidates']
+    for candidate in route_candidates:
+        try:
+            model = resolve_model(candidate['modelKey'])
+            if source == 'platform' and not is_configured(model):
+                raise VideoProviderError('VIDEO_PROVIDER_NOT_CONFIGURED')
+            if not compatible_model(
+                model, aspect_ratio=aspect_ratio, resolution=resolution,
+                has_start_frame=has_start_frame, has_end_frame=has_end_frame,
+            ):
+                continue
+            duration = nearest_duration(
+                model, requested_duration, resolution=resolution,
+                has_end_frame=has_end_frame,
+            )
+        except VideoProviderError:
+            continue
+        if selected_model is None:
+            selected_model = model
+            selected_duration = duration
+        if duration == selected_duration:
+            candidates.append(candidate)
+            candidate_routes.append({
+                'modelKey': model.key, 'modelLabel': model.label,
+                'provider': model.provider, 'durationSeconds': duration,
+                'aspectRatio': aspect_ratio, 'resolution': resolution,
+                'modelSpec': model_snapshot(model),
+            })
+    if selected_model is None:
+        raise PersonalAPIError(
+            'VIDEO_MODEL_INCOMPATIBLE',
+            'No configured video model supports the selected frames and format.', 403,
+        )
+    if source == 'personal':
+        access = {**access, 'candidates': candidates}
+    return {
+        'generationAccess': access, 'modelKey': selected_model.key,
+        'modelLabel': selected_model.label, 'provider': selected_model.provider,
+        'durationSeconds': selected_duration, 'aspectRatio': aspect_ratio,
+        'resolution': resolution, 'modelSpec': model_snapshot(selected_model),
+        'candidateRoutes': candidate_routes,
+    }
