@@ -32,6 +32,10 @@ Supported queue names are `character`, `poster`, `music`, `sound_effect`,
 `reference`, `storyboard`, and `video`.
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
+3D parameter saves, selected head/hair assets, history restore, and reviewed
+local model publishing are documented in
+[Character 3D history](docs/character-model3d-history.md). Apply migration `0074`
+before running the updated web/worker code.
 
 Music generation jobs remain queued until a generation worker polls the
 `music` queue. Music Studio shows a delayed-queue warning when a job has not
