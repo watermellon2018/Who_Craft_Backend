@@ -1,5 +1,7 @@
+DEFAULT_VISUAL_STYLE = "cinematic_realism"
+
 VISUAL_STYLES = (
-    "cinematic_realism",
+    DEFAULT_VISUAL_STYLE,
     "anime",
     "pixar_like",
     "stylized_3d",

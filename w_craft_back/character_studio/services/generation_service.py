@@ -77,6 +77,9 @@ _SECONDARY_ROUTING_MODES = {
 
 
 def _generation_failure_details(exc: Exception) -> tuple[str, str]:
+    from w_craft_back.services.image_generation.errors import ImageProviderError
+    if isinstance(exc, ImageProviderError):
+        return exc.code, exc.message
     candidate = getattr(exc, "error_code", "GENERATION_FAILED")
     error_code = (
         candidate
@@ -298,6 +301,8 @@ class CharacterGenerationService:
             "region": region,
             "edit_type": "zone_edit",
             "image_model": payload.get("image_model"),
+            "generationSource": payload.get("generationSource"),
+            "generationAccessToken": payload.get("generationAccessToken"),
             "instruction": instruction,
             "selection": selection,
             "preserve": preserve,
@@ -536,6 +541,8 @@ class CharacterGenerationService:
                         "reference_type": ui_type,
                         "preserve_identity": preserve_identity,
                         "image_model": params.get("image_model"),
+                        "generationSource": params.get("generationSource"),
+                        "generationAccessToken": params.get("generationAccessToken"),
                         "_idempotency_key": self._scoped_idempotency_key(
                             base_idempotency_key,
                             ui_type,
@@ -592,6 +599,8 @@ class CharacterGenerationService:
                 "correction_prompt": correction_prompt,
                 "preserve_identity": params.get("preserve_identity", True),
                 "image_model": params.get("image_model"),
+                "generationSource": params.get("generationSource"),
+                "generationAccessToken": params.get("generationAccessToken"),
                 "_idempotency_key": (params or {}).get("_idempotency_key"),
             },
         )
@@ -683,6 +692,7 @@ class CharacterGenerationService:
             raise ValidationError("routing_mode is invalid.")
         options = {
             "image_model": params.get("image_model"),
+            "generationSource": params.get("generationSource"),
             "routing_mode": routing_mode,
         }
         quoted_items = []
@@ -758,7 +768,16 @@ class CharacterGenerationService:
             "total_estimated_cost": str(total_estimated),
             "total_reservation_amount": str(total_reserved),
         }
-        account = get_or_create_account(user.user)
+        uses_craft_wallet = any(
+            item["selection"]["snapshot"].get("generationAccess", {}).get(
+                "source",
+            ) != "personal"
+            and not item["selection"]["snapshot"].get("generationAccess", {}).get(
+                "freePlatform",
+            )
+            for item in quoted_items
+        )
+        account = get_or_create_account(user.user) if uses_craft_wallet else None
         return {
             "quote_token": signing.dumps(
                 quote_payload,
@@ -766,17 +785,25 @@ class CharacterGenerationService:
                 compress=True,
             ),
             "expires_in_seconds": _SECONDARY_QUOTE_TTL_SECONDS,
+            "generationSource": (
+                quoted_items[0]["selection"]["snapshot"]
+                .get("generationAccess", {}).get("source", "platform")
+            ),
             "items": public_items,
             "totals": {
                 "estimated_cost": str(total_estimated),
                 "reservation_amount": str(total_reserved),
             },
-            "available_balance": str(account.available_balance),
-            "sufficient_balance": (
-                not account.is_frozen
-                and account.available_balance >= total_reserved
+            "available_balance": (
+                str(account.available_balance) if account else "0.000000"
             ),
-            "account_frozen": account.is_frozen,
+            "sufficient_balance": (
+                not uses_craft_wallet or (
+                    not account.is_frozen
+                    and account.available_balance >= total_reserved
+                )
+            ),
+            "account_frozen": account.is_frozen if account else False,
         }
 
     @transaction.atomic
@@ -887,6 +914,7 @@ class CharacterGenerationService:
             "preserve_identity": True,
             "controls": {},
             "image_model": options.get("image_model"),
+            "generationSource": options.get("generationSource"),
             "routing_mode": options.get("routing_mode") or "manual",
             "reference_asset_id": str(identity_asset.asset_id),
             "source_identity_asset_id": str(identity_asset.asset_id),
@@ -1254,6 +1282,8 @@ class CharacterGenerationService:
             "variant_count": variant_count,
             "image_type": CharacterImageType.PORTRAIT,
             "image_model": params.get("image_model"),
+            "generationSource": params.get("generationSource"),
+            "generationAccessToken": params.get("generationAccessToken"),
             "preserve_identity": preserve_identity,
             "visual_style": params.get("visual_style"),
             "text_refinement": params.get("text_refinement") or params.get("refinement", ""),
@@ -1403,6 +1433,24 @@ class CharacterGenerationService:
         provider = None
         provider_started_at = time.monotonic()
         try:
+            from w_craft_back.personal_api.access import resolve_generation_access
+            from w_craft_back.personal_api.errors import PersonalAPIError
+            from w_craft_back.services.image_generation.personal import (
+                validate_image_access,
+            )
+
+            try:
+                if (job.provider_snapshot or {}).get("generationAccess"):
+                    validate_image_access(job.provider_snapshot, user=job.actor.user)
+                else:
+                    resolve_generation_access(
+                        job.actor.user, "image", source="platform",
+                        free_platform=job.provider == "mock",
+                    )
+            except PersonalAPIError as error:
+                raise ProviderUserFacingError(
+                    error.message, error_code=error.code,
+                ) from error
             if job.provider_operation == "reference" and reference_bytes is None:
                 reference_bytes, mime_type = self._load_reference_input(job)
             provider = get_image_provider(

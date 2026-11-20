@@ -91,6 +91,8 @@ def generate_image_via_gemini(
     poster_format: Optional[str] = None,
     timeout_seconds: float = 120,
     return_usage: bool = False,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> bytes | tuple[bytes, dict[str, Any]]:
     """Call Gemini/Imagen and return PNG bytes for one generated image.
 
@@ -99,6 +101,10 @@ def generate_image_via_gemini(
     so the existing JSON response contract is preserved.
     """
     cfg = _config()
+    if api_key is not None:
+        cfg["api_key"] = api_key
+    if model is not None:
+        cfg["model"] = model
     if not cfg["api_key"]:
         raise GeminiImageError(
             "GEMINI_API_KEY is not set",
@@ -127,7 +133,8 @@ def generate_image_via_gemini(
 
     try:
         response = session.post(
-            url, headers=headers, json=payload, timeout=timeout_seconds
+            url, headers=headers, json=payload, timeout=timeout_seconds,
+            allow_redirects=False,
         )
     except requests.RequestException as exc:
         logger.error(
@@ -147,7 +154,7 @@ def generate_image_via_gemini(
             provider_status=response.status_code,
         )
 
-    if response.status_code >= 400:
+    if response.status_code >= 300:
         logger.error("Gemini error: status=%s", response.status_code)
         raise GeminiImageError(
             f"Gemini returned HTTP {response.status_code}",
@@ -206,6 +213,8 @@ def edit_image_via_gemini(
     mime_type: str = "image/png",
     timeout_seconds: float = 120,
     return_usage: bool = False,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> bytes | tuple[bytes, dict[str, Any]]:
     """Edit ``image_bytes`` according to ``instruction`` and return new PNG bytes.
 
@@ -216,6 +225,10 @@ def edit_image_via_gemini(
     the edited image as ``inlineData`` parts on the response.
     """
     cfg = _config()
+    if api_key is not None:
+        cfg["api_key"] = api_key
+    if model is not None:
+        cfg["edit_model"] = model
     if not cfg["api_key"]:
         raise GeminiImageError(
             "GEMINI_API_KEY is not set",
@@ -255,7 +268,8 @@ def edit_image_via_gemini(
 
     try:
         response = session.post(
-            url, headers=headers, json=payload, timeout=timeout_seconds
+            url, headers=headers, json=payload, timeout=timeout_seconds,
+            allow_redirects=False,
         )
     except requests.RequestException as exc:
         logger.error(
@@ -275,7 +289,7 @@ def edit_image_via_gemini(
             provider_status=response.status_code,
         )
 
-    if response.status_code >= 400:
+    if response.status_code >= 300:
         logger.error("Gemini edit error: status=%s", response.status_code)
         raise GeminiImageError(
             f"Gemini returned HTTP {response.status_code}",

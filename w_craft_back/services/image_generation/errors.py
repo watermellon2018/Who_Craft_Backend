@@ -34,6 +34,7 @@ class ImageProviderError(Exception):
         http_status: int = 502,
         provider_status: int | None = None,
         provider_body: str | None = None,
+        rejected_before_acceptance: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -44,6 +45,8 @@ class ImageProviderError(Exception):
             provider_body
         )
         self.provider_body = None
+        # Only an adapter may certify that no paid generation was accepted.
+        self.rejected_before_acceptance = rejected_before_acceptance
 
 
 # Public error codes — kept stable for the FE.
@@ -85,6 +88,7 @@ def _gemini_kind_to_provider_error(exc: Any) -> ImageProviderError:
             http_status=502,
             provider_status=provider_status,
             provider_body=provider_body,
+            rejected_before_acceptance=provider_status in {401, 403},
         )
     if kind == "unavailable":
         return ImageProviderError(
@@ -162,21 +166,27 @@ def map_to_provider_error(exc: BaseException) -> ImageProviderError:
                 code=CODE_FORBIDDEN,
                 message="Провайдер отклонил запрос: проверьте API-ключ выбранной модели.",
                 http_status=502,
+                provider_status=401,
                 provider_body=str(exc)[:1000],
+                rejected_before_acceptance=True,
             )
         if isinstance(exc, getattr(litellm_exc, "PermissionDeniedError", ())):
             return ImageProviderError(
                 code=CODE_FORBIDDEN,
                 message="Доступ к выбранной модели запрещён провайдером.",
                 http_status=502,
+                provider_status=403,
                 provider_body=str(exc)[:1000],
+                rejected_before_acceptance=True,
             )
         if isinstance(exc, getattr(litellm_exc, "RateLimitError", ())):
             return ImageProviderError(
                 code=CODE_UNAVAILABLE,
                 message="Провайдер вернул rate limit. Попробуйте позже.",
                 http_status=503,
+                provider_status=429,
                 provider_body=str(exc)[:1000],
+                rejected_before_acceptance=True,
             )
         if isinstance(exc, getattr(litellm_exc, "ServiceUnavailableError", ())):
             return ImageProviderError(

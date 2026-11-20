@@ -604,7 +604,7 @@ def capabilities_from_snapshot(
     )
 
 
-def public_audio_model_catalog() -> list[dict[str, Any]]:
+def public_audio_model_catalog(*, user=None) -> list[dict[str, Any]]:
     """Serialize product models and route availability without secret values."""
 
     default_key = default_audio_model_key()
@@ -645,6 +645,24 @@ def public_audio_model_catalog() -> list[dict[str, Any]]:
                 ],
             }
         )
+    if user is not None:
+        from w_craft_back.personal_api.access import has_paid_subscription
+        from w_craft_back.movie.music.generation_access import (
+            PERSONAL_AUDIO_PROVIDERS, personal_music_available,
+        )
+
+        subscription = has_paid_subscription(user)
+        for row in rows:
+            for route in row["routes"]:
+                platform = route["configured"] and (
+                    subscription or route["provider"] == "mock"
+                )
+                personal = personal_music_available(
+                    user, row["key"],
+                    PERSONAL_AUDIO_PROVIDERS.get(route["provider"], ""),
+                )
+                route["configured"] = platform or personal
+            row["configured"] = any(route["configured"] for route in row["routes"])
     return rows
 
 

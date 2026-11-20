@@ -23,6 +23,11 @@ from w_craft_back.services.image_generation.registry import MODEL_REGISTRY
 @override_settings(POSTER_GENERATION_USE_MOCK=True)
 class PosterGenerationBillingTest(TestCase):
     def setUp(self):
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.user = User.objects.create_user(username="poster-billing")
         self.project = Project.objects.create(
             owner=self.user,

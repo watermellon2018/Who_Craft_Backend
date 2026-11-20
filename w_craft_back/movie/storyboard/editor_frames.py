@@ -6,7 +6,6 @@ import hashlib
 import json
 import uuid
 from copy import deepcopy
-from dataclasses import asdict
 from datetime import timedelta
 from statistics import median
 from typing import Any
@@ -41,11 +40,15 @@ from w_craft_back.movie.storyboard.models import (
 from w_craft_back.movie.storyboard.services import _require_project, _scene
 from w_craft_back.services.image_generation.errors import ImageProviderError
 from w_craft_back.services.image_generation.registry import (
-    deserialize_model_spec, list_available_models, resolve_model,
+    list_available_models, resolve_model,
 )
-from w_craft_back.services.image_generation.resolver import (
-    provider_from_spec, resolve_current_for_user, resolve_provider_for_user,
+from w_craft_back.services.image_generation.resolver import resolve_current_for_user
+from w_craft_back.services.image_generation.personal import (
+    resolve_image_generation, validate_image_access,
 )
+from w_craft_back.services.image_generation.routing import provider_from_route_snapshot
+from w_craft_back.personal_api.access import resolve_generation_access
+from w_craft_back.personal_api.errors import PersonalAPIError
 from w_craft_back.services.image_generation.usage import provider_usage_snapshot
 from w_craft_back.storage_gateway import (
     StorageGatewayError, delete_storage_key, normalize_image_bytes,
@@ -60,12 +63,16 @@ MAX_FRAME_ESTIMATED_SECONDS = 300
 
 
 class EditorFrameCreateSerializer(StrictSerializer):
+    generationAccessToken = serializers.CharField(max_length=16384, required=False)
     shotId = IdentifierField()
     keyframeId = IdentifierField()
     expectedRevision = serializers.IntegerField(min_value=1)
     imageModel = serializers.CharField(max_length=256)
     routingMode = serializers.ChoiceField(choices=("manual",), default="manual")
     requestId = serializers.UUIDField()
+    generationSource = serializers.ChoiceField(
+        choices=("platform", "personal"), required=False,
+    )
 
 
 def _fingerprint(value: dict) -> str:
@@ -102,7 +109,10 @@ def _reference_limit(spec: Any) -> int:
     return max(0, min(int(value), 14 if spec.backend == "openrouter-images" else 1))
 
 
-def frame_options(*, actor: Any, project_id: int, scene_id: int) -> dict:
+def frame_options(
+    *, actor: Any, project_id: int, scene_id: int,
+    generation_source: str | None = None,
+) -> dict:
     project = _require_project(
         actor=actor, project_id=project_id, action=policy.Action.VIEW,
     )
@@ -113,14 +123,22 @@ def frame_options(*, actor: Any, project_id: int, scene_id: int) -> dict:
             continue
         spec = resolve_model(row["key"])
         cost = None
+        available = False
         try:
-            estimate = estimate_for_spec(spec, variant_count=1, prompt_length=3000)
-            cost = format(estimate.estimated_cost, "f")
-        except (CreditServiceError, ValueError):
+            access = resolve_generation_access(
+                actor, "image", source=generation_source, model_key=spec.key,
+            )
+            if access["source"] == "personal":
+                available = True
+            else:
+                estimate = estimate_for_spec(spec, variant_count=1, prompt_length=3000)
+                cost = format(estimate.estimated_cost, "f")
+                available = row["configured"] and cost is not None
+        except (CreditServiceError, ValueError, PersonalAPIError):
             pass
         models.append({
             "id": spec.key, "label": spec.label,
-            "available": row["configured"] and cost is not None,
+            "available": available,
             "supportsReferences": spec.supports_reference,
             "maxReferenceImages": _reference_limit(spec),
             "estimatedCost": cost, "currency": "USD",
@@ -331,7 +349,10 @@ def enqueue_frame(*, actor: Any, project_id: int, scene_id: int, data: dict,
     project = _require_project(actor=actor, project_id=project_id,
                                action=policy.Action.RUN_GENERATION)
     scene = _scene(project, scene_id, lock=True)
-    params = {**data, "requestId": str(data["requestId"])}
+    params = {
+        key: value for key, value in data.items() if key != "generationAccessToken"
+    }
+    params["requestId"] = str(data["requestId"])
     previous = StoryboardEditorFrameJob.objects.filter(
         scene=scene, actor=actor, request_id=data["requestId"],
     ).first()
@@ -358,18 +379,25 @@ def enqueue_frame(*, actor: Any, project_id: int, scene_id: int, data: dict,
     )
     prompt = _prompt(inputs, references, has_canvas)
     try:
-        provider = resolve_provider_for_user(actor, override=data["imageModel"])
         count = len(references) + int(has_canvas)
+        provider = resolve_image_generation(
+            actor, source=data.get("generationSource"), model_key=data["imageModel"],
+            operation="reference" if count else "generate",
+            approval_token=data.get("generationAccessToken"),
+        )
         if count > _reference_limit(provider.spec):
             raise StoryboardError(
                 "Model cannot accept all composition and reference images.",
                 code="STORYBOARD_REFERENCE_LIMIT", http_status=400,
                 errors={"required": count, "maximum": _reference_limit(provider.spec)},
             )
-        estimate = estimate_for_spec(
-            provider.spec, operation="reference" if count else "generate",
-            prompt=prompt, variant_count=1, reference_count=count,
-        )
+        access = provider.generation_access
+        estimate = None
+        if access["source"] == "platform" and not access.get("freePlatform"):
+            estimate = estimate_for_spec(
+                provider.spec, operation="reference" if count else "generate",
+                prompt=prompt, variant_count=1, reference_count=count,
+            )
         estimated_seconds = _estimate_frame_seconds(
             project_id=project.pk, model=provider.spec.key,
         )
@@ -379,7 +407,7 @@ def enqueue_frame(*, actor: Any, project_id: int, scene_id: int, data: dict,
             request_id=data["requestId"], request_parameters=params,
             expected_revision=draft.revision, model=provider.spec.key,
             input_fingerprint=_fingerprint(inputs),
-            provider_snapshot=asdict(provider.spec),
+            provider_snapshot=provider.provider_snapshot,
             request_snapshot={"input": inputs, "references": references,
                               "hasCanvas": has_canvas, "compiledPrompt": prompt,
                               "estimatedSeconds": estimated_seconds},
@@ -389,14 +417,15 @@ def enqueue_frame(*, actor: Any, project_id: int, scene_id: int, data: dict,
                 job=job, project_asset_id=reference.get("projectAssetId"),
                 character_asset_id=reference.get("characterAssetId"),
             )
-        reserve_generation(
-            user=actor, domain="storyboard", job_id=str(job.pk),
-            provider=estimate.provider, model_name=estimate.model_name,
-            estimated_cost=estimate.estimated_cost,
-            reservation_amount=estimate.reservation_amount,
-            pricing_snapshot=estimate.snapshot, project=project,
-            operation="generate", routing_mode="manual",
-        )
+        if estimate is not None:
+            reserve_generation(
+                user=actor, domain="storyboard", job_id=str(job.pk),
+                provider=estimate.provider, model_name=estimate.model_name,
+                estimated_cost=estimate.estimated_cost,
+                reservation_amount=estimate.reservation_amount,
+                pricing_snapshot=estimate.snapshot, project=project,
+                operation="generate", routing_mode="manual",
+            )
     except ImageProviderError as error:
         raise StoryboardError(
             error.message, code=error.code, http_status=error.http_status,
@@ -520,7 +549,13 @@ def execute_frame_job(job_id=None):
     try:
         _require_project(actor=claimed.actor, project_id=claimed.scene.project_id,
                          action=policy.Action.RUN_GENERATION)
-        provider = provider_from_spec(deserialize_model_spec(claimed.provider_snapshot))
+        access = claimed.provider_snapshot.get("generationAccess")
+        if access is None:
+            access = resolve_generation_access(
+                claimed.actor, "image", source="platform", model_key=claimed.model,
+            )
+        validate_image_access({"generationAccess": access}, user=claimed.actor)
+        provider = provider_from_route_snapshot(claimed.provider_snapshot)
         snapshot = claimed.request_snapshot
         images = []
         mime_types = []

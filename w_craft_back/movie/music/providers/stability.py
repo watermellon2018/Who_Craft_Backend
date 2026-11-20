@@ -517,4 +517,5 @@ class StabilityAudioProvider(AudioProvider):
             http_status=503 if retryable else 400,
             retryable=retryable,
             outcome_unknown=False,
+            definitely_rejected=status_code in {401, 403, 429},
         )

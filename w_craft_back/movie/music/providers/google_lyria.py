@@ -335,12 +335,19 @@ class GoogleLyriaProvider(AudioProvider):
                 http_status=502,
                 retryable=False,
             )
+        if status_code in {401, 403}:
+            raise MusicProviderError(
+                "Provider credentials were rejected before generation.",
+                code="MUSIC_PROVIDER_REJECTED", http_status=403,
+                retryable=False, definitely_rejected=True,
+            )
         if status_code == 429:
             raise MusicProviderError(
                 "Google Lyria rate-limited the music request.",
                 code="MUSIC_PROVIDER_RATE_LIMITED",
                 http_status=503,
                 retryable=True,
+                definitely_rejected=True,
             )
         if status_code < 500:
             raise MusicProviderError(

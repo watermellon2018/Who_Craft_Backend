@@ -174,6 +174,8 @@ def character_dict(character, include_related=False):
     data = model_dict(character)
     data.pop("creation_idempotency_key", None)
     data.pop("creation_request_hash", None)
+    # Internal selection; the model3d endpoint exposes the resolved asset.
+    data.pop("active_model3d_asset", None)
     data["character_id"] = str(character.character_id)
     data["project_id"] = character.project_id
     data["user_id"] = character.user_id

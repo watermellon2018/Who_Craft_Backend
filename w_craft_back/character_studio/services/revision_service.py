@@ -7,7 +7,13 @@ from w_craft_back.character_studio.models import (
 )
 from w_craft_back.character_studio.repositories.repositories import RevisionRepository
 from w_craft_back.character_studio.services.permissions import get_project_for_action
-from w_craft_back.character_studio.services.serialization import character_dict, revision_dict
+from w_craft_back.character_studio.services.errors import ValidationError
+from w_craft_back.character_studio.services.model3d_history_service import (
+    model3d_snapshot, restore_model3d_snapshot,
+)
+from w_craft_back.character_studio.services.serialization import (
+    character_dict, revision_dict,
+)
 from w_craft_back.movie.project.policy import Action
 
 
@@ -43,7 +49,10 @@ class CharacterRevisionService:
             pk=character.pk,
         )
         number = self.revisions.next_revision_number(character)
-        after_snapshot = snapshot or character_dict(character, include_related=True)
+        after_snapshot = {
+            **(snapshot or character_dict(character, include_related=True)),
+            **model3d_snapshot(character),
+        }
         revision = self.revisions.create(
             character=character,
             project=character.project,
@@ -67,7 +76,10 @@ class CharacterRevisionService:
         return revision
 
     def list_revisions(self, character):
-        return [revision_dict(revision) for revision in character.revisions.order_by("-revision_number")]
+        return [
+            revision_dict(revision)
+            for revision in character.revisions.order_by("-revision_number")
+        ]
 
     @transaction.atomic
     def restore_revision(self, actor, action, character, revision):
@@ -79,7 +91,16 @@ class CharacterRevisionService:
         character = StudioCharacter.objects.select_for_update().get(
             pk=character.pk,
         )
-        before = character_dict(character, include_related=True)
+        if (
+            revision.character_id != character.pk
+            or revision.project_id != character.project_id
+        ):
+            raise ValidationError("Revision must belong to this character and project.")
+        before = {
+            **character_dict(character, include_related=True),
+            **model3d_snapshot(character),
+        }
+        restore_model3d_snapshot(character, revision.after_snapshot)
         if revision.reference_image:
             character.canonical_reference_image = revision.reference_image
         if revision.appearance:
@@ -107,4 +128,3 @@ class CharacterRevisionService:
 
     def get_current_revision(self, character):
         return revision_dict(character.current_revision)
-

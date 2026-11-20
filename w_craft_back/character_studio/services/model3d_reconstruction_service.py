@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from datetime import timedelta
 from decimal import Decimal
 import uuid
@@ -155,6 +156,50 @@ def _asset_for_job(job: CharacterGenerationJob | None) -> CharacterAsset | None:
     ).order_by("-created_at").first()
 
 
+def compatible_model3d_asset(
+    character: StudioCharacter,
+    asset: CharacterAsset | None,
+    fingerprint: str,
+) -> bool:
+    """Check the ownership and reference contract without creating signed URLs."""
+    if asset is None:
+        return False
+    metadata = asset.metadata if isinstance(asset.metadata, dict) else {}
+    hair = metadata.get("hair_asset", {})
+    return bool(
+        asset.character_id == character.pk
+        and asset.project_id == character.project_id
+        and asset.asset_type == CharacterAssetType.MODEL_3D
+        and asset.status == CharacterAssetStatus.READY
+        and asset.storage_path
+        and asset.image_url
+        and isinstance(hair, dict)
+        and hair.get("storage_path")
+        and hair.get("model_url")
+        and metadata.get("reference_fingerprint") == fingerprint
+    )
+
+
+def selected_model3d_asset(
+    character: StudioCharacter,
+    references: dict[str, CharacterAsset] | None = None,
+) -> CharacterAsset | None:
+    """Resolve a compatible explicit selection, then the latest job's asset."""
+    references = (
+        references if references is not None else _selected_references(character)
+    )
+    if not references:
+        return None
+    fingerprint = _reference_fingerprint(references)
+    pinned = (
+        CharacterAsset.objects.filter(pk=character.active_model3d_asset_id).first()
+        if character.active_model3d_asset_id else None
+    )
+    if compatible_model3d_asset(character, pinned, fingerprint):
+        return pinned
+    return _asset_for_job(next(_jobs_for_fingerprint(character, fingerprint), None))
+
+
 def _state(
     character: StudioCharacter,
     references: dict[str, CharacterAsset] | None = None,
@@ -197,24 +242,30 @@ def _state(
 
     fingerprint = _reference_fingerprint(references)
     job = next(_jobs_for_fingerprint(character, fingerprint), None)
-    asset = _asset_for_job(job)
+    asset = selected_model3d_asset(character, references)
+    if asset and asset.source_job_id:
+        job = character.generation_jobs.filter(
+            pk=asset.source_job_id,
+            job_type=GenerationJobType.MODEL3D_RECONSTRUCTION,
+        ).first()
     asset_metadata = (
         asset.metadata if asset and isinstance(asset.metadata, dict) else {}
     )
     hair_metadata = asset_metadata.get("hair_asset", {})
     hair_url = public_url(hair_metadata.get("model_url")) \
         if isinstance(hair_metadata, dict) else None
-    if job is None:
+    if job is None and asset is None:
         return base
 
     base.update(
         {
-            "progress": int(job.progress or 0),
-            "job_id": str(job.job_id),
+            "progress": int(job.progress or 0) if job else 0,
+            "job_id": str(job.job_id) if job else None,
             "asset_id": str(asset.asset_id) if asset else None,
             "error_message": public_generation_error_message(
-                job.error_message or (asset.error_message if asset else ""),
-                job.job_type,
+                (job.error_message if job else "")
+                or (asset.error_message if asset else ""),
+                GenerationJobType.MODEL3D_RECONSTRUCTION,
             ),
         }
     )
@@ -243,18 +294,18 @@ def _state(
         else:
             base["status"] = "failed"
             base["error_message"] = "Generated hair asset was not produced."
-    elif job.status == GenerationJobStatus.PROCESSING:
+    elif job and job.status == GenerationJobStatus.PROCESSING:
         base["status"] = "processing"
-    elif job.status == GenerationJobStatus.QUEUED:
+    elif job and job.status == GenerationJobStatus.QUEUED:
         base["status"] = "queued"
-    elif job.status == GenerationJobStatus.CANCELLATION_REQUESTED:
+    elif job and job.status == GenerationJobStatus.CANCELLATION_REQUESTED:
         base["status"] = GenerationJobStatus.CANCELLATION_REQUESTED
-    elif job.status in (
+    elif job and job.status in (
         GenerationJobStatus.FAILED,
         GenerationJobStatus.CANCELLED,
     ):
         base["status"] = "failed"
-    elif job.status == GenerationJobStatus.COMPLETED:
+    elif job and job.status == GenerationJobStatus.COMPLETED:
         base.update(
             {
                 "status": "failed",
@@ -285,6 +336,10 @@ def ensure_reconstruction(
     if not references:
         return _state(locked_character, references)
     fingerprint = _reference_fingerprint(references)
+
+    selected = selected_model3d_asset(locked_character, references)
+    if compatible_model3d_asset(locked_character, selected, fingerprint):
+        return _state(locked_character, references)
 
     for existing in _jobs_for_fingerprint(locked_character, fingerprint):
         asset = _asset_for_job(existing)
@@ -364,7 +419,7 @@ def ensure_reconstruction(
     )
     relative_path = (
         f"character-studio/model3d/{locked_character.character_id}/"
-        f"{fingerprint}/head.glb"
+        f"{fingerprint}/{job.job_id}/head.glb"
     )
     hair_relative_path = str(
         Path(relative_path).with_name("hair.glb")
@@ -851,12 +906,16 @@ def _run_reconstruction_job(
         if len(references) != len(reference_ids):
             raise ValidationError("One or more locked references are unavailable.")
 
-        output_path = Path(settings.MEDIA_ROOT).resolve() / asset.storage_path
+        published_path = Path(settings.MEDIA_ROOT).resolve() / asset.storage_path
         media_root = Path(settings.MEDIA_ROOT).resolve()
-        output_path = output_path.resolve()
-        output_path.relative_to(media_root)
+        published_path = published_path.resolve()
+        published_path.relative_to(media_root)
         fingerprint = str(request_payload.get("reference_fingerprint", ""))
-        work_dir = output_path.parent / "work"
+        # A stale worker must never touch a newer lease's published files.
+        # Keep work paths shallow enough for Windows runtimes without long-path
+        # support; the published path still contains character/fingerprint/job.
+        work_dir = media_root / "model3d-work" / str(job.lease_token)
+        output_path = work_dir / "output" / "head.glb"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         pipeline_metadata = _execute_pipeline(
             job,
@@ -918,6 +977,18 @@ def _run_reconstruction_job(
             ):
                 return None
             locked_asset = CharacterAsset.objects.select_for_update().get(pk=asset.pk)
+            published_path.parent.mkdir(parents=True, exist_ok=True)
+            for source, target in (
+                (output_path, published_path),
+                (hair_output_path, published_path.with_name("hair.glb")),
+            ):
+                # Exclusive creation also protects older assets that happened to
+                # use a legacy shared fingerprint directory before migration.
+                with source.open("rb") as incoming, target.open("xb") as outgoing:
+                    shutil.copyfileobj(incoming, outgoing)
+            completed_metadata["hair_output"] = str(
+                published_path.with_name("hair.glb")
+            )
             locked_asset.status = CharacterAssetStatus.READY
             locked_asset.error_message = ""
             locked_asset.metadata = completed_metadata

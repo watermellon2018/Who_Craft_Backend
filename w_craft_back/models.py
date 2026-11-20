@@ -7,6 +7,8 @@ from w_craft_back.credits.models import *
 from w_craft_back.profile.models import *
 from w_craft_back.subscriptions.models import *
 from w_craft_back.notifications.models import *
+from w_craft_back.messaging.models import *
+from w_craft_back.personal_api.models import *
 # Dashboard models depend on StudioCharacter — import last.
 from w_craft_back.movie.project.dashboard_models import *
 from w_craft_back.movie.project.comment_models import *
@@ -22,3 +24,4 @@ from w_craft_back.movie.sound_effects.models import *
 from w_craft_back.movie.project.team_models import *
 # Poster models depend on Project + ProjectAsset (defined above).
 from w_craft_back.movie.poster.models import *
+from w_craft_back.movie.video.models import *

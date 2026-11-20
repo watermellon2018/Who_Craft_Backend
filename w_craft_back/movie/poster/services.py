@@ -14,7 +14,6 @@ import uuid
 from django.contrib.auth.models import User
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from w_craft_back.movie.poster.errors import (
@@ -286,6 +285,9 @@ def enqueue_generation_job(
     request_hash: str = "",
     requested_model: str = "",
     routing_mode: str = "manual",
+    generation_source: str | None = None,
+    generation_access_token: str | None = None,
+    pinned_snapshot: dict | None = None,
     reference_storage_key: str = "",
     reference_mime_type: str = "",
     reference_image_url: str = "",
@@ -388,88 +390,103 @@ def enqueue_generation_job(
                 if reference_storage_key or reference_image_url or reference_asset
                 else "generate"
             )
+            from w_craft_back.personal_api.access import (
+                generation_source as saved_source, resolve_generation_access,
+            )
+            from w_craft_back.services.image_generation.personal import (
+                PersonalImageProvider, image_access_error, validate_image_access,
+            )
+            from w_craft_back.personal_api.errors import PersonalAPIError
+
             should_use_mock = (
                 getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
-                if use_mock is None
-                else use_mock
+                if use_mock is None else use_mock
             )
+            effective_source = generation_source or saved_source(user, "image")
+            should_use_mock = bool(
+                should_use_mock and effective_source == "platform"
+                and not requested_model
+            )
+            try:
+                if pinned_snapshot and pinned_snapshot.get("generationAccess"):
+                    validate_image_access(pinned_snapshot, user=user)
+                    access = pinned_snapshot["generationAccess"]
+                else:
+                    access = resolve_generation_access(
+                        user, "image", source=generation_source,
+                        model_key=requested_model or None, operation=route_operation,
+                        free_platform=should_use_mock,
+                        approval_token=generation_access_token,
+                    )
+            except PersonalAPIError as error:
+                raise image_access_error(error) from error
+            should_use_mock = (
+                access["source"] == "platform" and bool(access.get("freePlatform"))
+            )
+            effective_routing_mode = str(routing_mode or "manual").lower()
             if should_use_mock:
+                provider_snapshot = {"generationAccess": access, "mock": True}
+            elif access["source"] == "personal":
+                selected_provider = PersonalImageProvider(
+                    pinned_snapshot or {"generationAccess": access}
+                )
+                provider_snapshot = selected_provider.provider_snapshot
+                job.requested_model = selected_provider.spec.key
+            elif effective_routing_mode != "manual":
+                from w_craft_back.services.image_generation.routing import (
+                    build_routing_decision,
+                )
+
+                decision = build_routing_decision(
+                    mode=effective_routing_mode,
+                    requested_model=requested_model or None,
+                    operation=route_operation, variant_count=1, prompt=prompt,
+                )
+                estimate = decision.primary.estimate
+                reservation_amount = decision.reservation_amount
+                provider_snapshot = {**decision.snapshot(), "generationAccess": access}
+                job.requested_model = decision.primary.spec.key
+            else:
+                selected_provider = resolve_provider_for_user(
+                    user, override=requested_model or None,
+                    require_edit=operation == PosterJobOperation.EDIT,
+                )
+                if (route_operation == "reference"
+                        and not selected_provider.supports_reference()):
+                    raise ImageProviderError(
+                        code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
+                        message=(
+                            "Выбранная модель не поддерживает изображение-референс."
+                        ),
+                        http_status=400,
+                    )
+                provider_snapshot = {
+                    "spec": selected_provider.spec.__dict__, "generationAccess": access,
+                }
                 estimate = estimate_for_pinned_provider(
-                    provider="mock",
-                    provider_snapshot=None,
-                    model_name="mock-poster-provider",
-                    operation=("edit" if route_operation == "edit" else "generate"),
-                    variant_count=1,
-                    prompt=prompt,
+                    provider=selected_provider.name,
+                    provider_snapshot=provider_snapshot,
+                    model_name=selected_provider.model_id,
+                    operation="edit" if route_operation == "edit" else "generate",
+                    variant_count=1, prompt=prompt,
                 )
                 reservation_amount = estimate.reservation_amount
-                provider_snapshot = {}
-                effective_routing_mode = "manual"
-            else:
-                effective_routing_mode = str(routing_mode or "manual").lower()
-                if effective_routing_mode != "manual":
-                    from w_craft_back.services.image_generation.routing import (
-                        build_routing_decision,
-                    )
-
-                    decision = build_routing_decision(
-                        mode=effective_routing_mode,
-                        requested_model=requested_model or None,
-                        operation=route_operation,
-                        variant_count=1,
-                        prompt=prompt,
-                    )
-                    estimate = decision.primary.estimate
-                    reservation_amount = decision.reservation_amount
-                    provider_snapshot = decision.snapshot()
-                    job.requested_model = decision.primary.spec.key
-                else:
-                    selected_provider = resolve_provider_for_user(
-                        user,
-                        override=requested_model or None,
-                        require_edit=operation == PosterJobOperation.EDIT,
-                    )
-                    if (
-                        route_operation == "reference"
-                        and not selected_provider.supports_reference()
-                    ):
-                        raise ImageProviderError(
-                            code=CODE_IMAGE_INPUT_NOT_SUPPORTED,
-                            message=(
-                                "Выбранная модель не поддерживает изображение-референс."
-                            ),
-                            http_status=400,
-                        )
-                    estimate = estimate_for_pinned_provider(
-                        provider=selected_provider.name,
-                        provider_snapshot={"spec": selected_provider.spec.__dict__},
-                        model_name=selected_provider.model_id,
-                        operation=("edit" if route_operation == "edit" else "generate"),
-                        variant_count=1,
-                        prompt=prompt,
-                    )
-                    reservation_amount = estimate.reservation_amount
-                    provider_snapshot = {"spec": selected_provider.spec.__dict__}
-                    job.requested_model = selected_provider.spec.key
-                job.provider_snapshot = provider_snapshot
-                job.save(update_fields=["requested_model", "provider_snapshot"])
-            reserve_generation(
-                user=user,
-                domain="poster",
-                job_id=str(job.id),
-                provider=estimate.provider,
-                model_name=estimate.model_name,
-                estimated_cost=estimate.estimated_cost,
-                reservation_amount=reservation_amount,
-                pricing_snapshot=(
-                    provider_snapshot
-                    if provider_snapshot.get("candidates")
-                    else estimate.snapshot
-                ),
-                project=project,
-                operation=operation,
-                routing_mode=effective_routing_mode,
-            )
+                job.requested_model = selected_provider.spec.key
+            job.provider_snapshot = provider_snapshot
+            job.save(update_fields=["requested_model", "provider_snapshot"])
+            if access["source"] == "platform" and not access.get("freePlatform"):
+                reserve_generation(
+                    user=user, domain="poster", job_id=str(job.id),
+                    provider=estimate.provider, model_name=estimate.model_name,
+                    estimated_cost=estimate.estimated_cost,
+                    reservation_amount=reservation_amount,
+                    pricing_snapshot=(
+                        provider_snapshot if provider_snapshot.get("candidates")
+                        else estimate.snapshot
+                    ),
+                    project=project, operation=operation,
+                    routing_mode=effective_routing_mode,
+                )
         except (CreditServiceError, ImageProviderError) as error:
             raise PosterError(
                 str(getattr(error, "message", error)),

@@ -79,6 +79,11 @@ class MusicLifecycleTests(TestCase):
         super().tearDownClass()
 
     def setUp(self) -> None:
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.owner = make_user(f"lifecycle-{self._testMethodName}")
         self.project = make_project(self.owner)
 
@@ -204,9 +209,6 @@ class MusicLifecycleTests(TestCase):
         with override_settings(
             MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
             GEMINI_API_KEY="changed-but-present",
-        ), patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=MockAudioProvider(),
         ):
             retry = retry_music_job(original, actor=self.owner)
 
@@ -249,9 +251,9 @@ class MusicLifecycleTests(TestCase):
             user=self.owner,
             available_balance=Decimal("1"),
         )
-        with patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=provider,
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            STABILITY_API_KEY="test-stability-key",
         ):
             job, replay = enqueue_music_job(
                 project=self.project,
@@ -304,9 +306,9 @@ class MusicLifecycleTests(TestCase):
             user=self.owner,
             available_balance=Decimal("1"),
         )
-        with patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=provider,
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            STABILITY_API_KEY="test-stability-key",
         ):
             job, _ = enqueue_music_job(
                 project=self.project,
@@ -342,14 +344,13 @@ class MusicLifecycleTests(TestCase):
         )
 
     def test_unknown_paid_outcome_captures_estimate_for_reconciliation(self):
-        provider = PaidMockAudioProvider()
         account = CreditAccount.objects.create(
             user=self.owner,
             available_balance=Decimal("1"),
         )
-        with patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=provider,
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            STABILITY_API_KEY="test-stability-key",
         ):
             job, _ = enqueue_music_job(
                 project=self.project,
@@ -406,9 +407,9 @@ class MusicLifecycleTests(TestCase):
             user=self.owner,
             available_balance=Decimal("1"),
         )
-        with patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=provider,
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            STABILITY_API_KEY="test-stability-key",
         ):
             job, _ = enqueue_music_job(
                 project=self.project,
@@ -437,14 +438,13 @@ class MusicLifecycleTests(TestCase):
         self.assertFalse(charge.cost_is_estimate)
 
     def test_confirmed_paid_result_is_charged_after_local_failure(self):
-        provider = PaidMockAudioProvider()
         account = CreditAccount.objects.create(
             user=self.owner,
             available_balance=Decimal("1"),
         )
-        with patch(
-            "w_craft_back.movie.music.lifecycle.get_music_provider",
-            return_value=provider,
+        with override_settings(
+            MUSIC_DEFAULT_AUDIO_MODEL="stable-audio-3",
+            STABILITY_API_KEY="test-stability-key",
         ):
             job, _ = enqueue_music_job(
                 project=self.project,

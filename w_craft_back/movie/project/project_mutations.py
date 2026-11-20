@@ -120,10 +120,15 @@ def update_project_settings(
         "title",
         "status",
         "is_favorite",
-        "generation_settings",
     ):
         if field in data:
             setattr(project, field, data[field])
+    if "generation_settings" in data:
+        settings = project.generation_settings
+        project.generation_settings = {
+            **(settings if isinstance(settings, dict) else {}),
+            **data["generation_settings"],
+        }
     if "description" in data:
         project.summary = data["description"]
     if "format" in data:
@@ -231,6 +236,7 @@ def create_project_character(
         name=data["name"],
         short_description=data.get("short_description", ""),
         role=data.get("role", "secondary"),
+        visual_style=project.default_visual_style,
         status="active",
     )
     record_activity(

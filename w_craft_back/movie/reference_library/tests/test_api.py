@@ -78,6 +78,11 @@ class OpenRouterReferenceStubProvider(DeterministicReferenceMockProvider):
 @override_settings(REFERENCE_IMAGE_PROVIDER="mock", SIGNED_MEDIA_TTL_SECONDS=120)
 class ReferenceApiTests(TestCase):
     def setUp(self):
+        subscription = patch(
+            "w_craft_back.personal_api.access.has_paid_subscription", return_value=True,
+        )
+        subscription.start()
+        self.addCleanup(subscription.stop)
         self.media = tempfile.TemporaryDirectory()
         self.addCleanup(self.media.cleanup)
         self.media_override = override_settings(MEDIA_ROOT=self.media.name)
@@ -100,6 +105,22 @@ class ReferenceApiTests(TestCase):
             created_by=self.owner,
             updated_by=self.owner,
         )
+
+    def _registry_provider(self, provider_class):
+        from w_craft_back.personal_api.access import resolve_generation_access
+        from w_craft_back.services.image_generation.registry import MODEL_REGISTRY
+
+        provider = provider_class()
+        provider.spec = MODEL_REGISTRY[provider.name]
+        provider.model_id = provider.spec.model_id
+        provider.generation_access = resolve_generation_access(
+            self.owner, "image", source="platform",
+        )
+        provider.provider_snapshot = {
+            "generationAccess": provider.generation_access,
+            "spec": provider.spec.__dict__,
+        }
+        return provider
 
     @property
     def collection_url(self) -> str:
@@ -147,7 +168,7 @@ class ReferenceApiTests(TestCase):
             "image_generation_model": "openrouter-flash-image",
         }
         self.project.save(update_fields=["generation_settings"])
-        provider = OpenRouterReferenceStubProvider()
+        provider = self._registry_provider(OpenRouterReferenceStubProvider)
 
         with patch(
             (
@@ -184,7 +205,7 @@ class ReferenceApiTests(TestCase):
         self.assertEqual(estimate.json()["estimatedCost"], "0.067015")
         self.assertEqual(
             estimate.json()["modelName"],
-            "google/gemini-3.1-flash-image-preview",
+            provider.model_id,
         )
 
     def test_link_options_and_reference_settings_are_project_scoped(self):
@@ -349,7 +370,7 @@ class ReferenceApiTests(TestCase):
         )
         created = self.create_reference()
         jobs_url = f"{self.collection_url}{created['id']}/generation-jobs/"
-        provider = RegistryReferenceStubProvider()
+        provider = self._registry_provider(RegistryReferenceStubProvider)
         with (
             patch(
                 (
@@ -360,8 +381,8 @@ class ReferenceApiTests(TestCase):
             ),
             patch(
                 (
-                    "w_craft_back.movie.reference_library.worker."
-                    "resolve_pinned_reference_provider"
+                    "w_craft_back.services.image_generation.routing."
+                    "provider_from_route_snapshot"
                 ),
                 return_value=provider,
             ),

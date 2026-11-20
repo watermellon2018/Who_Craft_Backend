@@ -309,12 +309,19 @@ class ElevenLabsMusicProvider(AudioProvider):
             return
         if 300 <= status < 400:
             raise self._rejected_error("ElevenLabs redirects are not allowed.")
+        if status in {401, 403}:
+            raise MusicProviderError(
+                "Provider credentials were rejected before generation.",
+                code="MUSIC_PROVIDER_REJECTED", http_status=403,
+                retryable=False, definitely_rejected=True,
+            )
         if status == 429:
             raise MusicProviderError(
                 "ElevenLabs rate-limited the music request.",
                 code="MUSIC_PROVIDER_RATE_LIMITED",
                 http_status=503,
                 retryable=True,
+                definitely_rejected=True,
             )
         if status < 500:
             raise self._rejected_error("ElevenLabs rejected the music request.")

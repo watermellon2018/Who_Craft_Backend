@@ -8,3 +8,4 @@ class WCraftBackConfig(AppConfig):
     def ready(self):
         from w_craft_back import storage_signals  # noqa: F401
         from w_craft_back.movie.storyboard import signals  # noqa: F401
+        from w_craft_back.movie.video import signals as video_signals  # noqa: F401

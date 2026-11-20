@@ -2,6 +2,7 @@ from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 
+from w_craft_back.character_studio.constants import DEFAULT_VISUAL_STYLE, VISUAL_STYLES
 from w_craft_back.movie.properties.models import Genre, Audience
 
 
@@ -79,6 +80,12 @@ class Project(models.Model):
                 name="project_credit_budget_nonnegative",
             ),
         ]
+
+    @property
+    def default_visual_style(self) -> str:
+        settings = self.generation_settings
+        style = settings.get("visual_style") if isinstance(settings, dict) else None
+        return style if style in VISUAL_STYLES else DEFAULT_VISUAL_STYLE
 
     def __str__(self):
         return self.title

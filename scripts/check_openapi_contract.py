@@ -64,6 +64,9 @@ def check_contract() -> None:
     assert constraints["projectPosterMaxBytes"] == _integer_constant(
         "w_craft_back/movie/project/project_images.py", "MAX_PROJECT_IMAGE_BYTES"
     )
+    assert constraints["messagingTextMaxLength"] == _integer_constant(
+        "w_craft_back/messaging/serializers.py", "MAX_MESSAGE_LENGTH"
+    )
 
     tree_create = _schema(document, "CharacterTreeCreateRequest")
     assert "token_user" not in tree_create["properties"]
@@ -89,6 +92,14 @@ def check_contract() -> None:
     assert {"error", "code", "detail"}.issubset(error["properties"])
 
     required_paths = {
+        "/api/messaging/users/",
+        "/api/messaging/unread/",
+        "/api/messaging/conversations/",
+        "/api/messaging/conversations/{conversationId}/",
+        "/api/messaging/conversations/{conversationId}/messages/",
+        "/api/messaging/conversations/{conversationId}/messages/{messageId}/",
+        "/api/messaging/conversations/{conversationId}/changes/",
+        "/api/messaging/conversations/{conversationId}/read/",
         "/api/auth/logout-all/",
         "/api/profile/settings/",
         "/api/notifications/",
@@ -113,6 +124,31 @@ def check_contract() -> None:
         "/api/credits/project-budgets/{projectId}/",
     }
     assert required_paths.issubset(document["paths"])
+    message_create = _schema(document, "MessagingMessageCreate")
+    message_update = _schema(document, "MessagingMessageUpdate")
+    assert set(message_create["required"]) == {"text", "client_id"}
+    assert set(message_update["required"]) == {"text", "expected_version"}
+    for mutation in (message_create, message_update):
+        assert mutation["properties"]["text"]["maxLength"] == (
+            constraints["messagingTextMaxLength"]
+        )
+        assert "sender_id" not in mutation["properties"]
+        assert "token_user" not in mutation["properties"]
+    assert message_create["properties"]["client_id"]["format"] == "uuid"
+    messaging_user = _schema(document, "MessagingUser")
+    assert "email" not in messaging_user["properties"]
+    messaging_message = _schema(document, "MessagingMessage")
+    assert {"version", "sequence", "deleted_at"}.issubset(
+        messaging_message["required"]
+    )
+    message_edit_path = document["paths"][
+        "/api/messaging/conversations/{conversationId}/messages/{messageId}/"
+    ]["patch"]
+    assert "409" in message_edit_path["responses"]
+    message_send_path = document["paths"][
+        "/api/messaging/conversations/{conversationId}/messages/"
+    ]["post"]
+    assert "201" in message_send_path["responses"]
     profile_settings = _schema(document, "ProfileSettings")
     assert set(profile_settings["properties"]["content_language"]["enum"]) == {
         "ru",
@@ -310,6 +346,22 @@ def check_contract() -> None:
         "right",
         "front_right",
     }
+    assert "video" in _schema(document, "GenerationModality")["enum"]
+    video_base = "/api/projects/{projectId}/video/"
+    video_create = document["paths"][video_base + "jobs/"]["post"]
+    assert "202" in video_create["responses"]
+    assert set(_schema(document, "VideoJobCreateRequest")["required"]) == {
+        "preflightToken", "clientRequestId",
+    }
+    assert "generationSource" not in _schema(
+        document, "VideoOptionsRequest"
+    )["properties"]
+    assert "outcome_unknown" in _schema(document, "VideoJob")[
+        "properties"
+    ]["status"]["enum"]
+    assert "post" in document["paths"][
+        "/api/personal-api/video-models/refresh/"
+    ]
     assert set(_schema(document, "StoryboardMovement")["enum"]) == {
         "static",
         "dolly_in",

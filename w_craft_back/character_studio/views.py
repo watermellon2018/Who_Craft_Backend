@@ -15,6 +15,7 @@ from w_craft_back.character_studio.models import (
     CharacterRevision,
     CharacterStatus,
     RevisionChangeType,
+    StudioCharacter,
 )
 from w_craft_back.character_studio.repositories.repositories import OutfitRepository
 from w_craft_back.character_studio.services.asset_service import CharacterAssetService
@@ -45,6 +46,9 @@ from w_craft_back.character_studio.services.model3d_autofit_service import (
 )
 from w_craft_back.character_studio.services.model3d_service import (
     validate_model3d_params,
+)
+from w_craft_back.character_studio.services.model3d_history_service import (
+    model3d_snapshot,
 )
 from w_craft_back.character_studio.services.model3d_reconstruction_service import (
     ensure_reconstruction,
@@ -251,6 +255,8 @@ def create_character_from_reference(request, project_id):
     generation_params = {
         "_idempotency_key": idempotency_key,
         "image_model": _form_value(request, "image_model") or None,
+        "generationSource": _form_value(request, "generationSource") or None,
+        "generationAccessToken": _form_value(request, "generationAccessToken") or None,
         "variant_count": _form_int(request, "variants_count")
         or _form_int(request, "variant_count") or 1,
         "preserve_identity": _form_bool(request, "use_image_as_identity", default=True)
@@ -371,6 +377,7 @@ def generation_preview(request, project_id, character_id):
             character=character,
             image_types=image_types,
             image_model=request.GET.get("image_model"),
+            generation_source=request.GET.get("generationSource"),
         )
     )
 
@@ -1027,6 +1034,7 @@ def references_proceed_to_3d(request, project_id, character_id):
 
 @api_view(["GET", "PUT"])
 @handle_errors
+@transaction.atomic
 def model3d_state(request, project_id, character_id):
     """Read or replace the character's 3D editor parameters.
 
@@ -1050,6 +1058,8 @@ def model3d_state(request, project_id, character_id):
         })
 
     character = service.get_editable_character(user, project_id, character_id)
+    character = StudioCharacter.objects.select_for_update().get(pk=character.pk)
+    before = model3d_snapshot(character)
     data = payload(request)
     cleaned = validate_model3d_params(data.get("params"))
     character.model3d_params = cleaned
@@ -1062,6 +1072,7 @@ def model3d_state(request, project_id, character_id):
         changed_region="full_character",
         change_summary="model3d_updated",
         snapshot={"model3d_params": cleaned, "stage": "3d_model"},
+        before_snapshot=before,
     )
     return ok({
         "params": cleaned,
@@ -1087,6 +1098,7 @@ def model3d_reconstruction_retry(request, project_id, character_id):
 
 @api_view(["POST"])
 @handle_errors
+@transaction.atomic
 def model3d_autofit(request, project_id, character_id):
     """Seed the 3D editor parameters from the reference images.
 
@@ -1105,6 +1117,8 @@ def model3d_autofit(request, project_id, character_id):
     character = CharacterService().get_editable_character(
         user, project_id, character_id,
     )
+    character = StudioCharacter.objects.select_for_update().get(pk=character.pk)
+    before = model3d_snapshot(character)
 
     if character.model3d_autofit_done and (
         character.model3d_autofit_version >= MODEL3D_AUTOFIT_VERSION
@@ -1193,6 +1207,7 @@ def model3d_autofit(request, project_id, character_id):
         else MODEL3D_AUTOFIT_VERSION
     )
 
+    result["params"] = validate_model3d_params(result["params"])
     character.model3d_params = result["params"]
     character.model3d_autofit_done = True
     character.model3d_autofit_version = saved_autofit_version
@@ -1212,6 +1227,7 @@ def model3d_autofit(request, project_id, character_id):
         changed_region="full_character",
         change_summary="model3d_autofit",
         snapshot={"model3d_params": result["params"], "stage": "3d_model"},
+        before_snapshot=before,
     )
     result["autofit_done"] = True
     result["autofit_version"] = saved_autofit_version

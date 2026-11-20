@@ -35,6 +35,11 @@ from w_craft_back.services.image_generation.errors import (
     ImageProviderError,
     map_to_provider_error,
 )
+from w_craft_back.services.image_generation.personal import (
+    image_access_error, validate_image_access,
+)
+from w_craft_back.personal_api.access import resolve_generation_access
+from w_craft_back.personal_api.errors import PersonalAPIError
 from w_craft_back.storage_gateway import (
     StorageGatewayError,
     delete_storage_key,
@@ -112,6 +117,16 @@ class StoryboardImageProviderAdapter:
 
 
 def _provider_for_generation(generation: StoryboardKeyframeGeneration):
+    access = (generation.provider_snapshot or {}).get("generationAccess")
+    if access is None:
+        try:
+            access = resolve_generation_access(
+                generation.actor, "image", source="platform",
+                free_platform=generation.provider == "mock",
+            )
+        except PersonalAPIError as error:
+            raise image_access_error(error) from error
+    validate_image_access({"generationAccess": access}, user=generation.actor)
     if generation.provider == "mock":
         return DeterministicReferenceMockProvider()
     if generation.provider_snapshot:

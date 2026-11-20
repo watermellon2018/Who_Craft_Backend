@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from decimal import Decimal
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -40,7 +42,9 @@ from w_craft_back.movie.storyboard.lifecycle import (
     mark_storyboard_provider_result_received,
 )
 from w_craft_back.movie.storyboard.worker import execute_storyboard_generation
+from w_craft_back.personal_api.services import create_connection, save_preference
 from w_craft_back.services.image_generation.errors import ImageProviderError
+from w_craft_back.services.image_generation.registry import MODEL_REGISTRY
 
 
 def make_user(username: str) -> tuple[User, UserKey]:
@@ -69,7 +73,24 @@ def make_project(owner: User, title: str) -> Project:
     REFERENCE_ALLOW_MOCK=True,
     ENVIRONMENT="development",
 )
+@patch("w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True)
 class StoryboardApiTests(TestCase):
+    def use_paid_provider(self):
+        # Billing regressions need an entitled paid route; local mocks are free.
+        provider = DeterministicReferenceMockProvider()
+        provider.spec = replace(
+            MODEL_REGISTRY["gemini-flash-image"],
+            provider_pricing={"output_image": "0.02", "source": "test"},
+        )
+        provider.name = provider.spec.backend
+        provider.model_id = provider.spec.model_id
+        resolver = patch(
+            "w_craft_back.movie.storyboard.generation.resolve_reference_provider",
+            return_value=provider,
+        )
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
     def setUp(self):
         self.media = tempfile.TemporaryDirectory()
         self.addCleanup(self.media.cleanup)
@@ -173,7 +194,7 @@ class StoryboardApiTests(TestCase):
             ],
         }
 
-    @patch("w_craft_back.movie.storyboard.views.AIShotListService")
+    @patch("w_craft_back.movie.storyboard.text_generation.AIShotListService")
     def test_shot_list_endpoint_forwards_selected_model(self, service_class):
         service_class.return_value.suggest.return_value = {"shots": []}
         self.scene.script_text = "First sentence. " + "x" * 20000 + " Last sentence."
@@ -207,7 +228,7 @@ class StoryboardApiTests(TestCase):
             self.scene.script_text.strip(),
         )
 
-    @patch("w_craft_back.movie.storyboard.views.AIShotListService")
+    @patch("w_craft_back.movie.storyboard.text_generation.AIShotListService")
     def test_shot_list_cannot_disclose_source_from_another_project(self, service_class):
         response = self.client.post(
             f"/api/projects/{self.other_project.id}/storyboard/scenes/"
@@ -678,6 +699,7 @@ class StoryboardApiTests(TestCase):
         self.assertEqual(response.status_code, 400, response.content)
 
     def test_failure_settlement_depends_on_provider_result(self):
+        self.use_paid_provider()
         shot = self.create_shot()
         start_id = shot["keyframes"][0]["id"]
         camera = self.client.put(
@@ -739,7 +761,47 @@ class StoryboardApiTests(TestCase):
         self.assertTrue(charge.cost_is_estimate)
         self.assertEqual(charge.actual_cost, charge.reserved_amount)
 
+    @override_settings(PERSONAL_API_ENCRYPTION_KEY=Fernet.generate_key().decode())
+    def test_personal_reference_filters_incompatible_backup_before_enqueue(self):
+        connection = create_connection(
+            self.owner, name="Image key", provider="gemini",
+            apiKey="test-only-image-key",
+        )
+        save_preference(self.owner, "image", source="personal", routes=[
+            {"connectionId": connection["id"], "modelKey": model}
+            for model in ("gemini-flash-image", "gemini-imagen-4")
+        ])
+        shot = self.create_shot()
+        start_id = shot["keyframes"][0]["id"]
+        with patch(
+            "w_craft_back.movie.storyboard.generation.build_generation_snapshot",
+            return_value=({
+                "compiledPrompt": "Use the reference",
+                "primary_reference": {
+                    "storageKey": "test-only/reference.png", "mimeType": "image/png",
+                },
+            }, "test-reference-fingerprint"),
+        ):
+            response = self.client.post(
+                f"/api/projects/{self.project.id}/storyboard/keyframes/"
+                f"{start_id}/generate/",
+                {"generationSource": "personal"}, format="json",
+                HTTP_IDEMPOTENCY_KEY="personal-reference-backup", **self.token(),
+            )
+        self.assertEqual(response.status_code, 201, response.content)
+        generation = StoryboardKeyframeGeneration.objects.get(
+            pk=response.json()["generationId"],
+        )
+        access = generation.provider_snapshot["generationAccess"]
+        self.assertEqual(access["operation"], "reference")
+        self.assertEqual(
+            [candidate["modelKey"] for candidate in access["candidates"]],
+            ["gemini-flash-image"],
+        )
+        self.assertFalse(GenerationCharge.objects.exists())
+
     def test_known_provider_rejection_releases_but_timeout_captures(self):
+        self.use_paid_provider()
         shot = self.create_shot()
         start_id = shot["keyframes"][0]["id"]
         camera = self.client.put(
@@ -816,6 +878,7 @@ class StoryboardApiTests(TestCase):
         )
 
     def test_missing_local_reference_releases_before_provider_start(self):
+        self.use_paid_provider()
         shot = self.create_shot()
         start_id = shot["keyframes"][0]["id"]
         camera = self.client.put(
@@ -947,6 +1010,7 @@ class StoryboardApiTests(TestCase):
         self.assertEqual(disabled.json()["code"], "IMAGE_PROVIDER_NOT_CONFIGURED")
 
     def test_scene_cascade_releases_queued_generation(self):
+        self.use_paid_provider()
         shot = self.create_shot()
         start_id = shot["keyframes"][0]["id"]
         camera = self.client.put(

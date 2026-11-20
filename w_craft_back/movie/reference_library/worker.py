@@ -127,8 +127,19 @@ def _finalize_outputs(
 
 
 def _provider_for_job(job: ReferenceGenerationJob):
+    from w_craft_back.services.image_generation.personal import (
+        resolve_image_generation, validate_image_access,
+    )
+    validate_image_access(job.provider_snapshot or {}, user=job.actor)
     if job.provider == "mock":
         return DeterministicReferenceMockProvider()
+    if not (job.provider_snapshot or {}).get("generationAccess"):
+        resolve_image_generation(
+            job.actor, source="platform", model_key=job.requested_model,
+            operation=(
+                "edit" if job.operation == ReferenceOperation.EDIT else "generate"
+            ),
+        )
     if job.provider_snapshot:
         from w_craft_back.services.image_generation.routing import (
             provider_from_route_snapshot,

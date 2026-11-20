@@ -23,6 +23,8 @@ from w_craft_back.character_studio.services.model3d_reconstruction_service impor
 )
 from w_craft_back.movie.music.lifecycle import recover_stale_music_jobs
 from w_craft_back.movie.music.worker import execute_next_music_job
+from w_craft_back.movie.video.lifecycle import recover_stale_video_jobs
+from w_craft_back.movie.video.worker import execute_next_video_job
 from w_craft_back.movie.poster.lifecycle import recover_stale_poster_jobs
 from w_craft_back.movie.poster.models import PosterGenerationJob, PosterJobStatus
 from w_craft_back.movie.poster.worker import execute_poster_job
@@ -58,7 +60,7 @@ from w_craft_back.movie.storyboard.shot_list_jobs import (
 class Command(BaseCommand):
     help = (
         "Poll selected durable character, poster, 3D, music, sound-effect, "
-        "reference, and storyboard queues."
+        "reference, storyboard, and video queues."
     )
 
     def add_arguments(self, parser):
@@ -67,7 +69,7 @@ class Command(BaseCommand):
             default="all",
             help=(
                 "Comma-separated character,poster,music,sound_effect,reference,"
-                "storyboard "
+                "storyboard,video "
                 "queues or all."
             ),
         )
@@ -89,6 +91,7 @@ class Command(BaseCommand):
                 "sound_effect",
                 "reference",
                 "storyboard",
+                "video",
             }
         unknown = selected - {
             "character",
@@ -97,6 +100,7 @@ class Command(BaseCommand):
             "sound_effect",
             "reference",
             "storyboard",
+            "video",
         }
         if unknown or not selected:
             raise CommandError(
@@ -119,6 +123,8 @@ class Command(BaseCommand):
                 processed += self._poll_reference_jobs(batch_size)
             if "storyboard" in selected:
                 processed += self._poll_storyboard_jobs(batch_size)
+            if "video" in selected:
+                processed += self._poll_video_jobs(batch_size)
             if not once:
                 close_old_connections()
             if once:
@@ -126,6 +132,16 @@ class Command(BaseCommand):
                 return
             if processed == 0:
                 time.sleep(poll_interval)
+
+    @staticmethod
+    def _poll_video_jobs(batch_size: int) -> int:
+        recover_stale_video_jobs(limit=batch_size)
+        processed = 0
+        while processed < batch_size:
+            if execute_next_video_job() is None:
+                break
+            processed += 1
+        return processed
 
     @staticmethod
     def _poll_character_jobs(batch_size: int) -> int:

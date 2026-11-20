@@ -91,16 +91,23 @@ def resolve_provider_for_user(
     return provider_from_spec(spec)
 
 
-def provider_from_spec(spec: ModelSpec) -> ImageProvider:
+def provider_from_spec(spec: ModelSpec, *, api_key: str | None = None) -> ImageProvider:
     """Construct a provider from a persisted spec without catalog discovery."""
 
-    _check_required_env(spec)
+    if api_key is None:
+        _check_required_env(spec)
+    elif not api_key.strip():
+        raise ImageProviderError(
+            code=CODE_NOT_CONFIGURED,
+            message="Личный API-ключ недоступен.",
+            http_status=403,
+        )
     if spec.backend == "gemini-native":
-        return GeminiNativeProvider(spec)
+        return GeminiNativeProvider(spec, api_key=api_key)
     if spec.backend == "litellm":
-        return LiteLLMProvider(spec)
+        return LiteLLMProvider(spec, api_key=api_key)
     if spec.backend == "openrouter-images":
-        return OpenRouterImagesProvider(spec)
+        return OpenRouterImagesProvider(spec, api_key=api_key)
     raise ImageProviderError(
         code="IMAGE_PROVIDER_INVALID_BACKEND",
         message="Сохранённая модель использует неподдерживаемый backend.",

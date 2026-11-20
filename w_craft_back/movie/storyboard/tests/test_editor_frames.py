@@ -102,6 +102,7 @@ class CanvasValidationTests(SimpleTestCase):
 
 
 @override_settings(STORYBOARD_SHOT_LIST_THROTTLE_RATE="1000/min")
+@patch("w_craft_back.personal_api.access.has_paid_subscription", new=lambda user: True)
 class EditorFrameJobTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -137,10 +138,18 @@ class EditorFrameJobTests(TestCase):
         self.provider.name = self.provider.spec.backend
         self.provider.model_id = self.provider.spec.model_id
         self.provider.last_usage = {}
+        self.provider.generation_access = {
+            "version": 1, "source": "platform", "modality": "image",
+            "ownerId": self.owner.pk, "candidates": [], "freePlatform": False,
+        }
+        self.provider.provider_snapshot = {
+            "generationAccess": self.provider.generation_access,
+            "spec": self.provider.spec.__dict__,
+        }
         self.provider.generate.return_value = [png()]
         self.provider.generate_with_reference.return_value = [png()]
         self.provider.generate_with_references.return_value = [png()]
-        for name in ("resolve_provider_for_user", "provider_from_spec"):
+        for name in ("resolve_image_generation", "provider_from_route_snapshot"):
             mocked = patch(f"{MODULE}.{name}", return_value=self.provider)
             mocked.start()
             self.addCleanup(mocked.stop)

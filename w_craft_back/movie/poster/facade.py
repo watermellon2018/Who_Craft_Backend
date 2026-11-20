@@ -6,7 +6,6 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -68,7 +67,6 @@ from w_craft_back.storage_gateway import (
 )
 from w_craft_back.services.image_generation import (
     ImageProviderError,
-    resolve_provider_for_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,11 +239,15 @@ def _complete_mock_result(job, *, variant_count: int = 4) -> None:
 
 def _resolve_and_claim(job, user, model_override, *, require_edit: bool):
     try:
-        provider = resolve_provider_for_user(
-            user,
-            override=model_override,
-            require_edit=require_edit,
+        from w_craft_back.services.image_generation.personal import (
+            validate_image_access,
         )
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        validate_image_access(job.provider_snapshot, user=user)
+        provider = provider_from_route_snapshot(job.provider_snapshot)
     except ImageProviderError as exc:
         fail_generation(
             job,
@@ -329,6 +331,8 @@ def generate_poster(
     reference_image_asset_id: Optional[int] = None,
     image_model: str | None = None,
     routing_mode: str = "manual",
+    generation_source: str | None = None,
+    generation_access_token: str | None = None,
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -386,6 +390,7 @@ def generate_poster(
             "reference_mime_type": reference_mime_type,
             "image_model": image_model,
             "routing_mode": routing_mode,
+            "generationSource": generation_source,
         },
         reference_image_bytes,
     )
@@ -401,6 +406,8 @@ def generate_poster(
             request_hash=fingerprint,
             requested_model=image_model or "",
             routing_mode=routing_mode,
+            generation_source=generation_source,
+            generation_access_token=generation_access_token,
             reference_storage_key=reference_storage_key,
             reference_mime_type=reference_mime_type if reference_storage_key else "",
             reference_asset=reference_asset,
@@ -431,11 +438,7 @@ def generate_poster(
     if not execute_immediately:
         return _serialize_operation(project, poster, job, request=request)
 
-    use_mock = (
-        getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
-        if run_mock is None
-        else run_mock
-    )
+    use_mock = bool((job.provider_snapshot or {}).get("mock"))
     if use_mock:
         _complete_mock_result(job)
     else:
@@ -518,6 +521,8 @@ def edit_poster(
     idempotency_key: str = "",
     image_model: str | None = None,
     routing_mode: str = "manual",
+    generation_source: str | None = None,
+    generation_access_token: str | None = None,
     request=None,
     run_mock: bool | None = None,
     execute_immediately: bool = True,
@@ -550,6 +555,7 @@ def edit_poster(
             "instruction": instruction,
             "image_model": image_model,
             "routing_mode": routing_mode,
+            "generationSource": generation_source,
         }
     )
     try:
@@ -567,6 +573,8 @@ def edit_poster(
             source_variant=source,
             requested_model=image_model or "",
             routing_mode=routing_mode,
+            generation_source=generation_source,
+            generation_access_token=generation_access_token,
             use_mock=run_mock,
         )
     except Exception:
@@ -592,11 +600,7 @@ def edit_poster(
     if not execute_immediately:
         return _serialize_operation(project, poster, job, request=request)
 
-    use_mock = (
-        getattr(settings, "POSTER_GENERATION_USE_MOCK", settings.DEBUG)
-        if run_mock is None
-        else run_mock
-    )
+    use_mock = bool((job.provider_snapshot or {}).get("mock"))
     if use_mock:
         _complete_mock_result(job, variant_count=1)
     else:

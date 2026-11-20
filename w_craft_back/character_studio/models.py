@@ -261,6 +261,15 @@ class StudioCharacter(models.Model):
     # Leaf values are numbers in [-1, 1], short strings (color hex / preset
     # ids) or booleans — validated in services/model3d_service.py.
     model3d_params = models.JSONField(default=dict, blank=True)
+    # A restored or explicitly published model stays selected when newer assets
+    # exist. Reference compatibility is checked by the reconstruction service.
+    active_model3d_asset = models.ForeignKey(
+        "CharacterAsset",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     # Whether autofit-from-references has already run for the 3D stage. The
     # editor seeds parameters from the portrait automatically on first open;
     # this flag stops it from overwriting the user's manual edits on later
@@ -305,12 +314,23 @@ class StudioCharacter(models.Model):
                 "active_version",
                 "current_revision",
                 "canonical_reference_image",
+                "active_model3d_asset",
             ),
         )
         if self.canonical_reference_image_id and self.project_id:
             if self.canonical_reference_image.project_id != self.project_id:
                 errors["canonical_reference_image"] = (
                     "Canonical reference image must belong to the character project."
+                )
+        if self.active_model3d_asset_id:
+            asset = self.active_model3d_asset
+            if (
+                asset.project_id != self.project_id
+                or asset.asset_type != CharacterAssetType.MODEL_3D
+                or asset.status != CharacterAssetStatus.READY
+            ):
+                errors["active_model3d_asset"] = (
+                    "Selected 3D asset must be ready and belong to this project."
                 )
         if errors:
             raise ValidationError(errors)

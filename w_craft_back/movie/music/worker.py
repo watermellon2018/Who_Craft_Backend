@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from w_craft_back.movie.music.errors import public_provider_error_detail
+from w_craft_back.movie.music.generation_access import validate_music_snapshot_access
+from w_craft_back.personal_api.access import credential_for_candidate
+from w_craft_back.personal_api.errors import PersonalAPIError
 from w_craft_back.movie.music.lifecycle import (
     ExecutionContext,
     MusicGenerationCancelled,
@@ -172,6 +175,74 @@ def _handle_submission(
         raise
 
 
+def _personal_provider(claimed, snapshot, index):
+    """Pin the candidate before sending; resumed async jobs keep that candidate."""
+    entry = snapshot["generationCandidates"][index]
+    access = snapshot["generationAccess"]
+    credential = credential_for_candidate(
+        access, entry["candidate"], user=claimed.actor,
+    )
+    selected = dict(snapshot)
+    selected.update(entry["snapshot"])
+    selected["generationCandidateIndex"] = index
+    updated = MusicGenerationJob.objects.filter(
+        pk=claimed.pk, lease_token=claimed.lease_token,
+    ).update(
+        provider_snapshot=selected, provider=selected["backendProvider"],
+        model_name=selected["modelName"],
+    )
+    if not updated:
+        raise MusicLeaseLost()
+    claimed.provider_snapshot = selected
+    claimed.provider = selected["backendProvider"]
+    claimed.model_name = selected["modelName"]
+    return get_music_provider(
+        claimed.provider, model_name=claimed.model_name, api_key=credential,
+    ), entry["candidate"]
+
+
+def _execute_personal_music(claimed, snapshot, context):
+    access = snapshot["generationAccess"]
+    if claimed.provider_job_id:
+        provider, candidate = _personal_provider(
+            claimed, snapshot, int(snapshot.get("generationCandidateIndex", 0)),
+        )
+        credential_for_candidate(access, candidate, user=claimed.actor)
+        submission = provider.poll(
+            claimed.provider_job_id, context, claimed.provider_metadata,
+        )
+        return _handle_submission(claimed, submission, context)
+    last_error = None
+    for index in range(len(snapshot["generationCandidates"])):
+        try:
+            provider, candidate = _personal_provider(claimed, snapshot, index)
+        except PersonalAPIError as exc:
+            last_error = exc
+            continue
+        try:
+            credential_for_candidate(access, candidate, user=claimed.actor)
+            reference_handle = _prepare_reference(claimed, provider, context)
+            request = dict(claimed.compiled_request)
+            if reference_handle:
+                request["providerReferenceId"] = reference_handle
+            context.checkpoint()
+            credential_for_candidate(access, candidate, user=claimed.actor)
+            mark_music_provider_started(claimed)
+            submission = provider.submit(request, context)
+        except MusicProviderError as exc:
+            if not exc.definitely_rejected or exc.outcome_unknown or exc.cost_incurred:
+                raise
+            last_error = exc
+            continue
+        return _handle_submission(claimed, submission, context)
+    if last_error is not None:
+        raise last_error
+    raise MusicProviderError(
+        "No personal audio route is available.", code="MUSIC_PROVIDER_NOT_CONFIGURED",
+        retryable=False,
+    )
+
+
 def execute_music_job(
     job_id=None,
 ) -> MusicGenerationJob | None:
@@ -186,6 +257,11 @@ def execute_music_job(
 
     try:
         snapshot = dict(claimed.provider_snapshot or {})
+        access = validate_music_snapshot_access(
+            snapshot or {"backendProvider": claimed.provider}, user=claimed.actor,
+        )
+        if access["source"] == "personal":
+            return _execute_personal_music(claimed, snapshot, context)
         restored = resolved_from_snapshot(snapshot) if snapshot else None
         provider = get_music_provider(
             (
@@ -234,6 +310,11 @@ def execute_music_job(
             pass
     except MusicLeaseLost:
         pass
+    except PersonalAPIError as exc:
+        fail_music_job(
+            claimed, code=exc.code, detail=exc.message,
+            http_status=exc.status_code, retryable=False,
+        )
     except MediaTooLarge:
         fail_music_job(
             claimed,
@@ -265,13 +346,22 @@ def execute_music_job(
             cost_incurred=exc.cost_incurred,
         )
     except Exception:
-        logger.exception("music_worker_failed", extra={"job_id": str(claimed.pk)})
+        source = (claimed.provider_snapshot.get("generationAccess") or {}).get("source")
+        unknown = source == "personal" and bool(claimed.provider_started_at)
+        if source == "personal":
+            logger.error(
+                "personal_music_worker_failed", extra={"job_id": str(claimed.pk)},
+            )
+        else:
+            logger.exception("music_worker_failed", extra={"job_id": str(claimed.pk)})
         fail_music_job(
             claimed,
-            code="MUSIC_PROVIDER_UNAVAILABLE",
-            detail="Music provider is unavailable.",
+            code=("MUSIC_PROVIDER_OUTCOME_UNKNOWN" if unknown else
+                  "MUSIC_PROVIDER_UNAVAILABLE"),
+            detail=("Music provider outcome is unknown." if unknown else
+                    "Music provider is unavailable."),
             http_status=503,
-            retryable=True,
+            retryable=not unknown,
         )
     return MusicGenerationJob.objects.get(pk=claimed.pk)
 

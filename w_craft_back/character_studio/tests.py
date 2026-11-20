@@ -124,6 +124,26 @@ class CharacterServiceTests(CharacterStudioTestCase):
         self.assertIsNotNone(character.active_appearance)
         self.assertEqual(character.revisions.count(), 1)
 
+    def test_new_character_inherits_project_style(self):
+        baseline = self.service.create_character(
+            self.user_key, self.project, {"name": "Mira"},
+        )
+        self.assertEqual(baseline.visual_style, "cinematic_realism")
+
+        self.project.generation_settings = {"visual_style": "anime"}
+        self.project.save(update_fields=["generation_settings"])
+        inherited = self.service.create_character(
+            self.user_key, self.project, {"name": "Sol", "visual_style": ""},
+        )
+        override = self.service.create_character(
+            self.user_key, self.project, {"name": "Dot", "visual_style": "noir"},
+        )
+
+        self.assertEqual(inherited.visual_style, "anime")
+        self.assertEqual(override.visual_style, "noir")
+        baseline.refresh_from_db()
+        self.assertEqual(baseline.visual_style, "cinematic_realism")
+
     def test_invalid_age_raises_validation_error(self):
         with self.assertRaises(ValidationError):
             self.service.create_character(
@@ -695,6 +715,29 @@ class CharacterStudioApiTests(CharacterStudioTestCase):
         self.client = APIClient()
         self.token = str(self.user_key.key)
         self.client.credentials(HTTP_X_USER_TOKEN=self.token)
+
+    def test_description_portrait_prompt_inherits_project_style(self):
+        self.project.generation_settings = {"visual_style": "anime"}
+        self.project.save(update_fields=["generation_settings"])
+        characters_url = f"/api/projects/{self.project.id}/characters"
+        created = self.client.post(
+            characters_url,
+            {"name": "Mira", "appearance_description": "Short brown hair"},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()["visual_style"], "anime")
+        character_id = created.json()["character_id"]
+
+        response = self.client.post(
+            f"{characters_url}/{character_id}/generate-initial-variants",
+            {"variant_count": 1},
+            format="json",
+            **self.generation_headers(),
+        )
+        self.assertEqual(response.status_code, 202, response.content)
+        job = CharacterGenerationJob.objects.get(job_id=response.json()["job_id"])
+        self.assertIn("anime visual style", job.compiled_prompt)
 
     def test_api_flow(self):
         create = self.client.post(
@@ -1793,6 +1836,8 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         )
 
     def test_happy_path_creates_character_reference_and_job(self):
+        self.project.generation_settings = {"visual_style": "watercolor"}
+        self.project.save(update_fields=["generation_settings"])
         with override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
             response = self.client.post(
                 self._url(),
@@ -1817,6 +1862,8 @@ class CharacterCreateFromReferenceTests(CharacterStudioTestCase):
         self.assertIn("reference", body)
         self.assertIn("generation_job", body)
         self.assertEqual(body["character"]["name"], "Энгри дог")
+        self.assertEqual(body["character"]["visual_style"], "watercolor")
+        self.assertIn("watercolor visual style", job.compiled_prompt)
         self.assertEqual(
             body["reference"]["asset_type"], CharacterAssetType.UPLOADED_REFERENCE,
         )

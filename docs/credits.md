@@ -7,6 +7,13 @@ generation spending statistics, and guarded model routing.
 It does not connect to a bank, payment processor, OpenRouter balance, or Gemini
 account.
 
+Generation access is separate from this wallet: paid Craft models require a
+paid subscription, which is not implemented yet. A wallet balance or staff role
+does not grant that access. Personal API generation and explicitly free Craft
+routes do not reserve or debit this wallet; see [personal API connections](personal-api.md).
+The reservation/settlement rules below apply to entitled Craft-funded jobs and
+existing charges, not to external personal spending.
+
 ## API
 
 All endpoints require the normal `X-User-Token` access header.
@@ -42,7 +49,8 @@ by the summary endpoint and configured through `CREDITS_TRANSFER_MAX_AMOUNT`,
 
 A staff member can freeze or unfreeze their own wallet from the credits page;
 the action does not ask for a target username. Frozen wallets cannot start
-generation, top up, send, or receive transfers.
+Craft-funded generation, top up, send, or receive transfers. Personal API and
+explicitly free generation do not require an unfrozen financial wallet.
 Existing reservations can still settle so money is not stranded. Every manual
 freeze, unfreeze, and staff transfer stores the actor, reason, and idempotency
 key in append-only `CreditAdminAuditEvent` rows. Historical adjustment/refund

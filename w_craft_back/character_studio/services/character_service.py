@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from w_craft_back.character_studio.constants import VISUAL_STYLES
 from w_craft_back.character_studio.models import (
     CharacterAsset,
     CharacterAssetStatus,
@@ -90,7 +89,8 @@ class CharacterService:
         self._validate_character_type(payload.get("character_type"))
         self._validate_role(payload.get("role"))
         self._validate_age(payload.get("age"))
-        self._validate_style(payload.get("visual_style"))
+        visual_style = payload.get("visual_style")
+        self._validate_style(visual_style)
         self.safety.validate_user_text(
             payload.get("short_description"),
             payload.get("appearance_description"),
@@ -118,7 +118,7 @@ class CharacterService:
             lifecycle_stage=payload.get("lifecycle_stage", ""),
             gender=payload.get("gender", ""),
             species=payload.get("species") or payload.get("character_type") or "human",
-            visual_style=payload.get("visual_style", ""),
+            visual_style=(visual_style or "").strip() or project.default_visual_style,
             personality=personality,
             speech_style=payload.get("speech_style", ""),
             backstory=payload.get("backstory", ""),
@@ -531,11 +531,11 @@ class CharacterService:
             return None
         return int(age)
 
-    def _validate_style(self, style):
-        if not style:
-            return
-        if style not in VISUAL_STYLES and len(style) > 80:
-            raise ValidationError("visual_style must be known or a concise custom value.")
+    def _validate_style(self, style: object) -> None:
+        if style is not None and (not isinstance(style, str) or len(style) > 80):
+            raise ValidationError(
+                "visual_style must be known or a concise custom value."
+            )
 
     def _validate_character_type(self, character_type):
         if not character_type:

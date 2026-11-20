@@ -196,6 +196,8 @@ class ProjectPosterGenerateView(_AuthedView):
                 reference_image_asset_id=data.get("reference_image_asset_id"),
                 image_model=data.get("image_model"),
                 routing_mode=data["routing_mode"],
+                generation_source=data.get("generationSource"),
+                generation_access_token=data.get("generationAccessToken"),
                 request=request,
                 execute_immediately=False,
             )
@@ -230,6 +232,8 @@ class ProjectPosterEditView(_AuthedView):
                 idempotency_key=idempotency_key,
                 image_model=data.get("image_model"),
                 routing_mode=data["routing_mode"],
+                generation_source=data.get("generationSource"),
+                generation_access_token=data.get("generationAccessToken"),
                 request=request,
                 execute_immediately=False,
             )

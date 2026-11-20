@@ -2,7 +2,9 @@
 
 Django 5.2 + Django REST Framework backend for Craft. It owns authentication,
 PostgreSQL persistence, project/team workflows, Character Studio, posters,
-Music Studio, Reference Library, profiles/subscriptions, private media, and
+Music Studio, Reference Library, video generation, profiles/subscriptions,
+personal messaging,
+private media, and
 durable generation workers.
 
 The sibling frontend is `../who_craft/`. Cross-system documentation is in
@@ -27,9 +29,13 @@ python manage.py run_generation_worker --queue all
 ```
 
 Supported queue names are `character`, `poster`, `music`, `sound_effect`,
-`reference`, and `storyboard`.
+`reference`, `storyboard`, and `video`.
 Character 3D reconstruction is dispatched through the `character` queue but
 invokes a separate Python/Conda runtime.
+3D parameter saves, selected head/hair assets, history restore, and reviewed
+local model publishing are documented in
+[Character 3D history](docs/character-model3d-history.md). Apply migration `0074`
+before running the updated web/worker code.
 
 Music generation jobs remain queued until a generation worker polls the
 `music` queue. Music Studio shows a delayed-queue warning when a job has not
@@ -77,7 +83,16 @@ operations are unchanged.
   names that do not yet have a visible Character Studio character.
 - `GET /api/projects/{id}/video/preparation/` — the current video prerequisites:
   missing characters, empty scenes, and incomplete or stale storyboards.
+- `/api/projects/{id}/video/` — storyboard-conditioned clips, generation options,
+  durable jobs, version history, and explicit final selection; see
+  [Video generation](docs/video.md). Requires migrations through `0073` and a worker
+  polling `--queue video` or `--queue all`. A ready scene can generate while
+  other scenes are unfinished; API source is configured in the profile.
 - `/api/credits/` — internal balance, ledger, demo top-up, and transfers.
+- `/api/messaging/` — private text conversations, personal history clearing,
+  unread/read state, and polling of edits/deletions; see
+  [Personal messaging](docs/messaging.md). Requires migration `0068` and the
+  existing PostgreSQL database; no additional service is needed.
 - `/api/media/{signed-token}` — authorized private media delivery.
 
 Root URL composition is in `backend/urls.py` (the inner Django project directory
@@ -106,7 +121,9 @@ On success, profile media/metadata, interests, social links, subscriptions,
 non-owner project memberships, incoming invitations, and authentication tokens
 are removed. The Django user is deactivated and anonymized rather than deleted,
 so protected generation attribution and the credit ledger remain referentially
-valid. The response is `204`, and the previous access/refresh credentials stop
+valid. Authored personal-message text is erased; peers retain their own history
+and can no longer send to the closed account. The response is `204`, and the
+previous access/refresh credentials stop
 working immediately. Historical project/activity records may retain author,
 title, or metadata snapshots created before closure; audit history is not
 rewritten. Physical media deletion runs after the database commit through the
@@ -223,8 +240,15 @@ because ElevenLabs publishes plan credits for Auto without a public USD
 conversion. Before production use, disable third-party SFX sublicensing in the
 ElevenLabs account and perform a credentialed smoke test.
 
+Personal keys and modality preferences are available in profile settings.
+See [`docs/personal-api.md`](docs/personal-api.md) for provider support, the
+`PERSONAL_API_ENCRYPTION_KEY` required by web/workers, and migration `0069`.
+Paid generation uses a personal key or requires a future Craft subscription;
+Craft subscriptions are not implemented yet. Free storyboard field suggestions
+remain available without either. Personal requests do not debit Craft credits.
+
 The credits wallet and generation settlement flow are described in
-[`docs/credits.md`](docs/credits.md). Paid generation first reserves the
+[`docs/credits.md`](docs/credits.md). Entitlement-approved Craft generation reserves the
 provider-native estimate, captures the final provider cost on success, and
 releases the reservation on confirmed pre-provider failure or cancellation. Set
 `CREDITS_DEMO_TOP_UP_ENABLED=true` only for local/demo use; it grants internal

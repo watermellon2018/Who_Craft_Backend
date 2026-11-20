@@ -178,6 +178,21 @@ def get_image_provider(name="mock", provider_snapshot=None):
 
     raw = (name or "mock").strip()
     lower = raw.lower()
+    if (provider_snapshot or {}).get("generationAccess"):
+        from w_craft_back.services.image_generation.personal import (
+            validate_image_access,
+        )
+        from w_craft_back.services.image_generation.routing import (
+            provider_from_route_snapshot,
+        )
+
+        try:
+            validate_image_access(provider_snapshot)
+            if provider_snapshot["generationAccess"].get("source") == "personal":
+                provider = provider_from_route_snapshot(provider_snapshot)
+                return RegistryCharacterProvider(spec=provider.spec, provider=provider)
+        except ImageProviderError as exc:
+            raise ProviderUserFacingError(exc.message, error_code=exc.code) from exc
     if lower == "mock":
         return MockProvider()
     if lower in {"gemini", "google", "imagen"}:
@@ -256,14 +271,16 @@ class RegistryCharacterProvider(AIImageProvider):
         "background",
     )
 
-    def __init__(self, registry_key: str | None = None, *, spec=None) -> None:
+    def __init__(
+        self, registry_key: str | None = None, *, spec=None, provider=None,
+    ) -> None:
         from w_craft_back.services.image_generation import (
             provider_from_spec,
             resolve_model,
         )
 
         self.spec = spec or resolve_model(registry_key)
-        self.provider = provider_from_spec(self.spec)
+        self.provider = provider or provider_from_spec(self.spec)
         self.model_name = self.spec.backend
         self.model_version = self.spec.model_id
         self.logger = logging.getLogger(__name__)

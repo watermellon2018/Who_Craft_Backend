@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from w_craft_back.character_studio.constants import VISUAL_STYLES
 from w_craft_back.character_studio.models import CharacterRole, StudioCharacter
 from w_craft_back.movie.project.dashboard_models import (
     SceneStatus,
@@ -54,6 +55,7 @@ def _audience_field():
 
 
 class ProjectGenerationSettingsSerializer(serializers.Serializer):
+    visual_style = serializers.ChoiceField(choices=VISUAL_STYLES, required=False)
     image_generation_model = serializers.CharField(
         max_length=255,
         allow_blank=True,

@@ -382,6 +382,22 @@ def retry_reference_job(
                 "Archived references cannot be retried.",
                 code="REFERENCE_ARCHIVED",
             )
+        from w_craft_back.services.image_generation.personal import (
+            image_snapshot_for_retry,
+        )
+        from w_craft_back.services.image_generation.errors import ImageProviderError
+        try:
+            retry_snapshot = image_snapshot_for_retry(
+                original.provider_snapshot or {}, user=actor,
+                free_platform=original.provider == "mock",
+            )
+        except ImageProviderError as error:
+            raise ReferenceConflict(error.message, code=error.code) from error
+        if original.error_code == "PROVIDER_OUTCOME_UNKNOWN":
+            raise ReferenceConflict(
+                "Provider outcome is unknown; retry is unsafe.",
+                code="PROVIDER_OUTCOME_UNKNOWN",
+            )
         existing = original.retries.order_by("created_at").first()
         if existing:
             return existing
@@ -407,7 +423,7 @@ def retry_reference_job(
             source_version=original.source_version,
             variant_count=original.variant_count,
             requested_model=original.requested_model,
-            provider_snapshot=original.provider_snapshot,
+            provider_snapshot=retry_snapshot,
             idempotency_key=f"retry:{original.id}",
             request_fingerprint=original.request_fingerprint,
             max_attempts=original.max_attempts,

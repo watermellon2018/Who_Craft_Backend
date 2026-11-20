@@ -45,6 +45,7 @@ from w_craft_back.movie.storyboard.services import (
     _require_project,
 )
 from w_craft_back.services.image_generation.errors import ImageProviderError
+from w_craft_back.personal_api.access import resolve_generation_access
 from w_craft_back.storage_gateway import signed_media_url
 
 
@@ -271,6 +272,7 @@ def enqueue_generation(
     generation_options = {
         "imageModel": str(data.get("imageModel") or ""),
         "routingMode": str(data.get("routingMode") or "manual").lower(),
+        "generationSource": data.get("generationSource"),
     }
     snapshot, fingerprint = build_generation_snapshot(
         keyframe,
@@ -301,7 +303,23 @@ def enqueue_generation(
         routing_mode = generation_options["routingMode"]
         prompt = str(snapshot["compiledPrompt"])
         require_reference = bool(snapshot.get("primary_reference"))
-        if routing_mode != "manual":
+        provider = resolve_reference_provider(
+            actor=actor, project=project,
+            requested_model=str(data.get("imageModel") or ""),
+            require_edit=False, require_reference=require_reference,
+            generation_source=data.get("generationSource"),
+            approval_token=data.get("generationAccessToken"),
+        )
+        access = getattr(provider, "generation_access", None)
+        if access is None:
+            access = resolve_generation_access(
+                actor, "image", source=data.get("generationSource"),
+                model_key=effective_model,
+                operation="reference" if require_reference else "generate",
+                free_platform=provider.name == "mock",
+            )
+        if (routing_mode != "manual" and access["source"] == "platform"
+                and not access.get("freePlatform")):
             from w_craft_back.services.image_generation.routing import (
                 build_routing_decision,
             )
@@ -315,29 +333,28 @@ def enqueue_generation(
                 resolution="1K",
             )
             provider_snapshot = decision.snapshot()
+            provider_snapshot["generationAccess"] = access
             provider_name = decision.primary.spec.backend
             model_name = decision.primary.spec.model_id
             effective_model = decision.primary.spec.key
         else:
-            provider = resolve_reference_provider(
-                actor=actor,
-                project=project,
-                requested_model=effective_model,
-                require_edit=False,
-            )
+            routing_mode = "manual"
             if require_reference and hasattr(provider, "supports_reference"):
                 if not provider.supports_reference():
                     raise StoryboardError(
                         "Selected image model does not support references.",
                         code="STORYBOARD_REFERENCE_NOT_SUPPORTED",
                     )
-            provider_snapshot = (
+            provider_snapshot = getattr(provider, "provider_snapshot", None) or (
                 {"spec": provider.spec.__dict__}
                 if getattr(provider, "spec", None) is not None
                 else {}
             )
+            provider_snapshot["generationAccess"] = access
             provider_name = provider.name
             model_name = provider.model_id
+            if getattr(provider, "spec", None) is not None:
+                effective_model = provider.spec.key
     except ImageProviderError as error:
         mapped = map_provider_error(error)
         raise StoryboardError(
@@ -372,6 +389,8 @@ def enqueue_generation(
             model=model_name,
             idempotency_key=idempotency_key,
         )
+        if access["source"] == "personal" or access.get("freePlatform"):
+            return generation_payload(generation, request=request), True
         if provider_snapshot.get("candidates"):
             from w_craft_back.services.image_generation.routing import (
                 estimate_route_snapshot,
