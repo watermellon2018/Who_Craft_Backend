@@ -771,6 +771,7 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
         _selected_poster_url(project, request)
         or _absolute_url(request, project.cover_image, project=project)
     )
+    generation_settings = project.generation_settings
     base.update({
         "format": project.format or "",
         "genre": [g.translit for g in project.genres.all()],
@@ -780,7 +781,10 @@ def build_project_edit_payload(project: Project, request=None) -> dict[str, Any]
         "annotation": project.annotation or "",
         "synopsis": project.synopsis or project.summary or "",
         "posterUrl": poster_url,
-        "generationSettings": dict(project.generation_settings or {}),
+        "generationSettings": {
+            **(generation_settings if isinstance(generation_settings, dict) else {}),
+            "visual_style": project.default_visual_style,
+        },
         "createdAt": project.created_at.isoformat() if project.created_at else None,
     })
     return base

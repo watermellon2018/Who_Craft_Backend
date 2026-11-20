@@ -5312,6 +5312,18 @@
           "billing": {"allOf": [{"$ref": "#/components/schemas/GenerationBilling"}], "nullable": true}
         }
       },
+      "ProjectGenerationSettings": {
+        "type": "object",
+        "properties": {
+          "image_generation_model": {"type": "string", "maxLength": 255},
+          "visual_style": {
+            "type": "string",
+            "description": "Default visual style for new characters in this project",
+            "default": "cinematic_realism",
+            "enum": ["cinematic_realism", "anime", "pixar_like", "stylized_3d", "dark_fantasy", "cyberpunk", "noir", "watercolor", "comic_book"]
+          }
+        }
+      },
       "ProjectMutationRequest": {
         "type": "object",
         "properties": {
@@ -5323,6 +5335,7 @@
           "synopsis": {"type": "string", "maxLength": 2000},
           "status": {"type": "string"},
           "is_favorite": {"type": "boolean"},
+          "generation_settings": {"$ref": "#/components/schemas/ProjectGenerationSettings"},
           "poster_image_data": {"type": "string"},
           "poster_url": {"type": "string", "nullable": true}
         }
@@ -5348,7 +5361,7 @@
           "annotation": {"type": "string"},
           "synopsis": {"type": "string"},
           "posterUrl": {"type": "string", "nullable": true},
-          "generationSettings": {"type": "object", "additionalProperties": true},
+          "generationSettings": {"$ref": "#/components/schemas/ProjectGenerationSettings"},
           "createdAt": {"type": "string", "format": "date-time", "nullable": true}
         }
       },

@@ -434,6 +434,66 @@ class ProjectCrudTests(TestCase):
         self.assertEqual(project.summary, "")
         self.assertEqual(project.synopsis, "Full plot")
         self.assertEqual(response.json()["description"], "Full plot")
+        self.assertEqual(
+            response.json()["generationSettings"]["visual_style"],
+            "cinematic_realism",
+        )
+
+    def test_visual_style_is_saved_and_partial_settings_updates_preserve_model(self):
+        response = self.client.post(
+            "/api/projects/",
+            data={
+                "title": "Styled project",
+                "generation_settings": {
+                    "visual_style": "anime",
+                    "image_generation_model": "mock",
+                },
+            },
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["generationSettings"]["visual_style"], "anime")
+        project_id = response.json()["id"]
+        url = f"/api/projects/{project_id}/"
+
+        response = self.client.patch(
+            url,
+            data={"generation_settings": {"visual_style": "watercolor"}},
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        expected = {"visual_style": "watercolor", "image_generation_model": "mock"}
+        self.assertEqual(response.json()["generationSettings"], expected)
+        project = Project.objects.get(pk=project_id)
+        self.assertEqual(project.generation_settings, expected)
+        response = self.client.get(url, HTTP_X_USER_TOKEN=self.token)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["generationSettings"], expected)
+
+    def test_project_style_rejects_unknown_values(self):
+        response = self.client.post(
+            "/api/projects/",
+            data={
+                "title": "Bad style", "generation_settings": {"visual_style": "unknown"},
+            },
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(Project.objects.filter(title="Bad style").exists())
+
+        project = _make_project(self.owner)
+        response = self.client.patch(
+            f"/api/projects/{project.id}/",
+            data={"generation_settings": {"visual_style": "unknown"}},
+            format="json",
+            HTTP_X_USER_TOKEN=self.token,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        project.refresh_from_db()
+        self.assertEqual(project.generation_settings, {})
 
     def test_create_character_records_activity(self):
         project = _make_project(self.owner, title="X")
